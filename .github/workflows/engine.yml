@@ -113,12 +113,18 @@ jobs:
           set -euo pipefail
           brew install --cask prusaslicer
           ls -d /Applications/*rusa* || true
-      - name: Put the bundle's binary on PATH
-        # A macOS .app is a directory, so the executable inside it is not on
-        # PATH by installing the cask. Discovery looks for `prusa-slicer`.
+      - name: Put the bundle's binary on PATH, and record what it is called
+        # A macOS .app is a directory, so installing the cask puts nothing on
+        # PATH. The binary inside carries the APPLICATION's name, not the
+        # command's -- discovery looking only for the POSIX name reported the
+        # engine absent on a runner that had just installed it. The listing is
+        # not decoration: the bundle's executable name is a packaging decision
+        # that can change, and this is where we would see it change.
         run: |
           set -euo pipefail
           bundle=$(ls -d /Applications/*rusa*.app | head -1)
+          echo "executables in $bundle/Contents/MacOS:"
+          ls -l "$bundle/Contents/MacOS"
           echo "$bundle/Contents/MacOS" >> "$GITHUB_PATH"
       - run: just setup
       - run: just test
