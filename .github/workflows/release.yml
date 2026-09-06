@@ -1,0 +1,116 @@
+name: Release
+
+# Publishes to PyPI via Trusted Publishing (OIDC). No API token is stored.
+#
+# The publisher on PyPI is pinned to heibench/slicelab, this workflow filename,
+# and the `pypi` environment -- all three must match or the publish is refused.
+#
+# This workflow is INERT until a release is published. It exists now because the
+# PyPI pending publisher binds to a workflow filename, so the file must be on
+# main before the name can be reserved.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: "Exact version the dist must carry (e.g. 0.1.0) — guards against publishing the wrong ref"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Gate on the same checks a pull request runs
+        run: |
+          just setup
+          just check
+          just test
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Guard built version against the intended release
+        # A tag and a version are two statements of one fact; publishing when
+        # they disagree ships something nobody asked for under a name someone
+        # will trust.
+        run: |
+          set -eu
+          version=$(ls dist/*.tar.gz | sed -E 's|.*/slicelab-(.+)\.tar\.gz|\1|')
+          echo "built: $version"
+          case "${{ github.event_name }}" in
+            release) want="${GITHUB_REF_NAME#v}" ;;
+            workflow_dispatch) want="${{ inputs.expected_version }}" ;;
+          esac
+          if [ "$version" != "$want" ]; then
+            echo "::error::built version '$version' does not match intended release '$want'"
+            exit 1
+          fi
+          case "$version" in
+            *.dev*|*rc*|*a[0-9]*|*b[0-9]*)
+              echo "::error::refusing to publish pre-release version '$version'"
+              exit 1 ;;
+          esac
+
+      - name: Assert the wheel carries no engine-derived bytes
+        # docs/DECISIONS.md D11. The wheel ships slicelab's own code and nothing
+        # an engine produced. This is the packaging half of that decision; the
+        # repository half is test_no_engine_data.py, which does not exist yet.
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import sys, zipfile, glob
+          allowed_suffixes = (".py", ".typed", ".txt", ".md")
+          bad = []
+          for whl in glob.glob("dist/*.whl"):
+              for name in zipfile.ZipFile(whl).namelist():
+                  if name.endswith("/"):
+                      continue
+                  if ".dist-info/" in name:
+                      continue
+                  if not name.endswith(allowed_suffixes):
+                      bad.append(f"{whl}:{name}")
+          if bad:
+              print("::error::wheel carries unexpected files (D11):")
+              for b in bad:
+                  print("  " + b)
+              sys.exit(1)
+          print("wheel contents are slicelab's own source only")
+          PY
+
+      - name: Check the metadata PyPI will see
+        run: uv run --with twine twine check dist/*
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      id-token: write # PyPI Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
