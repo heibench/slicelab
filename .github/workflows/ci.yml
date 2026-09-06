@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # No branch filter: a stacked pull request is based on its parent branch, not
+  # on main, and a base change fires `edited`, which is not a default activity
+  # type -- so filtering on main means a retargeted PR gets no checks at all.
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: just setup
+      - run: just check
+
+  test:
+    name: Test (Python ${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        os: [ubuntu-latest]
+        include:
+          - python-version: "3.11"
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - run: just setup
+      - run: just test
+
+  # There is deliberately NO engine workflow yet.
+  #
+  # slicelab drives no engine today -- no verb is implemented -- so a job that
+  # installed PrusaSlicer or OrcaSlicer and ran the suite would exercise nothing
+  # and report green. Org AGENTS.md 2.4: a check that cannot fail is not a check,
+  # and a green check that never ran is the defect this org exists to prevent.
+  #
+  # engine.yml lands with the first verb that talks to an engine (issue: `which`),
+  # and it sets SLICELAB_REQUIRE_ENGINE=1 so a failed engine install is loud
+  # rather than a silent skip.
+
+  ok:
+    name: ok
+    if: always()
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any upstream job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - name: Pass
+        run: echo 'All checks passed'
