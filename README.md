@@ -5,10 +5,10 @@ small configuration delta, slice with a real engine, and get back G-code plus a
 lock file recording exactly what that engine resolved — or a non-zero exit
 saying why slicelab will not stand behind the result.
 
-> **Status: pre-alpha. The exit contract is implemented; no verb is.**
-> `slicelab --version` and `--help` work; anything else exits 64. Nothing spawns
-> a process, reads a file, or talks to a slicer yet. The example below is what
-> the tool is *for*, not what it currently does. See
+> **Status: pre-alpha. One verb works: `slicelab which`.** It finds an installed
+> slicer, establishes whether that engine's exit status can be believed, and
+> reports its identity. Nothing slices yet — the `slice.toml` example below is
+> what the tool is *for*, not what it currently does. See
 > [`docs/DECISIONS.md`](docs/DECISIONS.md) and
 > [`docs/RESEARCH.md`](docs/RESEARCH.md).
 
@@ -70,6 +70,30 @@ $ echo $?
 The intended git model is four files: `part.stl` (the geometry), `slice.toml`
 (what you intended), `slice.lock` (exactly what produced it), `part.gcode` (the
 result).
+
+## What works today
+
+```console
+$ slicelab which
+orcaslicer 2.4.2
+  launch = Flatpak com.orcaslicer.OrcaSlicer via its default entrypoint
+  exit_fidelity = established (rejected --definitely-not-a-slicelab-option with exit 254)
+  version_exact = true
+
+prusaslicer 2.9.6
+  launch = Flatpak com.prusa3d.PrusaSlicer via --command=prusa-slicer
+  exit_fidelity = established (rejected --definitely-not-a-slicelab-option with exit 1)
+  version_exact = true
+  rejected Flatpak com.prusa3d.PrusaSlicer via its default entrypoint:
+    returned 0 for a flag it does not accept, so its exit status carries no information
+```
+
+That last line is why the verb exists. PrusaSlicer's Flathub entrypoint ends in a
+backgrounded child, so it returns **0 for every invocation** — including ones that
+failed. Anything driving it through that launcher gets a green for every run.
+OrcaSlicer's wrapper does not have the problem, and bypassing it would throw away
+the packager's locale fix, so the right launcher differs per package and slicelab
+measures rather than assumes.
 
 ## Exit codes
 

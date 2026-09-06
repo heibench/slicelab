@@ -1,0 +1,155 @@
+name: Engine
+
+# The real engines, across the ways people actually install them.
+#
+# ci.yml runs the suite everywhere and SKIPS the engine tests, because no
+# standard runner has a slicer. That leaves discovery -- the thing `which`
+# exists to do -- covered by fake launchers alone. Fakes are exactly what would
+# hide the finding this verb was written for: PrusaSlicer's Flathub entrypoint
+# backgrounds its child and therefore returns 0 for every invocation, so its
+# exit status carries no information (notes/evidence.md V10).
+#
+# Every job sets SLICELAB_REQUIRE_ENGINE=1, so a failed install is a LOUD
+# failure rather than a green run full of skips. A job that could not get an
+# engine must not look like a job that tested one.
+#
+# THIS MATRIX IS ALSO A CONTROL. Every empirical finding behind this project
+# was taken on one Linux host against two Flatpaks. A Flatpak is a materially
+# different execution environment -- sandboxed filesystem, its own /tmp,
+# translated paths -- so behaviour observed only there is not established for
+# native builds. The macOS and Windows jobs run the same code against native
+# 2.9.6, which is the only control available: PrusaSlicer publishes no Linux
+# asset on its GitHub releases (checked across 2.9.6 and the four before it --
+# only setup.exe, .dmg and a Windows .zip), and Debian/Ubuntu ship 2.9.2, a
+# different version.
+#
+# Not on every push: these install large GUI applications and are slower and
+# more fragile than the gate. On demand, and weekly so upstream packaging
+# changes surface without anyone remembering to look.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SLICELAB_REQUIRE_ENGINE: "1"
+
+jobs:
+  flatpak:
+    name: Linux / Flatpak (Flathub, both engines)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install both engines from Flathub
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y flatpak
+          sudo flatpak remote-add --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y --noninteractive flathub com.prusa3d.PrusaSlicer
+          sudo flatpak install -y --noninteractive flathub com.orcaslicer.OrcaSlicer
+      - name: Show what was installed
+        run: flatpak list --app
+      - run: just setup
+      - run: just test
+      - name: Report what discovery chose, and why
+        # The interesting output of this whole workflow. On the development
+        # host PrusaSlicer's default entrypoint is REJECTED for returning 0 and
+        # the --command= bypass wins, while OrcaSlicer keeps its entrypoint
+        # (which carries the packager's LC_NUMERIC=C fix). If a Flathub update
+        # ever changes either, this is where it surfaces.
+        run: uv run slicelab which
+
+  linux-apt:
+    name: Linux / distro package on PATH
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install PrusaSlicer from the distro archive
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y prusa-slicer
+          command -v prusa-slicer
+      - run: just setup
+      - run: just test
+      - name: Report what discovery chose, and why
+        # Plain PATH discovery, no sandbox. Note this is a DIFFERENT VERSION
+        # from the Flatpak jobs -- Ubuntu ships an older PrusaSlicer -- so it
+        # controls for the install mode, not for the version.
+        run: uv run slicelab which prusaslicer
+
+  macos:
+    name: macOS / Homebrew cask (.app bundle)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install PrusaSlicer
+        run: |
+          set -euo pipefail
+          brew install --cask prusaslicer
+          ls -d /Applications/*rusa* || true
+      - name: Put the bundle's binary on PATH
+        # A macOS .app is a directory, so the executable inside it is not on
+        # PATH by installing the cask. Discovery looks for `prusa-slicer`.
+        run: |
+          set -euo pipefail
+          bundle=$(ls -d /Applications/*rusa*.app | head -1)
+          echo "$bundle/Contents/MacOS" >> "$GITHUB_PATH"
+      - run: just setup
+      - run: just test
+      - name: Report what discovery chose, and why
+        run: uv run slicelab which prusaslicer
+
+  windows:
+    name: Windows / official portable zip
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: extractions/setup-just@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install PrusaSlicer from the official portable zip
+        # The one native build of the EXACT version this project's findings
+        # were taken against (2.9.6). Windows is where the Flatpak-versus-
+        # native control actually lands.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/prusa3d/PrusaSlicer/releases/download/version_2.9.6/PrusaSlicer-2.9.6.zip"
+          Invoke-WebRequest -Uri $url -OutFile prusaslicer.zip
+          Expand-Archive prusaslicer.zip -DestinationPath $env:RUNNER_TEMP\prusaslicer
+          $exe = Get-ChildItem -Recurse -Filter prusa-slicer-console.exe $env:RUNNER_TEMP\prusaslicer |
+                 Select-Object -First 1
+          if (-not $exe) { throw "prusa-slicer-console.exe not found in the portable zip" }
+          Add-Content -Path $env:GITHUB_PATH -Value $exe.Directory.FullName
+      - run: just setup
+      - run: just test
+      - name: Report what discovery chose, and why
+        run: uv run slicelab which prusaslicer

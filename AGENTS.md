@@ -20,14 +20,15 @@ Everything else — the lock file, the multi-engine story, a native backend —
 is downstream of that one move. If the readback diff is ever weakened, delete
 the project rather than ship it.
 
-**Status: pre-alpha. The exit contract is implemented; no verb is.**
-`status.py`, `cli.py` and `report.py` exist and are tested: `slicelab --version`
-and `--help` exit 0, and any other invocation exits 64. Nothing spawns a
-process, reads a file, or talks to an engine.
+**Status: pre-alpha. One verb works: `slicelab which`.**
+It discovers an installed engine, probes whether that engine's exit status can be
+believed, and reports its identity. It spawns processes and reads files. Nothing
+slices, reads a `slice.toml`, or writes a lock.
 
-Treat this section as code: the moment a verb works, this paragraph is false and
-the change that made it work is not finished until it is corrected
-(org AGENTS.md 2.5). It was already corrected once, when the exit map landed.
+Treat this section as code: the moment another verb works, this paragraph is
+false and the change that made it work is not finished until it is corrected
+(org AGENTS.md 2.5). It has been corrected twice already — once when the exit map
+landed, once when `which` did.
 
 ## Start here
 
