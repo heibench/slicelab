@@ -2,27 +2,48 @@
 
 heibench AGENTS.md section 5: "The stable surface is the artifact and the exit
 code, never the Python API." A package that quietly grows an importable surface
-acquires a second, weaker interface that consumers pin to and that the exit-code
-contract does not cover. This test is the mechanism for that intention.
+acquires a second, weaker interface that consumers pin to and that the
+exit-code contract does not cover.
 
-Its red state has been observed: adding any public name to slicelab/__init__.py
-fails the first test, and removing __version__ fails the second.
+**Measured in a subprocess, deliberately.** Importing ``slicelab.cli`` binds
+``cli`` as an attribute of the package, so an in-process ``dir(slicelab)``
+reports whatever the rest of the suite happened to import first -- it would
+report a growing surface as this project grows submodules, which is not the
+claim. A fresh interpreter that imports only the package measures what a
+consumer actually sees.
 """
 
-import slicelab
+from __future__ import annotations
+
+import subprocess
+import sys
 
 
-def test_package_exports_no_public_names() -> None:
-    """Everything slicelab offers is behind the CLI, not behind an import."""
-    public = {name for name in dir(slicelab) if not name.startswith("_")}
-    assert public == set(), (
-        f"slicelab grew a public Python surface: {sorted(public)}. "
-        "Depend on the CLI and slice.lock, not on importable names (org AGENTS.md 5)."
+def _fresh_interpreter(code: str) -> str:
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    return proc.stdout.strip()
+
+
+def test_importing_slicelab_exposes_no_public_names() -> None:
+    out = _fresh_interpreter(
+        "import slicelab, json;"
+        "print(json.dumps(sorted(n for n in dir(slicelab) if not n.startswith('_'))))"
+    )
+    assert out == "[]", (
+        f"slicelab grew a public Python surface: {out}. Depend on the CLI and "
+        "slice.lock, not on importable names (org AGENTS.md 5)."
     )
 
 
 def test_version_is_the_one_exported_name() -> None:
-    """__version__ is the single exception, so a caller can report what it ran."""
-    assert slicelab.__all__ == ["__version__"]
-    assert isinstance(slicelab.__version__, str)
-    assert slicelab.__version__
+    out = _fresh_interpreter("import slicelab; print(slicelab.__all__, slicelab.__version__)")
+    assert out.startswith("['__version__'] ")
+    assert out.split()[-1]
+
+
+def test_importing_slicelab_pulls_in_no_submodules() -> None:
+    """The package must stay cheap to import and must not front-load a CLI."""
+    out = _fresh_interpreter(
+        "import slicelab, sys;print(sorted(m for m in sys.modules if m.startswith('slicelab.')))"
+    )
+    assert out == "[]", f"importing slicelab dragged in submodules: {out}"

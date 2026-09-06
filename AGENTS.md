@@ -20,11 +20,14 @@ Everything else — the lock file, the multi-engine story, a native backend —
 is downstream of that one move. If the readback diff is ever weakened, delete
 the project rather than ship it.
 
-**Status: pre-alpha, nothing implemented.** This repository currently contains
-the contract, the decisions, and the research that produced them. No verb runs.
-Treat this section as code: the moment a verb works, this line is false and the
-change that made it work is not finished until it is corrected
-(org AGENTS.md 2.5).
+**Status: pre-alpha. The exit contract is implemented; no verb is.**
+`status.py`, `cli.py` and `report.py` exist and are tested: `slicelab --version`
+and `--help` exit 0, and any other invocation exits 64. Nothing spawns a
+process, reads a file, or talks to an engine.
+
+Treat this section as code: the moment a verb works, this paragraph is false and
+the change that made it work is not finished until it is corrected
+(org AGENTS.md 2.5). It was already corrected once, when the exit map landed.
 
 ## Start here
 
