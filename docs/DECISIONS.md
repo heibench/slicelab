@@ -197,8 +197,11 @@ FSF's own paradigm of separate programs — so nothing is compelled. Apache-2.0 
 MIT for the express patent grant, since slicelab will sit inside other people's
 build pipelines.
 
-**Do not cite an org-wide default:** the org contract's section 9 now says there
-is no such default, and prusaslicer-py D7's citation of one is stale.
+**Do not cite an org-wide default:** the org contract's section 9 says there is no
+such default. What it does say is narrower and is what applies here — pick Apache-2.0
+where the binding leaves the choice open, take what the engine compels where it does
+not, and record which case you are in. slicelab is the choice-open case; orlab is the
+compelled one. Section 9 now lists slicelab explicitly.
 
 The derivative-work conclusion is a legal position no command can verify, and two
 of the three upstreams assert the opposite in their READMEs. It is carried as a
@@ -249,8 +252,31 @@ The renderer prints the outcome word as the **first token** of output, pinned by
 test: a past-tense verb leading a non-zero run reads green to a human skimming CI
 logs.
 
-Cite the org contract's **section 6.3**, never 6.2 — 6.2 lists only 0/1/4 and is
-stale. Reported to the org.
+The exit codes are org contract **section 6.2**'s, which as of 2026-09-06 is the
+settled org-wide vocabulary rather than one member's choice: adjudications A1, A2 and
+A3 closed that day and partspec, netspec and gerberdiff now answer on the same five.
+slicelab **conforms to a settled table; it does not pick numbers.** A1 exists because
+two members picked `2` for different meanings and nobody noticed until a consumer
+would have.
+
+*Historical note, because `notes/evidence.md` V14 records the opposite and is frozen:*
+when that observation was taken, section 6.2 listed only `0/1/4` and contradicted 6.3
+in the same file, and this decision said to cite 6.3 and never 6.2. The org fixed 6.2
+the same day (`.github` #12). V14 is correct as dated; this entry is the current
+instruction.
+
+### Precedence between outcomes
+
+**`refused` (1) outranks `incomplete` (2).** A run with one `coerced` key and one
+`absent` key is `refused`.
+
+A finding about the request is a statement slicelab established, and it stays one even
+when some other key could not be evaluated. The reverse would let a single unreadable
+key mask a real unhonoured override — and exit 2 invites a retry that will never change
+the answer.
+
+Adopted from netspec D26's "`fail` outranks `incomplete`" rather than re-derived, so the
+drive and verify layers order their outcomes the same way.
 
 ## D15 — Signal death is `incomplete` (2), never `refused` (1)
 

@@ -110,8 +110,17 @@ Verdict-per-part and netspec's D9/D26 split.
 | `error` | 4 | Environment fault. Not a verdict on the intent. |
 | — | 64 | Usage: slicelab's own argv. |
 
-Cite the org contract's **section 6.3**, never 6.2 — 6.2's table is stale and
-lists only 0/1/4. This has been reported to the org.
+These are org contract **section 6.2**'s codes, which is now the settled org-wide
+vocabulary: A1, A2 and A3 closed on 2026-09-06 and partspec, netspec and gerberdiff
+all answer on the same five. slicelab conforms rather than chooses. Only the *words*
+diverge, and deliberately — see D14.
+
+**`refused` outranks `incomplete`.** When one requested key is `coerced` and another
+is `absent`, the run is `refused` (1), not `incomplete` (2). A finding about the
+request stays a finding even when some other key could not be evaluated; the reverse
+would let one unreadable key mask a real one. Taken from netspec D26, which settled
+the same precedence for the verify layer — this is the driver's form of it, adopted
+rather than re-derived.
 
 The renderer prints the outcome word as the **first token** of output (D14). A
 past-tense verb leading a non-zero run reads green to a human skimming CI logs.
