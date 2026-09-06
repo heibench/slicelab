@@ -6,9 +6,23 @@ set dotenv-load := false
 default:
     @just --list
 
-# Install dependencies and set up the environment
+# --locked is load-bearing, not tidiness. Plain `uv sync` reconciles a stale
+# uv.lock and rewrites it at exit 0 with no diagnostic, and CI runs this same
+# recipe -- so the committed lockfile was never once tested and a drifted lock
+# reached main green. A gate that cannot fail is not a gate.
+#
+# If setup fails because you changed dependencies, that is the recipe working:
+# run `just lock` and commit the result. `lock` is deliberately separate, so
+# updating the lockfile is always something someone chose to do rather than a
+# side effect of setting up.
+
+# Install dependencies from the committed lockfile; fails if the lock is stale
 setup:
-    uv sync
+    uv sync --locked
+
+# Update the lockfile after changing dependencies in pyproject.toml
+lock:
+    uv lock
 
 # Format code and apply lint fixes (mutates the working tree)
 fmt:
@@ -34,8 +48,10 @@ check: fmt-check lint typecheck
 test:
     uv run pytest
 
-# Run tests and FAIL (rather than skip) if no engine is installed.
-# CI sets this on the engine matrix so a failed engine install is loud.
+# CI sets this on the engine matrix so a failed engine install is loud rather
+# than a silent skip.
+
+# Run tests and FAIL (rather than skip) if no engine is installed
 test-engine:
     SLICELAB_REQUIRE_ENGINE=1 uv run pytest
 
