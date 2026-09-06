@@ -110,6 +110,7 @@ Verdict-per-part and netspec's D9/D26 split.
 | `sliced` | 0 | Artifact exists, non-empty, **promoted by this run**, its config export captured in the *same invocation*, every requested key `applied`, `adapter.exact` true. |
 | `refused` | 1 | slicelab established the intent was not honoured. The driver's analogue of *violated*: we looked, the answer is no. |
 | `incomplete` | 2 | slicelab ran but cannot stand behind the result. **Never reachable from an unexamined success path.** |
+| `empty` | 3 | The run verified nothing, because nothing was requested. Neither success nor a finding (D24). |
 | `error` | 4 | Environment fault. Not a verdict on the intent. |
 | — | 64 | Usage: slicelab's own argv. |
 
@@ -117,6 +118,13 @@ These are org contract **section 6.2**'s codes, which is now the settled org-wid
 vocabulary: A1, A2 and A3 closed on 2026-09-06 and partspec, netspec and gerberdiff
 all answer on the same five. slicelab conforms rather than chooses. Only the *words*
 diverge, and deliberately — see D14.
+
+**`empty` (3) is not `sliced`.** A `slice.toml` with a `[base]` triple and no
+`[set]` keys produces a real artifact and verifies nothing — "every requested key
+was applied" is vacuously true over zero keys. That run is `empty`, the artifact
+is still promoted, and no lock is written. `3` is partspec's code for the same
+idea and is **not** in §6.2's table; slicelab is the second member using it, and
+that is escalated rather than assumed. See D24.
 
 **`refused` outranks `incomplete`.** When one requested key is `coerced` and another
 is `absent`, the run is `refused` (1), not `incomplete` (2). A finding about the

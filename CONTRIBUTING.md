@@ -40,6 +40,24 @@ presented as a measurement.
 **A check whose red state you have not observed is not a check.** Break the thing
 it checks, watch it go red, put it back. Say in the pull request that you did.
 
+**Clear `__pycache__` between the break and the restore**, or the observation can
+lie to you. Python invalidates a `.pyc` by comparing the source's mtime and size
+against what the `.pyc` records, both at one-second granularity. A red-state edit
+that changes a single character — `return 3` to `return 0` — keeps the size
+identical, and if the restore lands in the same second as the broken run, the
+stale bytecode is reused. This happened here: a restored file reported the broken
+behaviour, and `inspect.getsource` showed the correct source while the interpreter
+ran the old bytecode, because `getsource` reads the file and the interpreter does
+not.
+
+```sh
+find . -name __pycache__ -type d -exec rm -rf {} +
+```
+
+The failure mode is the one this project exists to refuse, pointed at our own
+verification loop: a check that appeared to go red for a reason that was not the
+reason, and a restore that appeared to stay red when it was green.
+
 **A skipped test is not a passing test.** If you add a `skipif` for a missing
 tool, make it possible for CI to demand that tool, and never gate a test module
 at import — that reports as one skipped line and takes every test in the file
