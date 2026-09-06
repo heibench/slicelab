@@ -29,6 +29,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   **whether that engine's exit status can be believed**. Exit 0 requires both an
   engine and a launch form proved to report failure as failure; an installed
   engine that cannot be driven honestly is exit 4, not 0.
+- `slicelab presets` — enumerate an engine's printer presets, adjudicated on the
+  **artifact and not the exit code**. PrusaSlicer returns exit 1 on complete
+  success, the same code it returns for "not found", so branching on it would
+  treat every successful query as an error. Exit 0 requires JSON that parsed, is
+  shaped as promised, and is **not empty**: a datadir with the bundle but no
+  models answers `{"printer_models": ""}`, which parses and enumerates nothing.
+  An engine with no enumeration verb — OrcaSlicer 2.4.2 has none — is exit 2,
+  because slicelab presenting its own reading of the engine's profile
+  directories as the engine's answer would be a plausible substitute for one the
+  engine never gave.
 - The engine boundary: `subprocess` is confined to `slicelab/engine/launch.py`
   and engine identifiers to `slicelab/adapters/`, both enforced by tests. The
   second has a red state only because a second engine exists.
