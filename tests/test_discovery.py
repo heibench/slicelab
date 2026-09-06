@@ -24,11 +24,42 @@ from slicelab.engine.discover import (
 from slicelab.engine.identity import identify
 
 
-def _fake_engine(tmp_path: Path, name: str, script: str) -> Path:
-    path = tmp_path / name
-    path.write_text(script, encoding="utf-8")
+def _fake_engine(
+    directory: Path,
+    stem: str,
+    *,
+    help_output: str | None,
+    help_rc: int = 0,
+    other_rc: int = 1,
+) -> str:
+    """Create a fake engine and return the name discovery should look for.
+
+    Written for both platforms rather than skipped on Windows. These tests
+    assert the discovery LOGIC -- discard a launcher whose exit status carries
+    no information -- and that logic has to hold everywhere slicelab runs. The
+    Windows job is also the only native (non-Flatpak) control this project has,
+    so it is the last job that should be quietly opted out of.
+
+    A POSIX shell script is invisible to ``shutil.which`` on Windows: no
+    extension in PATHEXT and no usable shebang. So each platform gets the
+    script kind it can actually execute.
+    """
+    if os.name == "nt":
+        name = f"{stem}.cmd"
+        echo = f"    echo {help_output}\n" if help_output else ""
+        body = (
+            f'@echo off\nif "%~1"=="--help" (\n{echo}    exit /b {help_rc}\n)\nexit /b {other_rc}\n'
+        )
+        (directory / name).write_text(body, encoding="ascii", newline="\r\n")
+        return name
+
+    name = stem
+    echo = f"  echo '{help_output}'\n" if help_output else ""
+    body = f'#!/bin/sh\nif [ "$1" = --help ]; then\n{echo}  exit {help_rc}\nfi\nexit {other_rc}\n'
+    path = directory / name
+    path.write_text(body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return path
+    return name
 
 
 @pytest.fixture
@@ -46,12 +77,8 @@ def test_an_engine_that_returns_zero_for_everything_is_unusable(
     returns 0 for every invocation. A launcher like that makes every subsequent
     verdict meaningless, so discovery must refuse it rather than adopt it.
     """
-    _fake_engine(
-        on_path,
-        "always-fine",
-        "#!/bin/sh\nif [ \"$1\" = --help ]; then echo 'AlwaysFine-1.0.0'; fi\nexit 0\n",
-    )
-    spec = EngineSpec("fake", "always-fine", "always-fine.exe", None)
+    name = _fake_engine(on_path, "always-fine", help_output="AlwaysFine-1.0.0", other_rc=0)
+    spec = EngineSpec("fake", name, name, None)
 
     found = discover(spec, timeout=20)
 
@@ -62,12 +89,8 @@ def test_an_engine_that_returns_zero_for_everything_is_unusable(
 
 
 def test_an_engine_that_rejects_a_bad_flag_is_usable(on_path: Path) -> None:
-    _fake_engine(
-        on_path,
-        "honest",
-        "#!/bin/sh\nif [ \"$1\" = --help ]; then echo 'Honest-3.2.1'; exit 0; fi\nexit 1\n",
-    )
-    spec = EngineSpec("fake", "honest", "honest.exe", None)
+    name = _fake_engine(on_path, "honest", help_output="Honest-3.2.1")
+    spec = EngineSpec("fake", name, name, None)
 
     found = discover(spec, timeout=20)
 
@@ -108,12 +131,8 @@ def test_identity_of_an_absent_engine_is_not_exact(on_path: Path) -> None:
 
 def test_a_version_that_cannot_be_parsed_is_not_exact(on_path: Path) -> None:
     """An engine that runs but says nothing recognisable is inexact, not wrong."""
-    _fake_engine(
-        on_path,
-        "mute",
-        '#!/bin/sh\nif [ "$1" = --help ]; then echo "no version here"; exit 0; fi\nexit 1\n',
-    )
-    spec = EngineSpec("fake", "mute", "mute.exe", None)
+    name = _fake_engine(on_path, "mute", help_output="no version here")
+    spec = EngineSpec("fake", name, name, None)
     found = discover(spec, timeout=20)
     who = identify(spec, found, timeout=20)
 
@@ -164,8 +183,10 @@ def test_signal_death_is_reported_separately_from_an_exit_status(tmp_path: Path)
     """
     from slicelab.engine.launch import run
 
-    script = _fake_engine(tmp_path, "crasher", "#!/bin/sh\nkill -SEGV $$\n")
-    completed = run([str(script)], timeout=20)
+    path = tmp_path / "crasher"
+    path.write_text("#!/bin/sh\nkill -SEGV $$\n", encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    completed = run([str(path)], timeout=20)
 
     assert completed.died_by_signal
     assert completed.signal == 11
@@ -191,8 +212,8 @@ def test_a_launcher_that_never_reaches_the_engine_is_not_established(
     cannot answer a request for its own help is not one we are talking to,
     whatever its exit codes look like.
     """
-    _fake_engine(on_path, "broken-launcher", "#!/bin/sh\necho 'cannot start' >&2\nexit 3\n")
-    spec = EngineSpec("fake", "broken-launcher", "broken-launcher.exe", None)
+    name = _fake_engine(on_path, "broken-launcher", help_output=None, help_rc=3, other_rc=3)
+    spec = EngineSpec("fake", name, name, None)
 
     found = discover(spec, timeout=20)
 
