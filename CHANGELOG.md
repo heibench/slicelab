@@ -24,6 +24,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   not asserted against the constant — two sibling members declare `64` and
   return `2`.
 - `render`, whose first token is always the outcome word.
+- `empty` at exit **3**, for a run that completed and verified nothing because
+  nothing was requested. A `slice.toml` with preset names and no overrides is the
+  first file anyone writes, and under the previous table it exited `0` having
+  checked zero keys. It is not `sliced`, because that sentence would be untrue of
+  the run; it is not `refused`, because nothing was dishonoured. The artifact is
+  still promoted and no lock is written. Same code partspec uses for the same
+  idea. See D24.
 
 - The repository, its contract, and the research that produced them. No verb is
   implemented: `docs/DECISIONS.md` carries D1–D23, `docs/RESEARCH.md` separates

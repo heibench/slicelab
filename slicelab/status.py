@@ -48,6 +48,15 @@ class Outcome(StrEnum):
     """slicelab ran but cannot stand behind the result. Never reachable from an
     unexamined success path."""
 
+    EMPTY = "empty"
+    """The run completed and verified nothing, because nothing was requested.
+
+    Neither a success nor a finding. A ``slice.toml`` with a ``[base]`` triple
+    and an empty ``[set]`` produces a real artifact, and "every requested key
+    was applied" is vacuously true over zero keys -- the vacuous green
+    ``notes/critique.md`` G1 reproduced. See D24.
+    """
+
     ERROR = "error"
     """Environment fault. NOT a verdict on the intent (org contract 2.2)."""
 
@@ -80,6 +89,8 @@ def exit_code_for(outcome: Outcome) -> int:
             return 1
         case Outcome.INCOMPLETE:
             return 2
+        case Outcome.EMPTY:
+            return 3
         case Outcome.ERROR:
             return 4
     assert_never(outcome)
@@ -158,25 +169,17 @@ severe than a verdict, it is not a verdict at all (org contract 2.2).
 def worst_of(outcomes: list[Outcome]) -> Outcome:
     """Combine the outcomes forced by individual keys.
 
-    Raises:
-        ValueError: if ``outcomes`` is empty.
+    An **empty** input returns :attr:`Outcome.EMPTY`, not
+    :attr:`Outcome.SLICED`. Nothing was requested, so nothing was verified, and
+    saying ``sliced`` over zero checks is the vacuous green this project exists
+    to refuse (D24, ``notes/critique.md`` G1).
 
-            This is not a missing feature, it is an **open decision**. A run
-            with nothing to combine is a ``slice.toml`` whose ``[set]`` table
-            is empty, and "every requested key was applied" is vacuously true
-            over zero keys -- the vacuous green that ``notes/critique.md`` G1
-            reproduced. The org has shipped two different answers to that
-            question (partspec's ``empty`` at exit 3; netspec's D26 folding it
-            to a finding) and choosing between them is escalated, not assumed.
-            Returning ``SLICED`` here would decide it silently, in the
-            direction the whole project exists to refuse. See slicelab#5.
+    :attr:`Outcome.EMPTY` never participates in the precedence ordering: it is
+    the answer to "there was nothing to combine", not a rank among things that
+    were.
     """
     if not outcomes:
-        raise ValueError(
-            "cannot combine an empty set of outcomes: whether a run that "
-            "requested nothing is sliced, refused or something else is an open "
-            "decision (see slicelab#5 and notes/critique.md G1)"
-        )
+        return Outcome.EMPTY
     return max(outcomes, key=_PRECEDENCE.index)
 
 

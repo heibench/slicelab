@@ -36,4 +36,10 @@ def test_no_two_outcomes_share_an_exit_code() -> None:
 
 def test_outcome_values_are_the_words_the_renderer_prints() -> None:
     """The enum value IS the user-facing word; nothing translates between them."""
-    assert {o.value for o in Outcome} == {"sliced", "refused", "incomplete", "error"}
+    assert {o.value for o in Outcome} == {
+        "sliced",
+        "refused",
+        "incomplete",
+        "empty",
+        "error",
+    }

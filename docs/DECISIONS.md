@@ -396,3 +396,66 @@ banner and config footer marker simultaneously.
 
 *Reversal trigger for the adapter:* a non-prerelease release of the rebranded line.
 Re-run the config-surface diff before anything else.
+
+## D24 — A run that requested nothing is `empty` (3), not `sliced`
+
+`notes/critique.md` G1, settled. A `slice.toml` carrying a `[base]` triple and an
+empty `[set]` runs to completion and produces a real artifact — and **"every
+requested key came back `applied`" is vacuously true over zero keys.** Under the
+original outcome table that run exited `0`. It is also the first file anyone
+writes, so this was not an edge case; it was the default path.
+
+### Why not `sliced` (0)
+
+Because the sentence slicelab would be printing is not true of the run. The
+mechanism this whole tool rests on adjudicates the **authored delta**; with an
+empty delta it adjudicated nothing, while the ~370 keys of the resolved base went
+unchecked. A green there is a claim that cannot fail, which is org contract §2.4
+inverted and §2's founding rule aimed at ourselves.
+
+### Why not `refused` (1)
+
+`refused` is defined as *slicelab established the intent was not honoured*. With
+zero requested keys **nothing was dishonoured**. Reporting `refused` would assert
+a cause slicelab did not establish — the §2.3 plausible-substitute failure one
+level up, the same trap D6 exists to avoid, aimed at our own outcome word.
+
+netspec's D26 reaches the opposite conclusion for *its* domain ("an empty contract
+is `fail`, because a code nothing branches on is vocabulary without a consumer"),
+and that test is the right one. slicelab differs because the consumer exists: a CI
+gate asking *"does every `slice.toml` in this repo verify anything at all?"*
+branches on `3` and cannot be written against `1` or against `0`-plus-a-field. The
+two states also call for **opposite fixes** — `refused` means change your
+override, `empty` means add one.
+
+### Decided
+
+Follow partspec. `Outcome.EMPTY` maps to exit **3**, the same code partspec uses
+for the same idea (`SPEC-contract.md` §6, "the vacuous-green guard"). Deliberate
+alignment, not a coincidence.
+
+Two consequences, recorded because they are not obvious:
+
+- **The artifact is still promoted.** `empty` is not a fault; a valid G-code file
+  was produced and nothing was found wrong with it. Withholding it would punish a
+  user for not writing overrides. This is a **carve-out from D7**, which promotes
+  only on `sliced`: promote on `sliced` *or* `empty`.
+- **No lock is written.** A `slice.lock` is the record of a resolution slicelab
+  verified. On `empty` it verified none, so there is nothing to lock. The full
+  outcome is still rendered to stdout and to `--report PATH`.
+
+`Outcome.EMPTY` does **not** participate in the precedence ordering (D14). It is
+the answer to "there was nothing to combine", not a rank among things that were.
+
+### Escalated, not assumed
+
+**`3` is not in the org contract's §6.2 table**, which lists `0/1/2/4/64` and was
+written from the settled set on 2026-09-06, deliberately excluding partspec's `3`
+as one member's code rather than an agreed one. slicelab adopting it makes a
+**second member using it**, which is the threshold at which §6.2 should probably
+say so. That amendment is an org-level change under §10 and is raised there, not
+decided here.
+
+*Supersedes:* if a second consumer never appears — if after 20 real `slice.toml`
+files nobody has branched on `3` — netspec's reasoning wins and this folds into
+`refused`. The measurement, not the argument, decides that.

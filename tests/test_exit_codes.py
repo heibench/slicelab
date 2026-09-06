@@ -78,18 +78,45 @@ def test_incomplete_still_beats_sliced() -> None:
     assert worst_of([Outcome.SLICED, Outcome.INCOMPLETE]) is Outcome.INCOMPLETE
 
 
-def test_an_empty_subject_set_refuses_to_answer_rather_than_guessing() -> None:
-    """The vacuous-green case is an OPEN DECISION and must not be assumed.
+def test_an_empty_subject_set_is_empty_not_sliced() -> None:
+    """The vacuous-green case, settled by D24.
 
     ``notes/critique.md`` G1: with zero requested keys, "every requested key
     was applied" is vacuously true, and a base-only slice.toml is the first
-    file anyone writes. The org has shipped two answers (partspec's ``empty``
-    at exit 3; netspec D26 folding it to a finding) and the choice is escalated
-    -- see slicelab#5.
-
-    Returning ``SLICED`` here would settle it silently, in the direction this
-    project exists to refuse. Raising is the honest placeholder: it cannot be
-    mistaken for a verdict.
+    file anyone writes. Returning SLICED here is the defect; EMPTY says the run
+    happened and verified nothing, which is the truth.
     """
-    with pytest.raises(ValueError, match="open decision"):
-        worst_of([])
+    assert worst_of([]) is Outcome.EMPTY
+    assert exit_code_for(worst_of([])) == 3
+
+
+def test_empty_is_not_green_and_not_a_finding() -> None:
+    """It must be distinguishable from BOTH neighbours by exit code alone.
+
+    That distinguishability is the whole argument for spending a code on it: a
+    CI gate asking "does every slice.toml here verify anything?" branches on 3
+    and cannot be written without it.
+    """
+    assert exit_code_for(Outcome.EMPTY) != exit_code_for(Outcome.SLICED)
+    assert exit_code_for(Outcome.EMPTY) != exit_code_for(Outcome.REFUSED)
+    assert exit_code_for(Outcome.EMPTY) != exit_code_for(Outcome.INCOMPLETE)
+
+
+def test_empty_does_not_participate_in_precedence() -> None:
+    """EMPTY answers "nothing to combine", it is not a rank among things.
+
+    One applied key and one coerced key is a REAL run with a finding; it must
+    not decay to EMPTY, and EMPTY must not outrank a finding.
+    """
+    assert worst_of([Outcome.SLICED, Outcome.REFUSED]) is Outcome.REFUSED
+    assert worst_of([Outcome.SLICED]) is Outcome.SLICED
+    assert Outcome.EMPTY not in {worst_of([Outcome.SLICED]), worst_of([Outcome.INCOMPLETE])}
+
+
+def test_empty_matches_partspecs_code_for_the_same_idea() -> None:
+    """3 is partspec's `empty`. Deliberate alignment, not a coincidence.
+
+    It is NOT in the org contract's section 6.2 table, which lists 0/1/2/4/64.
+    slicelab is the second member using it -- see D24 and the escalation.
+    """
+    assert exit_code_for(Outcome.EMPTY) == 3
