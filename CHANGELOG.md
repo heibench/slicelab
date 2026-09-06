@@ -24,6 +24,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   not asserted against the constant — two sibling members declare `64` and
   return `2`.
 - `render`, whose first token is always the outcome word.
+- `slicelab which` — discovery, launch-form fidelity, and engine identity. It
+  reports which engine build slicelab would talk to, how it would launch it, and
+  **whether that engine's exit status can be believed**. Exit 0 requires both an
+  engine and a launch form proved to report failure as failure; an installed
+  engine that cannot be driven honestly is exit 4, not 0.
+- The engine boundary: `subprocess` is confined to `slicelab/engine/launch.py`
+  and engine identifiers to `slicelab/adapters/`, both enforced by tests. The
+  second has a red state only because a second engine exists.
 - `empty` at exit **3**, for a run that completed and verified nothing because
   nothing was requested. A `slice.toml` with preset names and no overrides is the
   first file anyone writes, and under the previous table it exited `0` having

@@ -40,23 +40,37 @@ presented as a measurement.
 **A check whose red state you have not observed is not a check.** Break the thing
 it checks, watch it go red, put it back. Say in the pull request that you did.
 
-**Clear `__pycache__` between the break and the restore**, or the observation can
-lie to you. Python invalidates a `.pyc` by comparing the source's mtime and size
-against what the `.pyc` records, both at one-second granularity. A red-state edit
-that changes a single character — `return 3` to `return 0` — keeps the size
-identical, and if the restore lands in the same second as the broken run, the
-stale bytecode is reused. This happened here: a restored file reported the broken
-behaviour, and `inspect.getsource` showed the correct source while the interpreter
-ran the old bytecode, because `getsource` reads the file and the interpreter does
-not.
+**Clear `__pycache__` before every measurement**, or the observation can lie to
+you — in either direction.
+
+Python invalidates a `.pyc` by comparing the source's mtime and size against what
+the `.pyc` records, both at one-second granularity. A red-state edit that changes
+a single character — `return 3` to `return 0`, flipping a comparison, swapping a
+constant — keeps the size **identical**. If the next run lands in the same second,
+the stale bytecode is reused and you measure the previous state.
+
+**The dangerous direction is the false green.** Write the broken version, run
+within the same second, and the interpreter uses bytecode compiled from the
+*good* source: the break appears not to break anything, so you conclude the check
+does not cover the case and go looking for a better one. That is
+silence-reading-as-success landing inside the procedure we use to prove a check
+can fail. It has been reproduced deterministically on this estate.
+
+The false red is the same mechanism reversed: restore the good source inside the
+same second and the tree still reports broken. Both directions were observed here,
+the green one by a reviewer on a different repository within an hour of the red
+one being written up.
+
+What makes it hard to see: `inspect.getsource` shows the **correct** source while
+the interpreter runs the **old** bytecode, because `getsource` reads the file and
+the interpreter does not. Do not use it to confirm what is executing.
 
 ```sh
 find . -name __pycache__ -type d -exec rm -rf {} +
 ```
 
-The failure mode is the one this project exists to refuse, pointed at our own
-verification loop: a check that appeared to go red for a reason that was not the
-reason, and a restore that appeared to stay red when it was green.
+Run that between every break and every restore, not once at the end.
+
 
 **A skipped test is not a passing test.** If you add a `skipif` for a missing
 tool, make it possible for CI to demand that tool, and never gate a test module

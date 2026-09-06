@@ -14,19 +14,32 @@ Report them through
 Include what you did, what happened, what you expected, and the versions of this
 package and of the slicer involved.
 
-## Current attack surface: argv only
+## Current attack surface
 
-**slicelab implements no verb today.** It parses its own command line and
-nothing else: it spawns no process, opens no file, performs no network access,
-and reads no configuration. The package exports only `__version__`.
+**One verb is implemented: `slicelab which`.** It:
 
-The one input it accepts is `argv`, handled by the standard library's
-`argparse`. Any invocation naming no verb exits 64.
+- spawns slicer processes, always as an **argv list, never through a shell**, and
+  always with `stdin` connected to `/dev/null`
+- reads files: candidate executables (to digest them) and Flatpak deployment
+  directories
+- performs **no network access**, reads **no configuration file**, and writes
+  nothing
 
-This section is a status claim and is part of the gate (org AGENTS.md 2.5): the
-moment a verb reads a file or launches an engine, it is false, and the change
-that made it so is not finished until this is rewritten. It has been rewritten
-once already, when the CLI began parsing arguments.
+It does not yet read a `slice.toml`, slice a model, or write a lock.
+
+The inputs it accepts are its own `argv` and whatever the engines print. Engine
+output is decoded with `errors="replace"` and is never evaluated — only matched
+against a version pattern and printed.
+
+**Processes it will start.** `which` invokes discovered engines with `--help` and
+with one flag they are expected to reject. On a host where an untrusted binary is
+earlier on `PATH` than the real slicer, that binary is what gets executed —
+ordinary `PATH` semantics, but worth stating for a tool whose job is finding
+executables.
+
+This section is a status claim and part of the gate (org AGENTS.md 2.5). It has
+been rewritten twice: when the CLI began parsing arguments, and when `which`
+began launching engines.
 
 ## Intended posture, once there is code
 
