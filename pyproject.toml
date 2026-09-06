@@ -35,6 +35,9 @@ classifiers = [
 # argparse are stdlib on 3.11+. Adding one is org AGENTS.md section 10.
 dependencies = []
 
+[project.scripts]
+slicelab = "slicelab.cli:_entrypoint"
+
 [project.urls]
 Homepage = "https://github.com/heibench/slicelab"
 Repository = "https://github.com/heibench/slicelab"

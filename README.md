@@ -5,9 +5,11 @@ small configuration delta, slice with a real engine, and get back G-code plus a
 lock file recording exactly what that engine resolved — or a non-zero exit
 saying why slicelab will not stand behind the result.
 
-> **Status: pre-alpha. Nothing is implemented.** This repository currently holds
-> the contract, the numbered decisions, and the research that produced them. No
-> command runs yet. See [`docs/DECISIONS.md`](docs/DECISIONS.md) and
+> **Status: pre-alpha. The exit contract is implemented; no verb is.**
+> `slicelab --version` and `--help` work; anything else exits 64. Nothing spawns
+> a process, reads a file, or talks to a slicer yet. The example below is what
+> the tool is *for*, not what it currently does. See
+> [`docs/DECISIONS.md`](docs/DECISIONS.md) and
 > [`docs/RESEARCH.md`](docs/RESEARCH.md).
 
 ## The problem

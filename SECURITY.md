@@ -14,13 +14,19 @@ Report them through
 Include what you did, what happened, what you expected, and the versions of this
 package and of the slicer involved.
 
-## Current attack surface: none
+## Current attack surface: argv only
 
-**slicelab implements no verb today.** The package exports `__version__` and
-nothing else, spawns no process, reads no file, and parses no input. There is no
-runtime attack surface to report against. This section is a status claim and is
-part of the gate (org AGENTS.md 2.5): the moment a verb runs, it is false, and
-the change that made it run is not finished until this is rewritten.
+**slicelab implements no verb today.** It parses its own command line and
+nothing else: it spawns no process, opens no file, performs no network access,
+and reads no configuration. The package exports only `__version__`.
+
+The one input it accepts is `argv`, handled by the standard library's
+`argparse`. Any invocation naming no verb exits 64.
+
+This section is a status claim and is part of the gate (org AGENTS.md 2.5): the
+moment a verb reads a file or launches an engine, it is false, and the change
+that made it so is not finished until this is rewritten. It has been rewritten
+once already, when the CLI began parsing arguments.
 
 ## Intended posture, once there is code
 

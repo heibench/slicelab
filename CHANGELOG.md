@@ -9,6 +9,22 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- The outcome vocabulary and the exit map, before any engine exists to muddy
+  them. `Outcome` is `sliced` / `refused` / `incomplete` / `error`, mapped to
+  the org contract's settled `0` / `1` / `2` / `4`, with `64` for usage.
+  `exit_code_for` is an exhaustive `match` ending in `assert_never`, so adding
+  an outcome without an exit code is a **type error** rather than a runtime
+  surprise — a dict with a default would hand a new outcome a plausible number.
+- `KeyStatus` and the outcome each status forces, plus the precedence rule:
+  `refused` outranks `incomplete`, so a finding survives a partial inability to
+  look.
+- A CLI carrying the one thing worth carrying before there are verbs: argparse's
+  usage exit is remapped from `2` to `64`, because `2` means *could not tell*
+  and a typo is not an indeterminate result. Measured against a real process,
+  not asserted against the constant — two sibling members declare `64` and
+  return `2`.
+- `render`, whose first token is always the outcome word.
+
 - The repository, its contract, and the research that produced them. No verb is
   implemented: `docs/DECISIONS.md` carries D1–D23, `docs/RESEARCH.md` separates
   what was empirically established from what was refuted and what remains
