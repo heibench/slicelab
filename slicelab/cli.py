@@ -8,6 +8,7 @@ wrong rather than seven.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 
@@ -15,6 +16,8 @@ from slicelab import __version__
 from slicelab.adapters import REGISTRY, spec_for
 from slicelab.engine.discover import discover
 from slicelab.engine.identity import identify
+from slicelab.engine.launch import run
+from slicelab.presets import adjudicate
 from slicelab.report import render
 from slicelab.status import EXIT_USAGE, Outcome, exit_code_for
 
@@ -48,6 +51,16 @@ def _parser() -> argparse.ArgumentParser:
         choices=sorted(REGISTRY),
         help="engine to look for; omit to report on every engine slicelab knows",
     )
+
+    presets = verbs.add_parser(
+        "presets",
+        help="list the printer presets an engine knows about, as JSON on stdout",
+    )
+    presets.add_argument("engine", choices=sorted(REGISTRY))
+    presets.add_argument(
+        "--datadir",
+        help="engine configuration directory to query instead of the default",
+    )
     return parser
 
 
@@ -77,6 +90,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.verb == "which":
         return _which(args.engine)
+
+    if args.verb == "presets":
+        return _presets(args.engine, args.datadir)
 
     # Valid arguments naming no verb. A usage error, not an environment fault
     # and not a verdict: slicelab was asked nothing it knows how to do.
@@ -146,3 +162,70 @@ def _entrypoint() -> int:  # pragma: no cover - thin console-script shim
 
 if __name__ == "__main__":  # pragma: no cover - exercised via __main__.py
     raise SystemExit(main())
+
+
+def _presets(engine: str, datadir: str | None) -> int:
+    """Enumerate an engine's printer presets, adjudicated on the artifact.
+
+    Exit 0 requires JSON that parsed, is shaped as promised, and is **not
+    empty**. The engine's own exit code is not an input: PrusaSlicer returns 1
+    on complete success, the same code it returns for "not found"
+    (``notes/evidence.md`` V5, D17).
+
+    An engine with no enumeration verb is exit 2 -- slicelab could not tell you
+    what presets exist. It is not exit 1: nothing about the request was wrong,
+    and it is not exit 0 with an empty list, which would report our ignorance as
+    the engine's inventory.
+    """
+    spec = spec_for(engine)
+    if spec is None:  # pragma: no cover - argparse constrains the choices
+        print(render(Outcome.ERROR, f"unknown engine {engine!r}"), file=sys.stderr)
+        return exit_code_for(Outcome.ERROR)
+
+    query = spec.preset_query
+    if query is None:
+        print(
+            render(
+                Outcome.INCOMPLETE,
+                f"{engine} has no preset-enumeration verb",
+                [
+                    "slicelab will not present its own reading of the engine's "
+                    "profile directories as the engine's answer",
+                    "reason = engine_has_no_preset_query",
+                ],
+            ),
+            file=sys.stderr,
+        )
+        return exit_code_for(Outcome.INCOMPLETE)
+
+    found = discover(spec)
+    if found.form is None:
+        print(
+            render(Outcome.ERROR, f"{engine}: {found.fidelity.value}", [found.reason]),
+            file=sys.stderr,
+        )
+        return exit_code_for(Outcome.ERROR)
+
+    argv = [*found.form.argv_prefix, *query.argv]
+    if datadir:
+        argv += ["--datadir", datadir]
+    completed = run(argv)
+
+    verdict = adjudicate(completed.stdout, query.root_key)
+    if not verdict.ok:
+        detail = [
+            verdict.reason,
+            f"engine exit status was {completed.exit_status}, which carries no "
+            "information for this verb (discovery_exit_code_uninformative = true)",
+        ]
+        if completed.stderr.strip():
+            detail.append(f"engine stderr: {completed.stderr.strip().splitlines()[0][:160]}")
+        print(
+            render(Outcome.INCOMPLETE, f"{engine}: {verdict.verdict.value}", detail),
+            file=sys.stderr,
+        )
+        return exit_code_for(Outcome.INCOMPLETE)
+
+    json.dump({query.root_key: verdict.entries}, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    return 0

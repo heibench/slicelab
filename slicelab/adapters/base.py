@@ -5,7 +5,22 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-__all__ = ["EngineSpec"]
+__all__ = ["EngineSpec", "PresetQuery"]
+
+
+@dataclass(frozen=True)
+class PresetQuery:
+    """How to ask an engine what printer presets it knows about.
+
+    ``None`` on a spec is a real answer, not a gap to fill in later: OrcaSlicer
+    2.4.2 has no preset-enumeration verb at all. Inventing one -- by reading its
+    profile directories ourselves and calling the result "the engine's presets"
+    -- would be the org contract's 2.3 failure, substituting a plausible answer
+    for one the engine never gave.
+    """
+
+    argv: tuple[str, ...]
+    root_key: str
 
 
 @dataclass(frozen=True)
@@ -23,6 +38,7 @@ class EngineSpec:
     posix_exec: str
     windows_exec: str
     flatpak_app_id: str | None
+    preset_query: PresetQuery | None = None
 
     @property
     def exec_name(self) -> str:
