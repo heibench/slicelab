@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Engine-derived data is NEVER committed -- see docs/DECISIONS.md D11.
+# slicelab ships zero engine-derived bytes; characterisation output is
+# generated on the user's machine into XDG cache and stays there.
+/characterisation/
+*.characterisation.json
+
+# Generated locks and slicer output from local experiments.
+# A real project's slice.lock IS committed -- these are ours, from scratch runs.
+/scratch/
+*.gcode
+*.bgcode
+slice.lock
+
+# Engine litter. OrcaSlicer writes 00000.log into the process CWD on a failing
+# run (D20); it is swept and recorded, but a stray one must never be committed.
+00000.log
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

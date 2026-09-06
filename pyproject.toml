@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "slicelab"
+version = "0.1.0.dev0"
+description = "Reproducible control plane over the Slic3r-descended slicers: drive one, and record exactly what it resolved"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Cameron Brooks" }]
+keywords = [
+    "prusaslicer",
+    "orcaslicer",
+    "slicer",
+    "gcode",
+    "3d-printing",
+    "fff",
+    "reproducibility",
+    "lockfile",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Manufacturing",
+    "Topic :: Scientific/Engineering",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+# Zero runtime dependencies, by design. tomllib, hashlib, subprocess and
+# argparse are stdlib on 3.11+. Adding one is org AGENTS.md section 10.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/heibench/slicelab"
+Repository = "https://github.com/heibench/slicelab"
+Issues = "https://github.com/heibench/slicelab/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.11",
+    "mypy>=1.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["slicelab"]
+
+# -- pytest -------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -ra: report the reason for every skip. A run that withholds the engine tests
+# has to say so in the log, or the skip is indistinguishable from a pass.
+# (org AGENTS.md 2.4 -- a skipped test is not a passing test)
+addopts = ["-ra"]
+
+# -- ruff ---------------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+# -- mypy ---------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
