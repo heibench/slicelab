@@ -71,11 +71,12 @@ def candidate_forms(spec: EngineSpec) -> list[LaunchForm]:
     """
     forms: list[LaunchForm] = []
 
-    on_path = shutil.which(spec.exec_name)
-    if on_path:
-        forms.append(
-            LaunchForm(LaunchKind.PATH, [on_path], f"{spec.exec_name} on PATH at {on_path}")
-        )
+    for candidate in spec.exec_names:
+        on_path = shutil.which(candidate)
+        if on_path:
+            forms.append(
+                LaunchForm(LaunchKind.PATH, [on_path], f"{candidate} on PATH at {on_path}")
+            )
 
     app_id = spec.flatpak_app_id
     if app_id and shutil.which("flatpak") and flatpak.is_installed(app_id):
@@ -126,7 +127,10 @@ def discover(spec: EngineSpec, *, timeout: float = PROBE_TIMEOUT_S) -> Discovery
             engine=spec.name,
             form=None,
             fidelity=ExitFidelity.ABSENT,
-            reason=f"no {spec.exec_name} on PATH and no Flatpak {spec.flatpak_app_id} installed",
+            reason=(
+                f"none of {list(spec.exec_names)} on PATH, and no Flatpak "
+                f"{spec.flatpak_app_id} installed"
+            ),
         )
 
     rejected: list[tuple[LaunchForm, str]] = []

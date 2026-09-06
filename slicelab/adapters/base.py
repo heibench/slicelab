@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+import sys
 from dataclasses import dataclass
 
 __all__ = ["EngineSpec", "PresetQuery"]
@@ -38,8 +38,31 @@ class EngineSpec:
     posix_exec: str
     windows_exec: str
     flatpak_app_id: str | None
+    macos_exec: tuple[str, ...] = ()
     preset_query: PresetQuery | None = None
 
     @property
+    def exec_names(self) -> tuple[str, ...]:
+        """Candidate executable names on this platform, in preference order.
+
+        A tuple rather than one name, because macOS ships the engine inside an
+        .app bundle whose binary is named after the application, not after the
+        command. The Homebrew cask installs /Applications/PrusaSlicer.app, and
+        the binary in its Contents/MacOS is NOT `prusa-slicer` -- discovery
+        looking only for the POSIX name reported the engine absent on a runner
+        that had just installed it (engine matrix, 2026-09-06).
+
+        Several candidates rather than one per platform, because which name a
+        bundle uses is a packaging decision that can change, and trying two
+        cheap `shutil.which` calls is better than being confidently wrong.
+        """
+        if sys.platform == "win32":
+            return (self.windows_exec,)
+        if sys.platform == "darwin" and self.macos_exec:
+            return (*self.macos_exec, self.posix_exec)
+        return (self.posix_exec,)
+
+    @property
     def exec_name(self) -> str:
-        return self.windows_exec if os.name == "nt" else self.posix_exec
+        """The primary candidate, for messages that name one thing."""
+        return self.exec_names[0]

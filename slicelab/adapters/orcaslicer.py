@@ -9,6 +9,7 @@ SPEC = EngineSpec(
     posix_exec="orca-slicer",
     windows_exec="orca-slicer.exe",
     flatpak_app_id="com.orcaslicer.OrcaSlicer",
+    macos_exec=("OrcaSlicer", "orca-slicer"),
     # OrcaSlicer 2.4.2 has NO preset-enumeration verb. Measured against its
     # --help: it has --load-settings and --load-filaments, which CONSUME
     # profile files, and nothing that reports which presets exist.

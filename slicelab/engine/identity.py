@@ -20,9 +20,9 @@ from slicelab.engine.launch import run
 
 __all__ = ["Identity", "identify"]
 
-#: Both installed engines print ``Name-VERSION`` as the first line of --help.
-#: PrusaSlicer has NO --version flag -- 2.9.6 answers "Unknown option
-#: --version" -- and OrcaSlicer answers "Invalid option --version". --help is
+#: Both installed engines print ``Name-VERSION`` somewhere near the top of
+#: ``--help``. Neither supports a ``--version`` flag: one answers "Unknown
+#: option --version" and the other "Invalid option --version", so ``--help`` is
 #: the only place either states its version.
 _VERSION_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-(\d+\.\d+(?:\.\d+)?)")
 
@@ -58,11 +58,7 @@ def identify(
     if discovery.form is None:
         return Identity(spec.name, "absent", None, None, None, None)
 
-    banner = _read_banner(discovery, timeout=timeout)
-    version = None
-    if banner:
-        match = _VERSION_RE.match(banner.strip())
-        version = match.group(1) if match else None
+    banner, version = _read_banner(discovery, timeout=timeout)
 
     digest, digest_of = _digest(spec, discovery)
     return Identity(
@@ -75,16 +71,44 @@ def identify(
     )
 
 
-def _read_banner(discovery: Discovery, *, timeout: float) -> str | None:
+#: How far into --help to look for a version line before giving up. The banner
+#: is near the top on every engine measured; a large window would start
+#: matching option help text that happens to contain a version number.
+_BANNER_WINDOW = 10
+
+
+def _read_banner(discovery: Discovery, *, timeout: float) -> tuple[str | None, str | None]:
+    """Return (banner, version), either of which may be None.
+
+    **The version is not always the first line.** The native Windows console
+    build opens its ``--help`` with ``System OpenGL library successfully
+    released`` and states its version below that; taking the first non-empty
+    line reported the version as unreadable on an engine that had just told us
+    (engine matrix, 2026-09-06). The Linux Flatpak has no such preamble, which
+    is why one host was not enough to find this.
+
+    So: scan a small window for a line that looks like a version, and fall back
+    to the first non-empty line as the banner. A banner with no parseable
+    version leaves ``version`` None and ``Identity.exact`` False -- a version we
+    could not read is never reported as one we could.
+    """
     assert discovery.form is not None
     completed = run([*discovery.form.argv_prefix, "--help"], timeout=timeout)
     if completed.timed_out or completed.died_by_signal:
-        return None
+        return None, None
+
+    first: str | None = None
     for stream in (completed.stdout, completed.stderr):
-        for line in stream.splitlines():
-            if line.strip():
-                return line.strip()
-    return None
+        for line in stream.splitlines()[:_BANNER_WINDOW]:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if first is None:
+                first = stripped
+            match = _VERSION_RE.match(stripped)
+            if match:
+                return stripped, match.group(1)
+    return first, None
 
 
 def _digest(spec: EngineSpec, discovery: Discovery) -> tuple[str | None, str | None]:
