@@ -312,29 +312,39 @@ def test_a_symlink_out_of_the_home_directory_is_not_offered(
 
 
 def test_a_relative_xdg_cache_home_is_ignored_rather_than_resolved_against_cwd(
-    fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The basedir spec says a relative value MUST be ignored. It was honoured.
 
     `mkdir(parents=True)` resolved it against the process working directory, so
     `XDG_CACHE_HOME=mycache slicelab which orcaslicer` created
     `./mycache/slicelab/engine-cwd` in the directory the user was standing in
-    and ran the engine inside it -- the exact litter this whole mechanism
-    exists to prevent, authored by slicelab rather than by the engine.
+    and ran the engine inside it -- the exact litter this mechanism exists to
+    prevent, authored by slicelab rather than by the engine.
+
+    **The working directory has to be inside the home directory**, and the
+    assertion has to go through `_scratch()`. The first version of this test
+    stood outside the fake home and asked `_scratch_roots()`: the containment
+    filter then rejected the relative candidate on its own, `is_absolute()` was
+    never exercised, and `_scratch_roots` never calls `mkdir` so the second
+    assertion could not fail either. Deleting the guard left all sixteen tests
+    green -- while a user standing anywhere in their own home directory, which
+    is the ordinary case, got `mycache/` created next to them again.
     """
-    cwd = tmp_path / "cwd"
+    cwd = fake_home / "projects"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
     monkeypatch.setenv("XDG_CACHE_HOME", "mycache")
 
-    roots = _scratch_roots()
+    with _scratch() as scratch:
+        used = Path(scratch).resolve()
 
-    assert roots, "the ladder offered nothing at all"
-    assert all(r.is_absolute() for r in roots)
     assert not list(cwd.iterdir()), (
         f"a relative XDG_CACHE_HOME reached the working directory: "
         f"{sorted(p.name for p in cwd.iterdir())}"
     )
+    assert cwd not in used.parents, f"the engine would have run under the caller's cwd: {used}"
+    assert fake_home in used.parents
 
 
 def test_a_relative_home_offers_nothing_rather_than_the_working_directory(
