@@ -115,6 +115,7 @@ measures rather than assumes.
 | `0` | `sliced` — artifact produced and promoted, every requested key applied |
 | `1` | `refused` — slicelab established the intent was not honoured |
 | `2` | `incomplete` — slicelab ran but cannot stand behind the result |
+| `3` | `empty` — the run completed and verified nothing, because nothing was requested |
 | `4` | `error` — environment fault; **not** a verdict on your configuration |
 | `64` | usage — slicelab's own argv |
 

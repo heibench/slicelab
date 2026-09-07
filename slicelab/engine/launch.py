@@ -1,7 +1,7 @@
 """The only module in slicelab permitted to import ``subprocess``.
 
 Enforced by ``tests/test_boundaries.py``. Everything an engine invocation needs
-to be honest about is decided here, once, rather than at seven call sites.
+to be honest about is decided here, once, rather than at every call site.
 """
 
 from __future__ import annotations

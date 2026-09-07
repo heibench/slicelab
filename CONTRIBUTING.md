@@ -17,7 +17,7 @@ This repository is still mostly documents. Two verbs are implemented --
 `slicelab which` and `slicelab presets` -- and the design was expensive to
 arrive at, so the documents remain the larger half.
 
-- [`docs/DECISIONS.md`](docs/DECISIONS.md) — numbered. **Do not relitigate a
+- [`docs/DECISIONS.md`](docs/DECISIONS.md) — **Do not relitigate a
   numbered decision.** If one is wrong, add a superseding entry saying why.
 - [`docs/RESEARCH.md`](docs/RESEARCH.md) — what was established with a command,
   what was refuted, and what is still unverified. Read the third list before

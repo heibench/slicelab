@@ -431,7 +431,7 @@ own correction. `engine.yml` had already written the reason down — *"a Flatpak
 is a materially different execution environment — sandboxed filesystem, its own
 /tmp, translated paths"* — which is the cost of a fact living in a CI comment
 rather than in the code it constrains. Scratch lives somewhere inside the home
-directory — the ladder is set out below — with `~/.cache` as the ordinary answer,
+directory — the ladder is set out above — with `~/.cache` as the ordinary answer,
 where D11 already puts slicelab's generated data.
 
 **The stand-in tests could not see any of that.** `tests/test_boundaries.py`
