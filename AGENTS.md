@@ -28,12 +28,13 @@ slices, reads a `slice.toml`, or writes a lock.
 
 Treat this section as code: the moment another verb works, this paragraph is
 false and the change that made it work is not finished until it is corrected
-(org AGENTS.md 2.5). It has been corrected twice already — once when the exit map
-landed, once when `which` did.
+(org AGENTS.md 2.5). It has been corrected once when the exit map landed, once
+when `which` did, and once when `presets` did — stated as causes rather than as
+a tally, because the tally in `SECURITY.md` was stale three revisions running.
 
 ## Start here
 
-1. `docs/DECISIONS.md` — D1–D23, numbered, with the reasoning that produced each.
+1. `docs/DECISIONS.md` — numbered, with the reasoning that produced each.
    Do not relitigate a numbered decision; if it is wrong, add a superseding entry.
 2. `docs/RESEARCH.md` — what was empirically established, what was refuted, and
    what remains unverified. Read the third list before planning anything.

@@ -430,11 +430,9 @@ That is the same shape of over-claim this entry is about, surviving inside its
 own correction. `engine.yml` had already written the reason down — *"a Flatpak
 is a materially different execution environment — sandboxed filesystem, its own
 /tmp, translated paths"* — which is the cost of a fact living in a CI comment
-rather than in the code it constrains. Scratch lives under `XDG_CACHE_HOME` when
-that is absolute and inside the home directory, and otherwise under `~/.cache`,
-where D11 already puts slicelab's generated data. An `XDG_CACHE_HOME` outside
-the home directory is ignored rather than honoured, so a host with
-`XDG_CACHE_HOME=/var/cache/me` gets `~/.cache`.
+rather than in the code it constrains. Scratch lives somewhere inside the home
+directory — the ladder is set out below — with `~/.cache` as the ordinary answer,
+where D11 already puts slicelab's generated data.
 
 **The stand-in tests could not see any of that.** `tests/test_boundaries.py`
 pins the guarantee with a `sys.executable` child, which honours `cwd` by

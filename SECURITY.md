@@ -97,11 +97,20 @@ adapter's enumeration flag. On a host where an untrusted binary is earlier on
 semantics, but worth stating for a tool whose job is finding executables.
 
 This section is a status claim and part of the gate (org AGENTS.md 2.5). It has
-been rewritten five times: when the CLI began parsing arguments, when `which`
-began launching engines, when a measurement showed the "writes nothing" sentence
-had been false since `which` shipped, when the fix for *that* turned out to
-relocate the problem rather than remove it, and when review found four further
-routes back into it.
+been rewritten every time one of its own sentences turned out to be false: when
+the CLI began parsing arguments; when `which` began launching engines; when a
+measurement showed the "writes nothing" sentence had been false since `which`
+shipped; when the fix for *that* relocated the problem rather than removing it;
+when review found further routes back into it; and when the correction for
+**those** was found to have left the same claim standing twenty lines further
+down.
+
+There is deliberately no count here any more. This paragraph carried one, and it
+was stale three revisions running — including in the commit written to fix a
+stale self-referential count. An integer that has to be incremented by hand is a
+claim like any other, and this one kept being the false one. The causes are the
+record; adding a cause is the same action as rewriting the section, which is
+what the counter kept failing to be.
 
 ## Intended posture, once there is code
 
