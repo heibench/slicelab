@@ -12,6 +12,7 @@ the repository contains, not about what happens to be imported at runtime.
 from __future__ import annotations
 
 import ast
+import os
 import sys
 from pathlib import Path
 
@@ -377,6 +378,11 @@ def test_an_unusable_cache_directory_falls_back_inside_the_home_directory(
     assert fake_home in used.parents, f"scratch fell outside the home directory: {used}"
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="chmod cannot make a directory unwritable on Windows, so the precondition "
+    "is unbuildable; the descent itself is not POSIX-specific",
+)
 def test_a_root_that_exists_but_cannot_be_written_is_descended_past(
     fake_home: Path,
 ) -> None:
@@ -385,6 +391,12 @@ def test_a_root_that_exists_but_cannot_be_written_is_descended_past(
     It returns success on a directory that is already there and unwritable, so
     a ladder that only called `mkdir` settled on a root it could not use and
     let the `PermissionError` escape from the launch instead of descending.
+
+    Skipped on Windows, where `os.chmod` only toggles a file's read-only flag
+    and leaves directories writable -- so the unwritable root cannot be
+    created, the ladder correctly uses it, and the assertion below fails on a
+    precondition that was never established. CI found that; this change was
+    verified only on Linux.
     """
     blocked = fake_home / ".cache" / "slicelab" / "engine-cwd"
     blocked.mkdir(parents=True)
