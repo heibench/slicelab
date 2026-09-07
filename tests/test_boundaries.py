@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from slicelab.adapters import EngineSpec
+from slicelab.engine.discover import discover
 from slicelab.engine.launch import run
 
 PACKAGE = Path(__file__).resolve().parent.parent / "slicelab"
@@ -137,3 +139,71 @@ def test_a_caller_that_owns_a_directory_still_gets_the_output_there(tmp_path: Pa
 
     assert completed.exit_status == 0, f"the stand-in did not run: {completed}"
     assert (tmp_path / "artifact.txt").read_text() == "kept"
+
+
+def _fingerprint(directory: Path) -> dict[str, tuple[int, int]]:
+    """Name -> (mtime_ns, size) for the visible entries of a directory.
+
+    Names alone are not enough, and finding that out cost a round: the
+    session-scoped engine fixture runs discovery, which launches the engine,
+    which -- while the defect was present -- had *already* written
+    ``$HOME/result.json`` before the test body took its "before" snapshot. The
+    test body then merely overwrote it, and a set difference of names reported
+    nothing. The test passed against the exact build it was written to catch.
+
+    Dot-entries are skipped. `~/.cache` and `~/.config` churn constantly for
+    reasons that have nothing to do with slicelab, and engine litter --
+    ``result.json``, ``00000.log`` -- is never hidden.
+    """
+    seen = {}
+    for entry in directory.iterdir():
+        if entry.name.startswith("."):
+            continue
+        try:
+            stat = entry.stat()
+        except OSError:  # vanished between listing and stat; not ours
+            continue
+        seen[entry.name] = (stat.st_mtime_ns, stat.st_size)
+    return seen
+
+
+def test_no_real_engine_writes_outside_the_directory_it_was_given(
+    usable_engines: list[EngineSpec], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guarantee the two tests above cannot see, checked against real engines.
+
+    A `sys.executable` stand-in honours `cwd` by construction. A Flatpak does
+    not: its sandbox has its own `/tmp`, so a host `/tmp` cwd is dropped and the
+    process starts in `$HOME` instead. The first version of the cwd fix used
+    `tempfile`'s default and therefore moved the litter from the caller's
+    directory to the user's home directory, while both stand-in tests stayed
+    green -- the founding rule inverted, on the very change that was meant to
+    honour it.
+
+    So this launches every believable engine on the host and watches two
+    directories, not one. It is engine-gated: `SLICELAB_REQUIRE_ENGINE=1` turns
+    a missing engine into a failure, which is how `engine.yml`'s Flatpak job
+    makes this bite.
+    """
+    monkeypatch.chdir(tmp_path)
+    home = Path.home()
+    before = _fingerprint(home)
+
+    launched = 0
+    for spec in usable_engines:
+        found = discover(spec)
+        assert found.form is not None, f"{spec.name} was reported usable but has no launch form"
+        completed = run([*found.form.argv_prefix, "--help"])
+        assert completed.exit_status is not None, f"{spec.name}: {completed}"
+        launched += 1
+    assert launched, "no engine was launched, so this test established nothing"
+
+    assert not list(tmp_path.iterdir()), (
+        "an engine wrote into the caller's working directory: "
+        f"{sorted(p.name for p in tmp_path.iterdir())}"
+    )
+    after = _fingerprint(home)
+    touched = sorted(name for name, mark in after.items() if before.get(name) != mark)
+    assert not touched, (
+        f"an engine wrote into $HOME instead of the directory it was given: {touched}"
+    )

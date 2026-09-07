@@ -53,3 +53,29 @@ def any_engine() -> EngineSpec:
     if _require():
         pytest.fail(f"{REQUIRE_ENV} is set but {message}")
     pytest.skip(message)
+
+
+@pytest.fixture(scope="session")
+def usable_engines() -> list[EngineSpec]:
+    """*Every* engine whose exit status can be believed, or skip.
+
+    ``any_engine`` returns the first one that works, which is the right fixture
+    for "does this verb behave". It is the wrong one for "does no engine
+    misbehave": the litter that motivated the cwd guarantee comes from
+    OrcaSlicer, and a host where PrusaSlicer is found first would pass such a
+    test having never launched the engine that writes the file.
+    """
+    usable = []
+    reasons = []
+    for spec in REGISTRY.values():
+        ok, why = _usable(spec)
+        if ok:
+            usable.append(spec)
+        else:
+            reasons.append(why)
+    if usable:
+        return usable
+    message = "no usable engine found: " + "; ".join(reasons)
+    if _require():
+        pytest.fail(f"{REQUIRE_ENV} is set but {message}")
+    pytest.skip(message)
