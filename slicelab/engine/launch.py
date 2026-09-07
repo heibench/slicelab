@@ -101,27 +101,58 @@ def _scratch_root() -> Path | None:
 
     A Flatpak sandbox has its **own** ``/tmp``, so a host ``/tmp`` path cannot
     be translated into it. ``bwrap`` does not refuse: it drops the request and
-    starts the process in ``$HOME``. Measured against the installed apps ---
-    ``flatpak run --command=sh <app> -c pwd`` reports ``/home/cam`` for a cwd
-    of ``/tmp/tmp.GRYOi6pQ0O``, and reports the path verbatim for a cwd of
-    ``~/.cache/...``. ``engine.yml`` had already written down the reason: "a
-    Flatpak is a materially different execution environment -- sandboxed
-    filesystem, its own /tmp, translated paths."
+    starts the process in ``$HOME``. Measured against both installed apps by
+    writing a file from inside the sandbox and looking for it from the host ---
+    a cwd under ``~/.cache`` is honoured and the file appears there; a cwd of
+    ``/tmp/tmp.GRYOi6pQ0O`` puts the process in ``/home/cam`` instead.
+    ``engine.yml`` had already written the reason down: "a Flatpak is a
+    materially different execution environment -- sandboxed filesystem, its own
+    /tmp, translated paths."
 
-    So scratch lives under ``XDG_CACHE_HOME`` (D11 already puts slicelab's
-    generated data there), which is inside the home directory every Flatpak
-    engine can see. Returning ``None`` hands ``tempfile`` its default, which is
-    correct for a host with no usable home: a native engine honours ``/tmp``
-    fine, and a Flatpak on such a host has bigger problems than litter.
+    So every candidate here is **inside the home directory**, which is the part
+    a Flatpak can see. The ladder descends only as far as it must:
+
+    1. ``XDG_CACHE_HOME``, but only when it is **absolute**. The basedir spec
+       says a relative value "MUST be ignored", and honouring one was not
+       harmless: ``mkdir(parents=True)`` resolved it against the process cwd
+       and slicelab created ``./mycache/slicelab/engine-cwd`` in the directory
+       the user was standing in. That is the litter this function exists to
+       prevent, with slicelab as the author rather than the engine.
+    2. ``~/.cache``, the spec's own default.
+    3. The home directory itself, if neither of those can be created --- one
+       stray file at ``~/.cache/slicelab`` is enough, and so is ``EACCES`` or a
+       full disk. The scratch directory is still made and removed, so nothing
+       persists; it is only less tidy.
+    4. ``None``, handing ``tempfile`` its default, only when the home directory
+       is unusable too.
+
+    Step 4 is a real degradation and is named as one: under a Flatpak it puts
+    the litter back in ``$HOME``. It is the last rung rather than the first
+    because a host with no writable home breaks the engine long before it
+    breaks this, and there is no better place left to point at. Every rung
+    above it was previously step 4: ``except OSError: return None`` sent an
+    ordinary stray file at ``~/.cache/slicelab`` straight to ``/tmp``, and
+    ``slicelab which orcaslicer`` wrote into ``$HOME`` again at exit 0.
     """
     base = os.environ.get("XDG_CACHE_HOME") or ""
-    root = Path(base) if base else Path.home() / ".cache"
-    scratch = root / "slicelab" / "engine-cwd"
+    candidates = []
+    # Relative values are ignored, per the spec -- not resolved against cwd.
+    if base and Path(base).is_absolute():
+        candidates.append(Path(base) / "slicelab" / "engine-cwd")
     try:
-        scratch.mkdir(parents=True, exist_ok=True)
-    except OSError:
+        home = Path.home()
+    except (OSError, RuntimeError):  # no home directory to resolve at all
         return None
-    return scratch
+    candidates.append(home / ".cache" / "slicelab" / "engine-cwd")
+    candidates.append(home)
+
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        return candidate
+    return None
 
 
 def _spawn(argv: list[str], cwd: Path, timeout: float) -> Completed:

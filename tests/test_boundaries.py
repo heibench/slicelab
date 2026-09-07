@@ -19,7 +19,7 @@ import pytest
 
 from slicelab.adapters import EngineSpec
 from slicelab.engine.discover import discover
-from slicelab.engine.launch import run
+from slicelab.engine.launch import _scratch_root, run
 
 PACKAGE = Path(__file__).resolve().parent.parent / "slicelab"
 
@@ -160,6 +160,13 @@ def _fingerprint(directory: Path) -> dict[str, tuple[int, int]]:
         if entry.name.startswith("."):
             continue
         try:
+            if not entry.is_file():
+                # Directories are deliberately skipped: a directory's mtime
+                # bumps when anything is added inside it, so a download landing
+                # mid-run would report `$HOME/Downloads` as engine litter and
+                # name an engine for something no engine did. Engine litter is
+                # a regular file at the top level, which is still caught.
+                continue
             stat = entry.stat()
         except OSError:  # vanished between listing and stat; not ours
             continue
@@ -189,21 +196,85 @@ def test_no_real_engine_writes_outside_the_directory_it_was_given(
     home = Path.home()
     before = _fingerprint(home)
 
-    launched = 0
+    launched = []
     for spec in usable_engines:
         found = discover(spec)
         assert found.form is not None, f"{spec.name} was reported usable but has no launch form"
         completed = run([*found.form.argv_prefix, "--help"])
         assert completed.exit_status is not None, f"{spec.name}: {completed}"
-        launched += 1
+        launched.append(f"{spec.name} via {found.form.description}")
+    # Named, not counted. Only OrcaSlicer litters, and only its Flatpak form is
+    # sandbox-translated -- so a green here means very different things on the
+    # Flatpak runner and on the macOS one, and a reader deserves to see which
+    # without going to the workflow file to find out.
     assert launched, "no engine was launched, so this test established nothing"
+    proof = "; ".join(launched)
 
     assert not list(tmp_path.iterdir()), (
-        "an engine wrote into the caller's working directory: "
-        f"{sorted(p.name for p in tmp_path.iterdir())}"
+        f"an engine wrote into the caller's working directory: "
+        f"{sorted(p.name for p in tmp_path.iterdir())} -- launched {proof}"
     )
     after = _fingerprint(home)
     touched = sorted(name for name, mark in after.items() if before.get(name) != mark)
     assert not touched, (
-        f"an engine wrote into $HOME instead of the directory it was given: {touched}"
+        f"an engine wrote into $HOME instead of the directory it was given: "
+        f"{touched} -- launched {proof}"
+    )
+
+
+def test_an_absolute_xdg_cache_home_is_where_scratch_goes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    assert _scratch_root() == tmp_path / "slicelab" / "engine-cwd"
+
+
+def test_a_relative_xdg_cache_home_is_ignored_rather_than_resolved_against_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The basedir spec says a relative value MUST be ignored. It was honoured.
+
+    `mkdir(parents=True)` resolved it against the process working directory, so
+    `XDG_CACHE_HOME=mycache slicelab which orcaslicer` created
+    `./mycache/slicelab/engine-cwd` in the directory the user was standing in
+    and ran the engine inside it -- the exact litter this whole mechanism
+    exists to prevent, authored by slicelab rather than by the engine.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_CACHE_HOME", "mycache")
+
+    root = _scratch_root()
+
+    assert root is not None
+    assert root.is_absolute(), f"a relative XDG_CACHE_HOME was honoured: {root}"
+    assert not list(tmp_path.iterdir()), (
+        "a relative XDG_CACHE_HOME was resolved against the working directory: "
+        f"{sorted(p.name for p in tmp_path.iterdir())}"
+    )
+
+
+def test_an_unusable_cache_directory_falls_back_somewhere_the_sandbox_can_see(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback must stay inside the home directory, not drop to /tmp.
+
+    `except OSError: return None` handed `tempfile` its default, which under a
+    Flatpak means the engine starts in `$HOME` -- so an ordinary stray file at
+    `~/.cache/slicelab` silently reinstated the defect, at exit 0, on a host
+    whose home and whose Flatpak were both perfectly healthy. Measured before
+    the fix: `$HOME/result.json`, 180 bytes, from a clean run.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    # A plain file exactly where the cache directory needs to be.
+    (home / ".cache").mkdir()
+    (home / ".cache" / "slicelab").write_text("not a directory")
+
+    root = _scratch_root()
+
+    assert root is not None, "scratch fell all the way through to tempfile's default"
+    assert home in root.parents or root == home, (
+        f"scratch fell outside the home directory a Flatpak can see: {root}"
     )
