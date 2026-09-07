@@ -27,11 +27,19 @@ they:
 - perform **no network access** and read **no configuration file of their own**
 
 **What gets written, and where.** slicelab writes scratch directories under
-`$XDG_CACHE_HOME/slicelab/engine-cwd` (`~/.cache/...` by default). One is made
-per engine launch and removed after it; the two parent directories are created
-once and **persist**. Nothing else, on any path where that directory can be
-made — and where it cannot, the fallbacks stay inside the home directory rather
-than dropping to `$TMPDIR`, for the reason below.
+`~/.cache/slicelab/engine-cwd`, or under `$XDG_CACHE_HOME` when that is set to
+an absolute path **inside your home directory** — a value outside it is ignored,
+for the reason below, so a host with `XDG_CACHE_HOME=/var/cache/me` still gets
+`~/.cache`. One directory is made per engine launch and removed after it; the
+two parents are created once and **persist**.
+
+If neither can be created, slicelab tries the home directory itself, and only
+if *that* fails does it fall back to `$TMPDIR` — which under a Flatpak means
+the engine runs in `$HOME` after all. That last rung is a real degradation
+rather than a guarantee, and it is stated here as one. It is reached only when
+nothing inside the home directory can hold a directory, and on such a host
+Flatpak itself fails first: every attempt to reach it with a working engine
+gave exit 4 before slicelab got that far.
 
 The engines it starts write more. OrcaSlicer drops a `result.json` on any run,
 including a *successful* `which` probe, and a `00000.log` on a failing one. Both
@@ -56,6 +64,15 @@ otherwise healthy. Every fallback is now home-visible, and a relative
 — which is what the basedir spec requires, and what stopped slicelab creating
 `./mycache/slicelab/engine-cwd` where you were standing.
 
+Two more routes in were found after that, both of them *absolute* paths: an
+`XDG_CACHE_HOME` outside the home directory, and a symlink inside the home
+directory pointing out of it. Neither is exotic — `/var/cache/$USER` is an
+ordinary setting — and both put `result.json` back in `$HOME` at exit 0. A
+candidate now qualifies only if it is under the home directory **after
+resolution**, and the home directory must itself be absolute before it is
+resolved, because `Path.home()` hands back `$HOME` verbatim and resolving a
+relative one would anchor it to your working directory.
+
 Until 0.0.1 none of this was true. `slicelab which orcaslicer`, run in an empty
 directory, left a 180-byte `result.json` behind at exit 0 — and this section
 said the tool wrote nothing. An identical file reached this repository that way
@@ -79,7 +96,7 @@ This section is a status claim and part of the gate (org AGENTS.md 2.5). It has
 been rewritten five times: when the CLI began parsing arguments, when `which`
 began launching engines, when a measurement showed the "writes nothing" sentence
 had been false since `which` shipped, when the fix for *that* turned out to
-relocate the problem rather than remove it, and when review found two further
+relocate the problem rather than remove it, and when review found four further
 routes back into it.
 
 ## Intended posture, once there is code

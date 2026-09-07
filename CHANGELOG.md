@@ -47,9 +47,16 @@ The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
   home directory**, the home directory must be absolute before it is resolved,
   and usability is proved by creating the directory rather than by `mkdir(...,
   exist_ok=True)`, which returns success on an existing unwritable directory
-  and let a `PermissionError` escape from the launch. Nine tests cover it,
-  seven of which need no engine, and the engine-gated one is parametrized over
-  the environment that hid the last blocker.
+  and let a `PermissionError` escape from the launch. Ten tests cover it, eight
+  of which need no engine, and the engine-gated one is parametrized over the
+  environment that hid the previous blocker.
+
+  A fourth review round found the code clean and one of those tests vacuous:
+  it stood *outside* the fake home, so the containment filter rejected the
+  relative `XDG_CACHE_HOME` on its own and the guard under test was never
+  reached. Deleting that guard left every test green while a user standing
+  anywhere in their own home directory — the ordinary case — got `mycache/`
+  created beside them again.
 - **`SECURITY.md` said the tool writes nothing.** It was false while the litter
   was landing in the caller's directory, and false again while it was landing in
   `$HOME`. The section now says what is written and where, including slicelab's

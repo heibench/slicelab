@@ -382,19 +382,43 @@ than the location, not because `pwd` lies. An invented reason for preferring a
 measurement is still an unmeasured claim, and it sat in this record for a
 commit.
 
-**Two further ways back in, both found by review of the fix.** Falling back to
-`tempfile`'s default on any `OSError` meant a single stray file at
-`~/.cache/slicelab` reinstated the whole defect, at exit 0, on a host whose home
-and whose Flatpak were both healthy — the argument in the first draft, that such
-a host "has bigger problems than litter", was about a case the code did not
-detect. And a **relative** `XDG_CACHE_HOME` was resolved against the process
-working directory, so `mkdir(parents=True)` created
-`./mycache/slicelab/engine-cwd` where the user was standing: the same litter,
-authored by slicelab rather than by the engine. The basedir spec says a relative
-value must be ignored, and it now is. Every rung of the fallback ladder is
-inside the home directory; only a host with no usable home reaches `tempfile`'s
-default, and that rung is named as the degradation it is rather than argued
-away. `engine.yml` had already written the reason down — *"a Flatpak
+**Four further ways back in, all found by review of the fix**, over three
+rounds, all in this one function:
+
+1. Falling back to `tempfile`'s default on any `OSError` meant a single stray
+   file at `~/.cache/slicelab` reinstated the whole defect, at exit 0, on a host
+   whose home and whose Flatpak were both healthy. The first draft argued such a
+   host "has bigger problems than litter" — an argument about a case the code
+   did not detect.
+2. A **relative** `XDG_CACHE_HOME` was resolved against the process working
+   directory, creating `./mycache/slicelab/engine-cwd` where the user was
+   standing. The basedir spec says a relative value must be ignored.
+3. A relative **`HOME`** did the same through the other variable, because
+   `Path.home()` hands back `$HOME` verbatim. The guard covered one of the two.
+4. An **absolute** `XDG_CACHE_HOME` outside the home directory was accepted —
+   `/var/cache/$USER` is an ordinary setting — and so was a symlink inside
+   `$HOME` pointing out of it, which no check on the string can catch.
+
+**So the rule is containment after resolution, and each word earns its place.**
+A candidate qualifies only if it resolves to a path under the resolved home
+directory; the home must be absolute *before* being resolved, since resolving a
+relative one anchors it to the working directory — the defect, not the fallback.
+`Path.home()` raising on a host with no home at all is caught, or it would leave
+`run` as a traceback rather than an exit code.
+
+Usability is proved by **creating** the scratch directory.
+`mkdir(parents=True, exist_ok=True)` returns success on a directory that already
+exists and cannot be written, so a ladder that only called `mkdir` settled on a
+root it could not use and let the `PermissionError` escape from the launch
+instead of descending to the next rung.
+
+The last rung is still `tempfile`'s default, and it is a **degradation, not a
+guarantee**: under a Flatpak it puts the engine back in `$HOME`. It is reached
+only when nothing inside the home directory can hold a directory, and every
+attempt to reach it with a working engine hit exit 4 first — Flatpak needs a
+usable `$HOME` before slicelab does. Naming it is the point; `SECURITY.md`
+claimed for one commit that every fallback was home-visible, which was the same
+shape of over-claim this entry is about. `engine.yml` had already written the reason down — *"a Flatpak
 is a materially different execution environment — sandboxed filesystem, its own
 /tmp, translated paths"* — which is the cost of a fact living in a CI comment
 rather than in the code it constrains. Scratch lives under `XDG_CACHE_HOME`,
@@ -413,6 +437,17 @@ Watching `$HOME` by *name* was not enough either: the session fixture's own
 discovery had already created `result.json` before the test body took its
 snapshot, so the run merely overwrote it and a set difference saw nothing. The
 fingerprint is name, mtime and size.
+
+**The recurring shape, worth naming because it cost four rounds.** Every one of
+these defects was found by a person constructing an environment, never by the
+suite. The tests were sound each time; what was missing was the *environment*
+they ran in — an ambient shell, an ambient `$HOME`, an ambient
+`XDG_CACHE_HOME`. Two of them were hidden by a variable happening to be set in
+the operator's own shell. The engine-gated test is now parametrized over
+environments rather than running only in the one it inherits, and a scratch
+test that stands outside the home directory was found to be vacuous for exactly
+this reason: the containment filter rejected its input before the guard under
+test was reached, so deleting that guard left every test green.
 
 **Also outstanding, smaller:** `TemporaryDirectory` cleans up on normal exit, on
 exception and on `SIGINT`, but `SIGTERM` and `SIGKILL` both leak a `run-XXXXXX`
