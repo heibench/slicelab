@@ -7,6 +7,7 @@ to be honest about is decided here, once, rather than at seven call sites.
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -70,10 +71,28 @@ def run(
     A ``timeout`` at all -- an engine that never returns is an environment
     fault, not a hang in slicelab.
 
-    An explicit ``cwd`` -- OrcaSlicer writes ``00000.log`` into the process
-    working directory on a failing run (V13, D20). The caller passes a scratch
-    directory it owns, so litter lands somewhere sweepable.
+    A scratch ``cwd`` by default -- OrcaSlicer writes into the process working
+    directory, and ``cwd=None`` meant *the directory the user ran slicelab
+    from*. Measured, not read: ``slicelab which orcaslicer`` in an empty
+    directory left a 180-byte ``result.json`` behind, at exit 0. V13 recorded
+    the litter only for failing runs; a successful discovery probe does it too.
+    An identical file reached this repository that way and was committed (D11).
+
+    So a caller that names no directory gets a temporary one this function owns
+    and removes, rather than the user's. A caller that wants to *read* what the
+    engine dropped -- the slice verb, promoting an artifact -- passes a
+    directory it owns and keeps.
+
+    SECURITY.md said the implemented verbs write nothing. That was false for as
+    long as this defaulted to ``None``.
     """
+    if cwd is None:
+        with tempfile.TemporaryDirectory(prefix="slicelab-") as scratch:
+            return _spawn(argv, Path(scratch), timeout)
+    return _spawn(argv, cwd, timeout)
+
+
+def _spawn(argv: list[str], cwd: Path, timeout: float) -> Completed:
     try:
         proc = subprocess.run(  # noqa: S603 - argv is a list; never shell=True
             argv,

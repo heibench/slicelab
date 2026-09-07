@@ -16,30 +16,45 @@ package and of the slicer involved.
 
 ## Current attack surface
 
-**One verb is implemented: `slicelab which`.** It:
+**Two verbs are implemented: `slicelab which` and `slicelab presets`.** Together
+they:
 
-- spawns slicer processes, always as an **argv list, never through a shell**, and
+- spawn slicer processes, always as an **argv list, never through a shell**, and
   always with `stdin` connected to `/dev/null`
-- reads files: candidate executables (to digest them) and Flatpak deployment
-  directories
-- performs **no network access**, reads **no configuration file**, and writes
-  nothing
+- read files: candidate executables (to digest them), Flatpak deployment
+  directories, and — for `presets` — whatever profile bundle the engine reads
+  under the `--datadir` you name
+- perform **no network access** and read **no configuration file of their own**
 
-It does not yet read a `slice.toml`, slice a model, or write a lock.
+**What gets written, and where.** slicelab writes nothing itself. The engines it
+starts do: OrcaSlicer drops a `result.json` into its process working directory,
+including on a *successful* `which` probe. Every engine launched without an
+explicit destination is therefore given a temporary directory slicelab creates
+and removes, so nothing lands in the directory you ran the command from.
 
-The inputs it accepts are its own `argv` and whatever the engines print. Engine
-output is decoded with `errors="replace"` and is never evaluated — only matched
-against a version pattern and printed.
+Until 0.0.1 that was not true. `slicelab which orcaslicer`, run in an empty
+directory, left a 180-byte `result.json` behind at exit 0 — and this section
+said the tool wrote nothing. An identical file reached this repository that way
+and was committed for four commits before anyone noticed.
 
-**Processes it will start.** `which` invokes discovered engines with `--help` and
-with one flag they are expected to reject. On a host where an untrusted binary is
-earlier on `PATH` than the real slicer, that binary is what gets executed —
-ordinary `PATH` semantics, but worth stating for a tool whose job is finding
-executables.
+Neither verb yet reads a `slice.toml`, slices a model, or writes a lock.
+
+The inputs they accept are their own `argv` — including a `--datadir` path,
+which is resolved to an absolute path and handed to the engine, never
+interpreted by slicelab — and whatever the engines print. Engine output is
+decoded with `errors="replace"` and is never evaluated: it is matched against a
+version pattern, or parsed as JSON and checked for shape, and printed.
+
+**Processes they will start.** `which` invokes discovered engines with `--help`
+and with one flag they are expected to reject. `presets` invokes them with the
+adapter's enumeration flag. On a host where an untrusted binary is earlier on
+`PATH` than the real slicer, that binary is what gets executed — ordinary `PATH`
+semantics, but worth stating for a tool whose job is finding executables.
 
 This section is a status claim and part of the gate (org AGENTS.md 2.5). It has
-been rewritten twice: when the CLI began parsing arguments, and when `which`
-began launching engines.
+been rewritten three times: when the CLI began parsing arguments, when `which`
+began launching engines, and when a measurement showed the "writes nothing"
+sentence above had been false since `which` shipped.
 
 ## Intended posture, once there is code
 

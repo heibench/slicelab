@@ -12,7 +12,12 @@ the repository contains, not about what happens to be imported at runtime.
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
+
+import pytest
+
+from slicelab.engine.launch import run
 
 PACKAGE = Path(__file__).resolve().parent.parent / "slicelab"
 
@@ -91,3 +96,44 @@ def test_that_boundary_test_has_something_to_find() -> None:
 
     assert len(REGISTRY) >= 2, "the names boundary has no red state with one engine"
     assert all(spec.flatpak_app_id for spec in REGISTRY.values())
+
+
+def test_an_engine_never_runs_in_the_directory_the_user_invoked_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``run`` with no ``cwd`` must not spawn into the caller's directory.
+
+    OrcaSlicer writes ``result.json`` into its process working directory, so
+    while ``run`` defaulted to ``cwd=None`` every verb littered wherever the
+    user happened to be standing. Measured with a real engine: ``slicelab which
+    orcaslicer`` in an empty directory left a 180-byte ``result.json`` at exit
+    0, and an identical file was committed to this repository's root (D11).
+
+    A stand-in process is used rather than an engine so the guarantee is
+    checked on every runner, including the ones with no slicer installed --
+    the property is about ``run``, not about any engine's behaviour.
+    """
+    monkeypatch.chdir(tmp_path)
+    completed = run([sys.executable, "-c", "open('litter.txt', 'w').write('engine was here')"])
+
+    assert completed.exit_status == 0, f"the stand-in did not run: {completed}"
+    assert not (tmp_path / "litter.txt").exists(), (
+        "the spawned process wrote into the caller's working directory; "
+        f"left behind: {sorted(p.name for p in tmp_path.iterdir())}"
+    )
+
+
+def test_a_caller_that_owns_a_directory_still_gets_the_output_there(tmp_path: Path) -> None:
+    """The other half: scratching by default must not make litter unreachable.
+
+    The slice verb has to read what the engine dropped. Without this, the fix
+    above could be "discard the working directory entirely" and pass, which
+    would silently break the one caller that needs it.
+    """
+    completed = run(
+        [sys.executable, "-c", "open('artifact.txt', 'w').write('kept')"],
+        cwd=tmp_path,
+    )
+
+    assert completed.exit_status == 0, f"the stand-in did not run: {completed}"
+    assert (tmp_path / "artifact.txt").read_text() == "kept"

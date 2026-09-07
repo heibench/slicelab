@@ -11,6 +11,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from slicelab import __version__
 from slicelab.adapters import REGISTRY, spec_for
@@ -208,7 +209,11 @@ def _presets(engine: str, datadir: str | None) -> int:
 
     argv = [*found.form.argv_prefix, *query.argv]
     if datadir:
-        argv += ["--datadir", datadir]
+        # Absolute, always. `run` gives the engine a scratch working directory
+        # rather than the user's, so a relative --datadir would resolve against
+        # a temporary directory the user has never heard of and the engine
+        # would report a datadir that does not exist.
+        argv += ["--datadir", str(Path(datadir).expanduser().resolve())]
     completed = run(argv)
 
     verdict = adjudicate(completed.stdout, query.root_key)

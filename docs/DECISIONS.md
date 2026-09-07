@@ -351,6 +351,26 @@ as a translation. This is the one fix applied on copy.
 Sweeping is the fix; recording `engine_run.stray_files` is the honesty. Cleaning up
 and hiding evidence are the same action without the field.
 
+### Written, then not implemented, for the life of the code (2026-09-06)
+
+"Every engine" was the decision. `run()` defaulted to `cwd=None` and **not one of
+its five call sites passed a directory**, so every engine ran in whatever
+directory the user invoked slicelab from. Measured, not read: `slicelab which
+orcaslicer` in an empty directory left a 180-byte `result.json` behind at exit 0
+— so the litter is not conditional on failure the way [V13] recorded, and
+`SECURITY.md` was simultaneously asserting the tool wrote nothing. An identical
+file reached this repository's root and shipped in the sdist (D11).
+
+The default is now a temporary directory `run()` owns and removes; a caller that
+needs to *read* what the engine dropped passes its own. Pinned by
+`tests/test_boundaries.py`, which uses a stand-in process so the guarantee is
+checked on runners with no engine installed.
+
+**Still outstanding:** the honesty half. Nothing records `stray_files` yet,
+because no verb yet produces an `engine_run` record to put it in. That lands with
+the slice verb, not here — this entry now describes a sweep without its ledger,
+which is exactly the half D20 warned about.
+
 ## D21 — An adapter that works around an upstream defect must detect that defect and refuse rather than apply the workaround blind
 
 Orca's inheritance flattening and `compatible_printers` injection exist because
