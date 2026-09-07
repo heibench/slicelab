@@ -106,10 +106,10 @@ when review found further routes back into it; and when the correction for
 down.
 
 There is deliberately no count here any more. This paragraph carried one, and it
-kept being stale — including in the commit written to fix a stale
-self-referential count, and again in the commit written to remove the counter,
-which introduced a fresh integer ("stale three revisions running") that no
-command could settle. An integer that has to be incremented by hand is a
+kept being the false sentence — including in the commit written to fix a stale
+self-referential count. The commit written to remove the counter then replaced
+it with a fresh integer ("stale three revisions running") that no command could
+settle, which is how a fourth review round came to be spent on arithmetic. An integer that has to be incremented by hand is a
 claim like any other, and this one kept being the false one. The causes are the
 record; adding a cause is the same action as rewriting the section, which is
 what the counter kept failing to be.
