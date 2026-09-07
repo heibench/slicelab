@@ -71,6 +71,19 @@ The intended git model is four files: `part.stl` (the geometry), `slice.toml`
 (what you intended), `slice.lock` (exactly what produced it), `part.gcode` (the
 result).
 
+## Install
+
+```console
+$ uv tool install slicelab     # or: pipx install slicelab
+$ slicelab which
+```
+
+Zero runtime dependencies, Python 3.11+. The slicer itself is **not** bundled and
+is not a dependency: slicelab drives whatever PrusaSlicer or OrcaSlicer is already
+on the machine, across a process boundary, and ships nothing an engine produced
+(D11). `slicelab which` tells you what it found and whether it can be driven
+honestly; if it finds nothing, that is exit 4 and a reason, not exit 0.
+
 ## What works today
 
 ```console

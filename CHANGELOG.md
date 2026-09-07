@@ -7,6 +7,40 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.0.1] — 2026-09-06
+
+The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
+
+### Fixed
+
+- **Engines no longer run in the directory you invoked slicelab from.** D20 said
+  every engine runs in a slicelab-owned scratch CWD; `run()` defaulted to
+  `cwd=None` and no call site passed one, so the decision was recorded and never
+  implemented. Measured: `slicelab which orcaslicer` in an empty directory left a
+  180-byte `result.json` behind **at exit 0** — V13 had recorded that litter only
+  for failing runs. `SECURITY.md` said the tool wrote nothing while this was
+  true; that section is corrected and now says what is written and where.
+- **`result.json` removed from the repository.** An OrcaSlicer artifact,
+  committed by accident in #17, tracked at the root for four commits. D11 forbids
+  shipping engine-derived bytes and names `test_no_engine_data.py` as its pin;
+  that file did not exist and now does.
+- **The D11 packaging guard read the wheel only.** `packages = ["slicelab"]`
+  means the wheel can never carry a root-level file, so the guard was green over
+  a stray it structurally could not see — while the sdist, built from everything
+  git tracks, shipped it. Both are checked now, and the step fails if it finds no
+  artifacts to read rather than passing on an empty glob.
+- **A relative `--datadir` now resolves against your directory**, not the scratch
+  one the engine is given.
+
+### Changed
+
+- The version has one home: `slicelab/__init__.py`, read by hatchling. It was two
+  literals with nothing pinning them together, and the release workflow reads the
+  version off the built filename — so a stale `__version__` would have published
+  green while `slicelab --version` reported a number that was never released.
+- `ci.yml` no longer claims there is deliberately no engine workflow. There is:
+  `engine.yml`, on four host shapes.
+
 ### Added
 
 - The outcome vocabulary and the exit map, before any engine exists to muddy
@@ -58,4 +92,5 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   org's "the stable surface is never the Python API" rule has a mechanism rather
   than an intention.
 
-[Unreleased]: https://github.com/heibench/slicelab/compare/HEAD...HEAD
+[Unreleased]: https://github.com/heibench/slicelab/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/heibench/slicelab/releases/tag/v0.0.1

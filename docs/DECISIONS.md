@@ -479,3 +479,25 @@ decided here.
 *Supersedes:* if a second consumer never appears — if after 20 real `slice.toml`
 files nobody has branched on `3` — netspec's reasoning wins and this folds into
 `refused`. The measurement, not the argument, decides that.
+
+## D25 — 0.0.1 claims the name; the version has exactly one home
+
+Two separate decisions, taken together because the release forced both.
+
+**Why 0.0.1 rather than 0.1.0.** The version had been `0.1.0.dev0`, which the
+release workflow's own pre-release guard correctly refuses to publish. `0.1.0` is
+not free either: issue #12 scopes it, and its checklist is mostly unmet — six
+verbs unimplemented, no cold `pip install` yet proven. Publishing `0.1.0` today
+would consume the number that release plans and would say more about the project
+than is true. `0.0.1` says the honest thing: the name is claimed and two verbs
+work. PyPI versions cannot be reused, so this is the one direction that stays
+open.
+
+**Why the version is single-sourced.** It was two literals, `pyproject.toml` and
+`slicelab/__init__.py`, with nothing pinning them together. The release workflow
+reads the version off the *built dist filename*, so a stale `__version__` would
+publish green while `slicelab --version` reported a number that was never
+released — the tool disagreeing with its own package, silently, which is the
+whole failure this project is named around. `pyproject.toml` now declares
+`dynamic = ["version"]` and hatchling reads it from the package. Structural, so
+no test is needed: the drift is not possible rather than merely detected.
