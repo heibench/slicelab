@@ -61,6 +61,16 @@ def _sdist_candidates() -> list[str]:
     Measured against real sdists in all three of those cases plus a
     force-added tracked artifact: this flag agrees with what hatchling shipped
     every time.
+
+    **One divergence remains, in the unsafe direction.** Hatchling applies those
+    lines through ``pathspec.GitIgnoreSpec``, which — unlike git — can
+    re-include a file whose parent directory is excluded. Measured: with
+    ``/ignoreddir/`` and ``!/ignoreddir/result.json`` in the root
+    ``.gitignore``, hatchling ships ``ignoreddir/result.json`` and this rule
+    does not report it. The root ``.gitignore`` has no negation patterns today,
+    so it is inert; anyone adding one should know this guard stops seeing past
+    it, and that the release workflow — which reads the built tarball — is the
+    backstop.
     """
     out = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-from=.gitignore"],
@@ -87,6 +97,12 @@ def _needs_a_checkout() -> None:
         pytest.skip("git is not installed; this check reads the repository's own file list")
     if not (_ROOT / ".git").exists():
         pytest.skip("not a git checkout (running from an sdist?); nothing to check here")
+    if not (_ROOT / ".gitignore").exists():
+        # `--exclude-from` on a missing file is `fatal:` and exit 128, which
+        # `check=True` turns into a CalledProcessError traceback naming neither
+        # the cause nor the requirement. Only reachable if someone deletes a
+        # tracked file, but that is exactly when a legible message is wanted.
+        pytest.skip(".gitignore is missing, so hatchling's ignore rule cannot be reproduced")
 
 
 def test_git_reports_a_file_list_at_all() -> None:
