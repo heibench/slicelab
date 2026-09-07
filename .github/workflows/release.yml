@@ -65,30 +65,63 @@ jobs:
               exit 1 ;;
           esac
 
-      - name: Assert the wheel carries no engine-derived bytes
-        # docs/DECISIONS.md D11. The wheel ships slicelab's own code and nothing
-        # an engine produced. This is the packaging half of that decision; the
-        # repository half is test_no_engine_data.py, which does not exist yet.
+      - name: Assert no distribution carries engine-derived bytes
+        # docs/DECISIONS.md D11. The repository half is tests/test_no_engine_data.py.
+        #
+        # This step used to inspect the wheel only. `packages = ["slicelab"]`
+        # means the wheel can only ever contain slicelab's own module, so that
+        # check was green over a stray it structurally could not see -- while
+        # the sdist, which takes everything git does not IGNORE, shipped a
+        # committed OrcaSlicer `result.json` from the repository root. A guard
+        # that cannot fail is not a guard. Both artifacts are read now.
         run: |
           set -eu
           python3 - <<'PY'
-          import sys, zipfile, glob
-          allowed_suffixes = (".py", ".typed", ".txt", ".md")
+          import glob, sys, tarfile, zipfile
+
+          # The wheel is slicelab's own module and nothing else.
+          WHEEL_ALLOWED = (".py", ".typed", ".txt", ".md")
+          # The sdist is the working tree minus what git ignores, so it
+          # legitimately carries config and docs. What it must never carry is a
+          # format an engine writes -- the same vocabulary
+          # tests/test_no_engine_data.py uses, including `.log` for the
+          # `00000.log` that D20 and V13 are actually written about.
+          ENGINE_WRITTEN = (
+              ".json", ".ini", ".gcode", ".bgcode", ".log",
+              ".3mf", ".stl", ".obj", ".amf", ".step",
+          )
+
           bad = []
-          for whl in glob.glob("dist/*.whl"):
+
+          wheels = glob.glob("dist/*.whl")
+          sdists = glob.glob("dist/*.tar.gz")
+          if not wheels or not sdists:
+              # Silence must not read as success: no artifacts means this step
+              # examined nothing, which is not the same as finding nothing.
+              print(f"::error::expected a wheel and an sdist, got {wheels + sdists}")
+              sys.exit(1)
+
+          for whl in wheels:
               for name in zipfile.ZipFile(whl).namelist():
-                  if name.endswith("/"):
+                  if name.endswith("/") or ".dist-info/" in name:
                       continue
-                  if ".dist-info/" in name:
-                      continue
-                  if not name.endswith(allowed_suffixes):
+                  if not name.endswith(WHEEL_ALLOWED):
                       bad.append(f"{whl}:{name}")
+
+          for sd in sdists:
+              with tarfile.open(sd) as tf:
+                  for m in tf.getmembers():
+                      if not m.isfile():
+                          continue
+                      if m.name.lower().endswith(ENGINE_WRITTEN):
+                          bad.append(f"{sd}:{m.name}")
+
           if bad:
-              print("::error::wheel carries unexpected files (D11):")
+              print("::error::distribution carries unexpected files (D11):")
               for b in bad:
                   print("  " + b)
               sys.exit(1)
-          print("wheel contents are slicelab's own source only")
+          print(f"checked {len(wheels)} wheel(s) and {len(sdists)} sdist(s): D11 holds")
           PY
 
       - name: Check the metadata PyPI will see

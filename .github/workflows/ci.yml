@@ -51,16 +51,11 @@ jobs:
       - run: just setup
       - run: just test
 
-  # There is deliberately NO engine workflow yet.
-  #
-  # slicelab drives no engine today -- no verb is implemented -- so a job that
-  # installed PrusaSlicer or OrcaSlicer and ran the suite would exercise nothing
-  # and report green. Org AGENTS.md 2.4: a check that cannot fail is not a check,
-  # and a green check that never ran is the defect this org exists to prevent.
-  #
-  # engine.yml lands with the first verb that talks to an engine (issue: `which`),
-  # and it sets SLICELAB_REQUIRE_ENGINE=1 so a failed engine install is loud
-  # rather than a silent skip.
+  # The engine matrix is engine.yml, not a job here: it installs a real slicer on
+  # four host shapes and is scheduled rather than run per pull request. It sets
+  # SLICELAB_REQUIRE_ENGINE=1, so a failed engine install is loud rather than a
+  # silent skip. The jobs below run on hosts with no engine, where the
+  # engine-dependent tests skip and `-ra` prints how many were withheld.
 
   ok:
     name: ok

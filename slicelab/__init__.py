@@ -6,6 +6,6 @@ code (heibench AGENTS.md section 5), so this package exports exactly one name an
 ``slice.lock``; anything importable from here may move without notice.
 """
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.0.1"
 
 __all__ = ["__version__"]

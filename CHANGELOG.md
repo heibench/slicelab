@@ -7,6 +7,97 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.0.1] — 2026-09-06
+
+The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
+
+### Fixed
+
+- **Engines no longer run in the directory you invoked slicelab from, nor in
+  your home directory** — on any host where a scratch directory can be made
+  inside the home directory at all, which is the condition the fallback ladder
+  descends through. D20 said every engine runs in a slicelab-owned scratch
+  CWD; `run()` defaulted to `cwd=None` and no call site passed one, so the
+  decision was recorded and never implemented. Measured: `slicelab which
+  orcaslicer` in an empty directory left a 180-byte `result.json` behind **at
+  exit 0** — V13 had recorded that litter only for failing runs.
+
+  The first fix used `tempfile`'s default and **moved the problem instead of
+  removing it**: a Flatpak sandbox has its own `/tmp`, so a host `/tmp` cwd
+  cannot be translated, and `bwrap` silently starts the engine in `$HOME`
+  instead. Litter in the directory you were standing in became litter in your
+  home directory, which is persistent, global, and unwatched. Scratch now lives
+  under `~/.cache/slicelab/engine-cwd`, or under `$XDG_CACHE_HOME` when that is
+  absolute *and* inside the home directory, with the home directory itself as
+  the rung below — everywhere a Flatpak engine can see, verified by writing a
+  file from inside both sandboxes and finding it from the host, and pinned by an engine-gated test that watches the working
+  directory *and* `$HOME`.
+
+  Four further ways back in, all found by review and all reproduced. Falling
+  back to `$TMPDIR` on any `OSError` meant one stray file at `~/.cache/slicelab`
+  restored the defect **at exit 0** on an otherwise healthy host. A relative
+  `XDG_CACHE_HOME` was resolved against the working directory, so slicelab
+  itself created `./mycache/slicelab/engine-cwd` where the user was standing —
+  and a relative `HOME` did the same through the other variable, because
+  `Path.home()` hands back `$HOME` verbatim. An **absolute** `XDG_CACHE_HOME`
+  pointing outside the home directory — `/var/cache/$USER` is an ordinary
+  setting — was accepted and put `result.json` back in `$HOME`; so did a
+  symlink that is inside `$HOME` by string and outside it by inode.
+
+  So a scratch root now qualifies only if it resolves to somewhere **under the
+  home directory**, the home directory must be absolute before it is resolved,
+  and usability is proved by creating the directory rather than by `mkdir(...,
+  exist_ok=True)`, which returns success on an existing unwritable directory
+  and let a `PermissionError` escape from the launch. Eleven tests cover it, ten
+  of which need no engine, and the engine-gated one is parametrized over the
+  environment that hid the previous blocker. A mutation sweep of the mechanism
+  kills all eleven mutations, each by the test named for it.
+
+  A fourth review round found the code clean and one of those tests vacuous:
+  it stood *outside* the fake home, so the containment filter rejected the
+  relative `XDG_CACHE_HOME` on its own and the guard under test was never
+  reached. Deleting that guard left every test green while a user standing
+  anywhere in their own home directory — the ordinary case — got `mycache/`
+  created beside them again.
+- **`SECURITY.md` said the tool writes nothing.** It was false while the litter
+  was landing in the caller's directory, and false again while it was landing in
+  `$HOME`. The section now says what is written and where, including slicelab's
+  own scratch directory.
+- **`result.json` removed from the repository, and added to `.gitignore`.** An
+  OrcaSlicer artifact, committed by accident in #17, present for five commits.
+  D11 forbids shipping engine-derived bytes and names `test_no_engine_data.py`
+  as its pin; that file did not exist and now does. `.gitignore` named
+  `00000.log` but not `result.json`, so nothing objected when it arrived.
+- **The D11 guards were both narrower than they read.** The packaging half
+  inspected the wheel only — and `packages = ["slicelab"]` means the wheel can
+  never carry a root-level file, so it was green over a stray it structurally
+  could not see. The repository half checked *tracked* files, while an sdist
+  takes everything git does not **ignore**: an uncommitted stray ships just as
+  surely as a committed one. Both now read what the sdist actually takes, the
+  vocabulary includes `.log` for `00000.log`, and the workflow step fails when
+  it finds no artifacts rather than passing on an empty glob.
+- **`--datadir ''` reported the default datadir's inventory at exit 0.** The
+  flag was applied under a truthiness test, so an empty string was dropped
+  entirely and the engine answered from its own default — a real answer to a
+  question nobody asked. It is now passed through and refused, at exit 2, with
+  the engine's reason. A relative path resolves against your directory, not the
+  scratch one.
+
+### Changed
+
+- The version has one home: `slicelab/__init__.py`, read by hatchling. It was two
+  literals with nothing pinning them together, and the release workflow reads the
+  version off the built filename — so a stale `__version__` would have published
+  green while `slicelab --version` reported a number that was never released.
+- `ci.yml` no longer claims there is deliberately no engine workflow. There is:
+  `engine.yml`, on four host shapes.
+- Three remaining "nothing is implemented" claims corrected — `slicelab/cli.py`
+  twice and `CONTRIBUTING.md` — which AGENTS.md §2.5 treats as code.
+- `tests/test_no_engine_data.py` skips loudly outside a git checkout instead of
+  failing with a `CalledProcessError` traceback. It ships in the sdist, so a
+  distro packager running the suite from the tarball was the one person
+  guaranteed to see it fail.
+
 ### Added
 
 - The outcome vocabulary and the exit map, before any engine exists to muddy
@@ -51,11 +142,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   idea. See D24.
 
 - The repository, its contract, and the research that produced them. No verb is
-  implemented: `docs/DECISIONS.md` carries D1–D23, `docs/RESEARCH.md` separates
+  implemented: `docs/DECISIONS.md` carried D1–D23 at that point, `docs/RESEARCH.md` separates
   what was empirically established from what was refuted and what remains
   unverified, and `notes/` holds the frozen dossier those decisions cite.
 - A public-surface test asserting `slicelab` exports only `__version__`, so the
   org's "the stable surface is never the Python API" rule has a mechanism rather
   than an intention.
 
-[Unreleased]: https://github.com/heibench/slicelab/compare/HEAD...HEAD
+[Unreleased]: https://github.com/heibench/slicelab/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/heibench/slicelab/releases/tag/v0.0.1

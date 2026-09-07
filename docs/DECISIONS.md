@@ -351,6 +351,125 @@ as a translation. This is the one fix applied on copy.
 Sweeping is the fix; recording `engine_run.stray_files` is the honesty. Cleaning up
 and hiding evidence are the same action without the field.
 
+### Written, then not implemented, for the life of the code (2026-09-06)
+
+"Every engine" was the decision. `run()` defaulted to `cwd=None` and **not one of
+its five call sites passed a directory**, so every engine ran in whatever
+directory the user invoked slicelab from. Measured, not read: `slicelab which
+orcaslicer` in an empty directory left a 180-byte `result.json` behind at exit 0
+— so the litter is not conditional on failure the way [V13] recorded, and
+`SECURITY.md` was simultaneously asserting the tool wrote nothing. An identical
+file reached this repository's root and shipped in the sdist (D11).
+
+The default is now a temporary directory `run()` owns and removes; a caller that
+needs to *read* what the engine dropped passes its own.
+
+**And it cannot be in `/tmp`.** The first fix used `tempfile`'s default and moved
+the litter rather than removing it. A Flatpak sandbox has its own `/tmp`, so a
+host `/tmp` path has nothing to translate to; `bwrap` does not refuse, it drops
+the request and starts the engine in `$HOME`. Measured against both installed
+apps by **writing a file from inside the sandbox and looking for it from the
+host** — a cwd under `~/.cache` is honoured and the file appears there, a cwd of
+`/tmp/tmp.GRYOi6pQ0O` puts the process in `/home/cam` instead.
+
+An earlier draft justified switching from `pwd` to the write by claiming the
+builtin "reports `$PWD` when it is set, so it cannot distinguish a real working
+directory from an inherited one". That is **false** and was never measured:
+`cd ~/.cache && env PWD=/tmp/a-total-lie sh -c pwd` prints `/home/cam/.cache`
+under both dash and bash, which validate `$PWD` against the actual directory.
+The write is better evidence because it demonstrates the consequence rather
+than the location, not because `pwd` lies. An invented reason for preferring a
+measurement is still an unmeasured claim, and it sat in this record for a
+commit.
+
+**Four further ways back in, all found by review of the fix**, over three
+rounds, all in this one function:
+
+1. Falling back to `tempfile`'s default on any `OSError` meant a single stray
+   file at `~/.cache/slicelab` reinstated the whole defect, at exit 0, on a host
+   whose home and whose Flatpak were both healthy. The first draft argued such a
+   host "has bigger problems than litter" — an argument about a case the code
+   did not detect.
+2. A **relative** `XDG_CACHE_HOME` was resolved against the process working
+   directory, creating `./mycache/slicelab/engine-cwd` where the user was
+   standing. The basedir spec says a relative value must be ignored.
+3. A relative **`HOME`** did the same through the other variable, because
+   `Path.home()` hands back `$HOME` verbatim. The guard covered one of the two.
+4. An **absolute** `XDG_CACHE_HOME` outside the home directory was accepted —
+   `/var/cache/$USER` is an ordinary setting — and so was a symlink inside
+   `$HOME` pointing out of it, which no check on the string can catch.
+
+**So the rule is containment after resolution, and each word earns its place.**
+A candidate qualifies only if it resolves to a path under the resolved home
+directory; the home must be absolute *before* being resolved, since resolving a
+relative one anchors it to the working directory — the defect, not the fallback.
+`Path.home()` raising on a host with no home at all is caught, or it would leave
+`run` as a traceback rather than an exit code.
+
+Usability is proved by **creating** the scratch directory.
+`mkdir(parents=True, exist_ok=True)` returns success on a directory that already
+exists and cannot be written, so a ladder that only called `mkdir` settled on a
+root it could not use and let the `PermissionError` escape from the launch
+instead of descending to the next rung.
+
+**The ladder is three rungs, then a degradation.** `$XDG_CACHE_HOME` when it is
+absolute and contained, then `~/.cache/slicelab/engine-cwd`, then **the home
+directory itself** — a `run-XXXXXX` created directly in `$HOME` is untidy but
+visible to the sandbox, which is the property that matters. A mutation sweep
+confirms that third rung is load-bearing: removing it reddens two tests.
+
+The last rung is `tempfile`'s default, and it is a **degradation, not a
+guarantee**: under a Flatpak it puts the engine back in `$HOME`. It is reached
+only when nothing inside the home directory can hold a directory, and every
+attempt to reach it with a working engine hit exit 4 first — Flatpak needs a
+usable `$HOME` before slicelab does. Naming it is the point. `SECURITY.md` carried
+the opposite claim — "every fallback is now home-visible" — in **two** places,
+and the commit written to remove it fixed one and left the other standing
+twenty lines away, so the document contradicted itself for two further commits.
+That is the same shape of over-claim this entry is about, surviving inside its
+own correction. `engine.yml` had already written the reason down — *"a Flatpak
+is a materially different execution environment — sandboxed filesystem, its own
+/tmp, translated paths"* — which is the cost of a fact living in a CI comment
+rather than in the code it constrains. Scratch lives somewhere inside the home
+directory — the ladder is set out above — with `~/.cache` as the ordinary answer,
+where D11 already puts slicelab's generated data.
+
+**The stand-in tests could not see any of that.** `tests/test_boundaries.py`
+pins the guarantee with a `sys.executable` child, which honours `cwd` by
+construction — no sandbox, no translation — so the suite was green on a machine
+where the real engine was writing into `$HOME`. That is this repository's
+founding rule inverted, on the change meant to honour it. A third test launches
+every believable engine on the host and watches the working directory *and*
+`$HOME`; it is engine-gated, so `engine.yml`'s Flatpak job is what makes it
+bite.
+
+Watching `$HOME` by *name* was not enough either: the session fixture's own
+discovery had already created `result.json` before the test body took its
+snapshot, so the run merely overwrote it and a set difference saw nothing. The
+fingerprint is name, mtime and size.
+
+**The recurring shape, worth naming because it cost four rounds.** Every one of
+these defects was found by a person constructing an environment, never by the
+suite. The tests were sound each time; what was missing was the *environment*
+they ran in — an ambient shell, an ambient `$HOME`, an ambient
+`XDG_CACHE_HOME`. Two of them were hidden by a variable happening to be set in
+the operator's own shell. The engine-gated test is now parametrized over
+environments rather than running only in the one it inherits, and a scratch
+test that stands outside the home directory was found to be vacuous for exactly
+this reason: the containment filter rejected its input before the guard under
+test was reached, so deleting that guard left every test green.
+
+**Also outstanding, smaller:** `TemporaryDirectory` cleans up on normal exit, on
+exception and on `SIGINT`, but `SIGTERM` and `SIGKILL` both leak a `run-XXXXXX`
+under the scratch root that nothing ever sweeps. `SIGTERM` is what `kill`,
+systemd and CI timeouts send by default, so this is ordinary rather than rare. It costs an empty directory, not
+correctness, and the sweep belongs with the ledger below.
+
+**Still outstanding:** the honesty half. Nothing records `stray_files` yet,
+because no verb yet produces an `engine_run` record to put it in. That lands with
+the slice verb, not here — this entry now describes a sweep without its ledger,
+which is exactly the half D20 warned about.
+
 ## D21 — An adapter that works around an upstream defect must detect that defect and refuse rather than apply the workaround blind
 
 Orca's inheritance flattening and `compatible_printers` injection exist because
@@ -459,3 +578,25 @@ decided here.
 *Supersedes:* if a second consumer never appears — if after 20 real `slice.toml`
 files nobody has branched on `3` — netspec's reasoning wins and this folds into
 `refused`. The measurement, not the argument, decides that.
+
+## D25 — 0.0.1 claims the name; the version has exactly one home
+
+Two separate decisions, taken together because the release forced both.
+
+**Why 0.0.1 rather than 0.1.0.** The version had been `0.1.0.dev0`, which the
+release workflow's own pre-release guard correctly refuses to publish. `0.1.0` is
+not free either: issue #12 scopes it, and its checklist is mostly unmet — six
+verbs unimplemented, no cold `pip install` yet proven. Publishing `0.1.0` today
+would consume the number that release plans and would say more about the project
+than is true. `0.0.1` says the honest thing: the name is claimed and two verbs
+work. PyPI versions cannot be reused, so this is the one direction that stays
+open.
+
+**Why the version is single-sourced.** It was two literals, `pyproject.toml` and
+`slicelab/__init__.py`, with nothing pinning them together. The release workflow
+reads the version off the *built dist filename*, so a stale `__version__` would
+publish green while `slicelab --version` reported a number that was never
+released — the tool disagreeing with its own package, silently, which is the
+whole failure this project is named around. `pyproject.toml` now declares
+`dynamic = ["version"]` and hatchling reads it from the package. Structural, so
+no test is needed: the drift is not possible rather than merely detected.

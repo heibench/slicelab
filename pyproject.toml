@@ -4,7 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "slicelab"
-version = "0.1.0.dev0"
+# Single-sourced from the package. Held as two literals, pyproject and
+# `__init__`, they drift silently: the release workflow reads the version off
+# the built dist filename, so a stale `__version__` publishes green while
+# `slicelab --version` reports a number that was never released.
+dynamic = ["version"]
 description = "Reproducible control plane over the Slic3r-descended slicers: drive one, and record exactly what it resolved"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -49,6 +53,9 @@ dev = [
     "ruff>=0.11",
     "mypy>=1.10",
 ]
+
+[tool.hatch.version]
+path = "slicelab/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["slicelab"]

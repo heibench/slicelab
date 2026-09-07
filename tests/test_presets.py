@@ -178,3 +178,29 @@ def test_an_unconfigured_engine_does_not_report_an_empty_inventory(
     proc = _cli(["presets", any_engine.name])
     if proc.returncode == 0:
         assert json.loads(proc.stdout)[any_engine.preset_query.root_key]
+
+
+def test_an_empty_datadir_is_refused_rather_than_answered_from_the_default(
+    any_engine: EngineSpec,
+) -> None:
+    """`--datadir ''` must not become "no --datadir at all".
+
+    The flag was applied under `if datadir:`, so an empty string was falsy and
+    dropped. The engine then answered from its own default datadir and slicelab
+    printed that inventory at exit 0 -- a real answer to a question nobody
+    asked, in place of a request it could not honour. Measured before the fix:
+    `presets prusaslicer --datadir ''` returned the full MK4IS-and-friends list
+    at exit 0.
+
+    It is not exit 1: an empty datadir is not a finding about a design. It is
+    the engine saying it could not tell, which is exit 2.
+    """
+    if any_engine.preset_query is None:
+        pytest.skip(f"{any_engine.name} has no preset-enumeration verb")
+
+    proc = _cli(["presets", any_engine.name, "--datadir", ""])
+    assert proc.returncode != 0, (
+        "an empty datadir was silently replaced by the engine's default, and "
+        f"its inventory reported as the answer: {proc.stdout[:200]}"
+    )
+    assert proc.stdout == "", "a non-answer must not write to stdout"
