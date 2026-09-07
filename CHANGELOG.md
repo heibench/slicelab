@@ -32,14 +32,24 @@ The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
   from the host, and pinned by an engine-gated test that watches the working
   directory *and* `$HOME`.
 
-  Two further ways back in, both found by review and both reproduced: falling
+  Four further ways back in, all found by review and all reproduced. Falling
   back to `$TMPDIR` on any `OSError` meant one stray file at `~/.cache/slicelab`
-  restored the defect **at exit 0** on an otherwise healthy host, and a relative
+  restored the defect **at exit 0** on an otherwise healthy host. A relative
   `XDG_CACHE_HOME` was resolved against the working directory, so slicelab
-  itself created `./mycache/slicelab/engine-cwd` where the user was standing.
-  Every fallback is now inside the home directory, relative values are ignored
-  as the basedir spec requires, and `_scratch_root` has tests that need no
-  engine.
+  itself created `./mycache/slicelab/engine-cwd` where the user was standing —
+  and a relative `HOME` did the same through the other variable, because
+  `Path.home()` hands back `$HOME` verbatim. An **absolute** `XDG_CACHE_HOME`
+  pointing outside the home directory — `/var/cache/$USER` is an ordinary
+  setting — was accepted and put `result.json` back in `$HOME`; so did a
+  symlink that is inside `$HOME` by string and outside it by inode.
+
+  So a scratch root now qualifies only if it resolves to somewhere **under the
+  home directory**, the home directory must be absolute before it is resolved,
+  and usability is proved by creating the directory rather than by `mkdir(...,
+  exist_ok=True)`, which returns success on an existing unwritable directory
+  and let a `PermissionError` escape from the launch. Nine tests cover it,
+  seven of which need no engine, and the engine-gated one is parametrized over
+  the environment that hid the last blocker.
 - **`SECURITY.md` said the tool writes nothing.** It was false while the litter
   was landing in the caller's directory, and false again while it was landing in
   `$HOME`. The section now says what is written and where, including slicelab's

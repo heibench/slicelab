@@ -370,9 +370,17 @@ host `/tmp` path has nothing to translate to; `bwrap` does not refuse, it drops
 the request and starts the engine in `$HOME`. Measured against both installed
 apps by **writing a file from inside the sandbox and looking for it from the
 host** — a cwd under `~/.cache` is honoured and the file appears there, a cwd of
-`/tmp/tmp.GRYOi6pQ0O` puts the process in `/home/cam` instead. (`pwd` alone
-would not have settled it: the builtin reports `$PWD` when it is set, so it
-cannot distinguish a real working directory from an inherited one.)
+`/tmp/tmp.GRYOi6pQ0O` puts the process in `/home/cam` instead.
+
+An earlier draft justified switching from `pwd` to the write by claiming the
+builtin "reports `$PWD` when it is set, so it cannot distinguish a real working
+directory from an inherited one". That is **false** and was never measured:
+`cd ~/.cache && env PWD=/tmp/a-total-lie sh -c pwd` prints `/home/cam/.cache`
+under both dash and bash, which validate `$PWD` against the actual directory.
+The write is better evidence because it demonstrates the consequence rather
+than the location, not because `pwd` lies. An invented reason for preferring a
+measurement is still an unmeasured claim, and it sat in this record for a
+commit.
 
 **Two further ways back in, both found by review of the fix.** Falling back to
 `tempfile`'s default on any `OSError` meant a single stray file at
@@ -407,8 +415,9 @@ snapshot, so the run merely overwrote it and a set difference saw nothing. The
 fingerprint is name, mtime and size.
 
 **Also outstanding, smaller:** `TemporaryDirectory` cleans up on normal exit, on
-exception and on `KeyboardInterrupt`, but a `SIGKILL` leaks a `run-XXXXXX` under
-the scratch root that nothing ever sweeps. It costs an empty directory, not
+exception and on `SIGINT`, but `SIGTERM` and `SIGKILL` both leak a `run-XXXXXX`
+under the scratch root that nothing ever sweeps. `SIGTERM` is what `kill`,
+systemd and CI timeouts send by default, so this is ordinary rather than rare. It costs an empty directory, not
 correctness, and the sweep belongs with the ledger below.
 
 **Still outstanding:** the honesty half. Nothing records `stray_files` yet,
