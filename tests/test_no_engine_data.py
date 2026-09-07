@@ -41,12 +41,19 @@ ENGINE_WRITTEN_SUFFIXES = frozenset(
 def _sdist_candidates() -> list[str]:
     """Every path hatchling would put in an sdist: tracked plus unignored.
 
-    ``--others --exclude-standard`` is the untracked-but-not-ignored half, and
-    it is the half that matters -- a stray file is a defect before it is
-    committed, not after.
+    ``--others`` is the untracked-but-not-ignored half, and it is the half that
+    matters -- a stray file is a defect before it is committed, not after.
+
+    ``--exclude-per-directory``, deliberately, **not** ``--exclude-standard``.
+    The standard set also honours the user's global ``core.excludesFile`` and
+    ``.git/info/exclude``; hatchling reads neither, so those two rules diverge
+    in the unsafe direction. Measured: with ``*.log`` in a global gitignore --
+    one of the most common entries anyone has -- a stray ``.log`` is invisible
+    to ``--exclude-standard`` and ships in the sdist anyway. That matters here
+    precisely because ``.log`` is in the vocabulary below, for ``00000.log``.
     """
     out = subprocess.run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        ["git", "ls-files", "--cached", "--others", "--exclude-per-directory=.gitignore"],
         cwd=_ROOT,
         capture_output=True,
         text=True,
