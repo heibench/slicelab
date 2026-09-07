@@ -1,8 +1,8 @@
 """The command line, and the only place a process exit code is chosen.
 
-One verb exists: ``which``. This module is the single point at which
-slicelab's vocabulary becomes a process status, so there is one place to be
-wrong rather than seven.
+Two verbs exist: ``which`` and ``presets``. This module is the single point at
+which slicelab's vocabulary becomes a process status, so there is one place to
+be wrong rather than seven.
 """
 
 from __future__ import annotations
@@ -27,9 +27,10 @@ __all__ = ["main"]
 _DESCRIPTION = """\
 Drive a Slic3r-descended slicer and record exactly what it resolved.
 
-Only `which` is implemented. It reports which engine build slicelab would talk
-to, how it would launch it, and whether that engine's exit status can be
-believed. See docs/DECISIONS.md and the issue tracker.
+`which` reports which engine build slicelab would talk to, how it would launch
+it, and whether that engine's exit status can be believed. `presets` enumerates
+an engine's printer presets. Nothing slices yet. See docs/DECISIONS.md and the
+issue tracker.
 """
 
 
@@ -208,12 +209,18 @@ def _presets(engine: str, datadir: str | None) -> int:
         return exit_code_for(Outcome.ERROR)
 
     argv = [*found.form.argv_prefix, *query.argv]
-    if datadir:
+    if datadir is not None:
+        # `is not None`, not truthiness. `--datadir ''` is a request slicelab
+        # cannot honour; dropping the flag made the engine answer from its
+        # DEFAULT datadir and slicelab print that inventory at exit 0, as
+        # though it were the answer to what was asked. Passing the empty string
+        # through lets the engine refuse it, which is a reason, not a silence.
+        #
         # Absolute, always. `run` gives the engine a scratch working directory
-        # rather than the user's, so a relative --datadir would resolve against
-        # a temporary directory the user has never heard of and the engine
-        # would report a datadir that does not exist.
-        argv += ["--datadir", str(Path(datadir).expanduser().resolve())]
+        # rather than the user's, so a relative --datadir would otherwise
+        # resolve somewhere neither of them meant.
+        resolved = str(Path(datadir).expanduser().resolve()) if datadir else datadir
+        argv += ["--datadir", resolved]
     completed = run(argv)
 
     verdict = adjudicate(completed.stdout, query.root_key)
