@@ -412,17 +412,29 @@ exists and cannot be written, so a ladder that only called `mkdir` settled on a
 root it could not use and let the `PermissionError` escape from the launch
 instead of descending to the next rung.
 
-The last rung is still `tempfile`'s default, and it is a **degradation, not a
+**The ladder is three rungs, then a degradation.** `$XDG_CACHE_HOME` when it is
+absolute and contained, then `~/.cache/slicelab/engine-cwd`, then **the home
+directory itself** — a `run-XXXXXX` created directly in `$HOME` is untidy but
+visible to the sandbox, which is the property that matters. A mutation sweep
+confirms that third rung is load-bearing: removing it reddens two tests.
+
+The last rung is `tempfile`'s default, and it is a **degradation, not a
 guarantee**: under a Flatpak it puts the engine back in `$HOME`. It is reached
 only when nothing inside the home directory can hold a directory, and every
 attempt to reach it with a working engine hit exit 4 first — Flatpak needs a
-usable `$HOME` before slicelab does. Naming it is the point; `SECURITY.md`
-claimed for one commit that every fallback was home-visible, which was the same
-shape of over-claim this entry is about. `engine.yml` had already written the reason down — *"a Flatpak
+usable `$HOME` before slicelab does. Naming it is the point. `SECURITY.md` carried
+the opposite claim — "every fallback is now home-visible" — in **two** places,
+and the commit written to remove it fixed one and left the other standing
+twenty lines away, so the document contradicted itself for two further commits.
+That is the same shape of over-claim this entry is about, surviving inside its
+own correction. `engine.yml` had already written the reason down — *"a Flatpak
 is a materially different execution environment — sandboxed filesystem, its own
 /tmp, translated paths"* — which is the cost of a fact living in a CI comment
-rather than in the code it constrains. Scratch lives under `XDG_CACHE_HOME`,
-where D11 already puts slicelab's generated data.
+rather than in the code it constrains. Scratch lives under `XDG_CACHE_HOME` when
+that is absolute and inside the home directory, and otherwise under `~/.cache`,
+where D11 already puts slicelab's generated data. An `XDG_CACHE_HOME` outside
+the home directory is ignored rather than honoured, so a host with
+`XDG_CACHE_HOME=/var/cache/me` gets `~/.cache`.
 
 **The stand-in tests could not see any of that.** `tests/test_boundaries.py`
 pins the guarantee with a `sys.executable` child, which honours `cwd` by

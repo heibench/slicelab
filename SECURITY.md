@@ -2,7 +2,8 @@
 
 ## Supported versions
 
-Nothing is released yet. When there are releases, only the latest is supported.
+Only the latest release is supported. That is `0.0.1`, which claims the name and
+implements two verbs; nothing before it was published.
 
 ## Reporting a vulnerability
 
@@ -59,10 +60,13 @@ in the directory you were standing in and started it landing in your home
 directory instead, where it persists and where nobody is looking. The second
 attempt fell back to `$TMPDIR` on any `OSError`, so a single stray file at
 `~/.cache/slicelab` put the whole defect back **at exit 0** on a host that was
-otherwise healthy. Every fallback is now home-visible, and a relative
-`XDG_CACHE_HOME` is ignored rather than resolved against your working directory
-— which is what the basedir spec requires, and what stopped slicelab creating
-`./mycache/slicelab/engine-cwd` where you were standing.
+otherwise healthy. Every fallback *above the last rung* is now inside the home
+directory — the last rung is still `$TMPDIR`, and is described above as the
+degradation it is. A relative `XDG_CACHE_HOME` is ignored rather than resolved
+against your working directory, which is what the basedir spec requires and
+what stopped slicelab creating `./mycache/slicelab/engine-cwd` where you were
+standing; a relative `HOME` did the same thing through the other variable,
+because `Path.home()` hands back `$HOME` verbatim.
 
 Two more routes in were found after that, both of them *absolute* paths: an
 `XDG_CACHE_HOME` outside the home directory, and a symlink inside the home

@@ -27,9 +27,10 @@ The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
   cannot be translated, and `bwrap` silently starts the engine in `$HOME`
   instead. Litter in the directory you were standing in became litter in your
   home directory, which is persistent, global, and unwatched. Scratch now lives
-  under `$XDG_CACHE_HOME/slicelab/engine-cwd`, which every Flatpak engine can
-  see — verified by writing a file from inside both sandboxes and finding it
-  from the host, and pinned by an engine-gated test that watches the working
+  under `~/.cache/slicelab/engine-cwd`, or under `$XDG_CACHE_HOME` when that is
+  absolute *and* inside the home directory, with the home directory itself as
+  the rung below — everywhere a Flatpak engine can see, verified by writing a
+  file from inside both sandboxes and finding it from the host, and pinned by an engine-gated test that watches the working
   directory *and* `$HOME`.
 
   Four further ways back in, all found by review and all reproduced. Falling
@@ -47,9 +48,10 @@ The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
   home directory**, the home directory must be absolute before it is resolved,
   and usability is proved by creating the directory rather than by `mkdir(...,
   exist_ok=True)`, which returns success on an existing unwritable directory
-  and let a `PermissionError` escape from the launch. Ten tests cover it, eight
+  and let a `PermissionError` escape from the launch. Eleven tests cover it, ten
   of which need no engine, and the engine-gated one is parametrized over the
-  environment that hid the previous blocker.
+  environment that hid the previous blocker. A mutation sweep of the mechanism
+  kills all eleven mutations, each by the test named for it.
 
   A fourth review round found the code clean and one of those tests vacuous:
   it stood *outside* the fake home, so the containment filter rejected the
@@ -140,7 +142,7 @@ The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
   idea. See D24.
 
 - The repository, its contract, and the research that produced them. No verb is
-  implemented: `docs/DECISIONS.md` carries D1–D23, `docs/RESEARCH.md` separates
+  implemented: `docs/DECISIONS.md` carried D1–D23 at that point, `docs/RESEARCH.md` separates
   what was empirically established from what was refuted and what remains
   unverified, and `notes/` holds the frozen dossier those decisions cite.
 - A public-surface test asserting `slicelab` exports only `__version__`, so the
