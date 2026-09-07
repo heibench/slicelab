@@ -13,24 +13,45 @@ The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
 
 ### Fixed
 
-- **Engines no longer run in the directory you invoked slicelab from.** D20 said
-  every engine runs in a slicelab-owned scratch CWD; `run()` defaulted to
-  `cwd=None` and no call site passed one, so the decision was recorded and never
-  implemented. Measured: `slicelab which orcaslicer` in an empty directory left a
-  180-byte `result.json` behind **at exit 0** — V13 had recorded that litter only
-  for failing runs. `SECURITY.md` said the tool wrote nothing while this was
-  true; that section is corrected and now says what is written and where.
-- **`result.json` removed from the repository.** An OrcaSlicer artifact,
-  committed by accident in #17, tracked at the root for four commits. D11 forbids
-  shipping engine-derived bytes and names `test_no_engine_data.py` as its pin;
-  that file did not exist and now does.
-- **The D11 packaging guard read the wheel only.** `packages = ["slicelab"]`
-  means the wheel can never carry a root-level file, so the guard was green over
-  a stray it structurally could not see — while the sdist, built from everything
-  git tracks, shipped it. Both are checked now, and the step fails if it finds no
-  artifacts to read rather than passing on an empty glob.
-- **A relative `--datadir` now resolves against your directory**, not the scratch
-  one the engine is given.
+- **Engines no longer run in the directory you invoked slicelab from, nor in
+  your home directory.** D20 said every engine runs in a slicelab-owned scratch
+  CWD; `run()` defaulted to `cwd=None` and no call site passed one, so the
+  decision was recorded and never implemented. Measured: `slicelab which
+  orcaslicer` in an empty directory left a 180-byte `result.json` behind **at
+  exit 0** — V13 had recorded that litter only for failing runs.
+
+  The first fix used `tempfile`'s default and **moved the problem instead of
+  removing it**: a Flatpak sandbox has its own `/tmp`, so a host `/tmp` cwd
+  cannot be translated, and `bwrap` silently starts the engine in `$HOME`
+  instead. Litter in the directory you were standing in became litter in your
+  home directory, which is persistent, global, and unwatched. Scratch now lives
+  under `$XDG_CACHE_HOME/slicelab/engine-cwd`, which every Flatpak engine can
+  see — verified by `flatpak run --command=sh <app> -c pwd` against both
+  installed apps, and pinned by an engine-gated test that watches the working
+  directory *and* `$HOME`.
+- **`SECURITY.md` said the tool writes nothing.** It was false while the litter
+  was landing in the caller's directory, and false again while it was landing in
+  `$HOME`. The section now says what is written and where, including slicelab's
+  own scratch directory.
+- **`result.json` removed from the repository, and added to `.gitignore`.** An
+  OrcaSlicer artifact, committed by accident in #17, present for five commits.
+  D11 forbids shipping engine-derived bytes and names `test_no_engine_data.py`
+  as its pin; that file did not exist and now does. `.gitignore` named
+  `00000.log` but not `result.json`, so nothing objected when it arrived.
+- **The D11 guards were both narrower than they read.** The packaging half
+  inspected the wheel only — and `packages = ["slicelab"]` means the wheel can
+  never carry a root-level file, so it was green over a stray it structurally
+  could not see. The repository half checked *tracked* files, while an sdist
+  takes everything git does not **ignore**: an uncommitted stray ships just as
+  surely as a committed one. Both now read what the sdist actually takes, the
+  vocabulary includes `.log` for `00000.log`, and the workflow step fails when
+  it finds no artifacts rather than passing on an empty glob.
+- **`--datadir ''` reported the default datadir's inventory at exit 0.** The
+  flag was applied under a truthiness test, so an empty string was dropped
+  entirely and the engine answered from its own default — a real answer to a
+  question nobody asked. It is now passed through and refused, at exit 2, with
+  the engine's reason. A relative path resolves against your directory, not the
+  scratch one.
 
 ### Changed
 
@@ -40,6 +61,12 @@ The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
   green while `slicelab --version` reported a number that was never released.
 - `ci.yml` no longer claims there is deliberately no engine workflow. There is:
   `engine.yml`, on four host shapes.
+- Three remaining "nothing is implemented" claims corrected — `slicelab/cli.py`
+  twice and `CONTRIBUTING.md` — which AGENTS.md §2.5 treats as code.
+- `tests/test_no_engine_data.py` skips loudly outside a git checkout instead of
+  failing with a `CalledProcessError` traceback. It ships in the sdist, so a
+  distro packager running the suite from the tarball was the one person
+  guaranteed to see it fail.
 
 ### Added
 

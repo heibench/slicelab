@@ -362,9 +362,33 @@ orcaslicer` in an empty directory left a 180-byte `result.json` behind at exit 0
 file reached this repository's root and shipped in the sdist (D11).
 
 The default is now a temporary directory `run()` owns and removes; a caller that
-needs to *read* what the engine dropped passes its own. Pinned by
-`tests/test_boundaries.py`, which uses a stand-in process so the guarantee is
-checked on runners with no engine installed.
+needs to *read* what the engine dropped passes its own.
+
+**And it cannot be in `/tmp`.** The first fix used `tempfile`'s default and moved
+the litter rather than removing it. A Flatpak sandbox has its own `/tmp`, so a
+host `/tmp` path has nothing to translate to; `bwrap` does not refuse, it drops
+the request and starts the engine in `$HOME`. Measured against both installed
+apps with `flatpak run --command=sh <app> -c pwd`: a cwd of
+`/tmp/tmp.GRYOi6pQ0O` reports `/home/cam`, while a cwd of `~/.cache/...` reports
+itself verbatim. `engine.yml` had already written the reason down — *"a Flatpak
+is a materially different execution environment — sandboxed filesystem, its own
+/tmp, translated paths"* — which is the cost of a fact living in a CI comment
+rather than in the code it constrains. Scratch lives under `XDG_CACHE_HOME`,
+where D11 already puts slicelab's generated data.
+
+**The stand-in tests could not see any of that.** `tests/test_boundaries.py`
+pins the guarantee with a `sys.executable` child, which honours `cwd` by
+construction — no sandbox, no translation — so the suite was green on a machine
+where the real engine was writing into `$HOME`. That is this repository's
+founding rule inverted, on the change meant to honour it. A third test launches
+every believable engine on the host and watches the working directory *and*
+`$HOME`; it is engine-gated, so `engine.yml`'s Flatpak job is what makes it
+bite.
+
+Watching `$HOME` by *name* was not enough either: the session fixture's own
+discovery had already created `result.json` before the test body took its
+snapshot, so the run merely overwrote it and a set difference saw nothing. The
+fingerprint is name, mtime and size.
 
 **Still outstanding:** the honesty half. Nothing records `stray_files` yet,
 because no verb yet produces an `engine_run` record to put it in. That lands with

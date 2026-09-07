@@ -26,16 +26,27 @@ they:
   under the `--datadir` you name
 - perform **no network access** and read **no configuration file of their own**
 
-**What gets written, and where.** slicelab writes nothing itself. The engines it
-starts do: OrcaSlicer drops a `result.json` into its process working directory,
-including on a *successful* `which` probe. Every engine launched without an
-explicit destination is therefore given a temporary directory slicelab creates
-and removes, so nothing lands in the directory you ran the command from.
+**What gets written, and where.** slicelab writes one thing: a scratch
+directory under `$XDG_CACHE_HOME/slicelab/engine-cwd` (`~/.cache/...` by
+default), created before an engine launch and removed after it. Nothing else.
 
-Until 0.0.1 that was not true. `slicelab which orcaslicer`, run in an empty
+The engines it starts write more. OrcaSlicer drops a `result.json` on any run,
+including a *successful* `which` probe, and a `00000.log` on a failing one. Both
+land in the engine's process working directory, which is why slicelab gives it
+one it owns rather than letting it inherit yours.
+
+**The scratch directory cannot be in `/tmp`, and that is a security-relevant
+detail rather than a tidiness one.** A Flatpak sandbox has its own `/tmp`, so a
+host `/tmp` path cannot be translated into it — and `bwrap` does not refuse the
+request, it drops it and starts the engine in `$HOME`. The first attempt at this
+fix did exactly that: it stopped the litter landing in the directory you were
+standing in and started it landing in your home directory instead, where it
+persists and where nobody is looking. Measured, both before and after.
+
+Until 0.0.1 none of this was true. `slicelab which orcaslicer`, run in an empty
 directory, left a 180-byte `result.json` behind at exit 0 — and this section
 said the tool wrote nothing. An identical file reached this repository that way
-and was committed for four commits before anyone noticed.
+and was committed for five commits before anyone noticed.
 
 Neither verb yet reads a `slice.toml`, slices a model, or writes a lock.
 
@@ -52,9 +63,10 @@ adapter's enumeration flag. On a host where an untrusted binary is earlier on
 semantics, but worth stating for a tool whose job is finding executables.
 
 This section is a status claim and part of the gate (org AGENTS.md 2.5). It has
-been rewritten three times: when the CLI began parsing arguments, when `which`
-began launching engines, and when a measurement showed the "writes nothing"
-sentence above had been false since `which` shipped.
+been rewritten four times: when the CLI began parsing arguments, when `which`
+began launching engines, when a measurement showed the "writes nothing" sentence
+had been false since `which` shipped, and when the fix for *that* turned out to
+relocate the problem rather than remove it.
 
 ## Intended posture, once there is code
 

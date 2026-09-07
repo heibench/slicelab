@@ -13,8 +13,9 @@ bypass hooks.
 
 ## Read these first
 
-This repository is mostly documents, because nothing is implemented yet and the
-design was expensive to arrive at.
+This repository is still mostly documents. Two verbs are implemented --
+`slicelab which` and `slicelab presets` -- and the design was expensive to
+arrive at, so the documents remain the larger half.
 
 - [`docs/DECISIONS.md`](docs/DECISIONS.md) — D1–D23. **Do not relitigate a
   numbered decision.** If one is wrong, add a superseding entry saying why.
