@@ -69,8 +69,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fail if any upstream job failed or was cancelled
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      # Requires SUCCESS rather than testing for failure. `contains(needs.*.result,
+      # 'failure')` does not match 'skipped', so an `if: false` on `check` or `test`
+      # produced a fully green pull request with nothing checked -- measured in a
+      # sibling repo, where that is exactly what happened.
+      #
+      # The tolerant form is right for a workflow with path filtering, where jobs
+      # skip legitimately on a docs-only change. This one has none, so a skipped job
+      # here is always a defect.
+      - name: Fail unless every upstream job succeeded
+        if: >-
+          needs.check.result != 'success' ||
+          needs.test.result != 'success'
         run: exit 1
       - name: Pass
         run: echo 'All checks passed'
