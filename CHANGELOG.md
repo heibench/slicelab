@@ -14,7 +14,9 @@ The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
 ### Fixed
 
 - **Engines no longer run in the directory you invoked slicelab from, nor in
-  your home directory.** D20 said every engine runs in a slicelab-owned scratch
+  your home directory** — on any host where a scratch directory can be made
+  inside the home directory at all, which is the condition the fallback ladder
+  descends through. D20 said every engine runs in a slicelab-owned scratch
   CWD; `run()` defaulted to `cwd=None` and no call site passed one, so the
   decision was recorded and never implemented. Measured: `slicelab which
   orcaslicer` in an empty directory left a 180-byte `result.json` behind **at
@@ -26,9 +28,18 @@ The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
   instead. Litter in the directory you were standing in became litter in your
   home directory, which is persistent, global, and unwatched. Scratch now lives
   under `$XDG_CACHE_HOME/slicelab/engine-cwd`, which every Flatpak engine can
-  see — verified by `flatpak run --command=sh <app> -c pwd` against both
-  installed apps, and pinned by an engine-gated test that watches the working
+  see — verified by writing a file from inside both sandboxes and finding it
+  from the host, and pinned by an engine-gated test that watches the working
   directory *and* `$HOME`.
+
+  Two further ways back in, both found by review and both reproduced: falling
+  back to `$TMPDIR` on any `OSError` meant one stray file at `~/.cache/slicelab`
+  restored the defect **at exit 0** on an otherwise healthy host, and a relative
+  `XDG_CACHE_HOME` was resolved against the working directory, so slicelab
+  itself created `./mycache/slicelab/engine-cwd` where the user was standing.
+  Every fallback is now inside the home directory, relative values are ignored
+  as the basedir spec requires, and `_scratch_root` has tests that need no
+  engine.
 - **`SECURITY.md` said the tool writes nothing.** It was false while the litter
   was landing in the caller's directory, and false again while it was landing in
   `$HOME`. The section now says what is written and where, including slicelab's

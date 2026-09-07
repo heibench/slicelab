@@ -26,9 +26,12 @@ they:
   under the `--datadir` you name
 - perform **no network access** and read **no configuration file of their own**
 
-**What gets written, and where.** slicelab writes one thing: a scratch
-directory under `$XDG_CACHE_HOME/slicelab/engine-cwd` (`~/.cache/...` by
-default), created before an engine launch and removed after it. Nothing else.
+**What gets written, and where.** slicelab writes scratch directories under
+`$XDG_CACHE_HOME/slicelab/engine-cwd` (`~/.cache/...` by default). One is made
+per engine launch and removed after it; the two parent directories are created
+once and **persist**. Nothing else, on any path where that directory can be
+made — and where it cannot, the fallbacks stay inside the home directory rather
+than dropping to `$TMPDIR`, for the reason below.
 
 The engines it starts write more. OrcaSlicer drops a `result.json` on any run,
 including a *successful* `which` probe, and a `00000.log` on a failing one. Both
@@ -38,10 +41,20 @@ one it owns rather than letting it inherit yours.
 **The scratch directory cannot be in `/tmp`, and that is a security-relevant
 detail rather than a tidiness one.** A Flatpak sandbox has its own `/tmp`, so a
 host `/tmp` path cannot be translated into it — and `bwrap` does not refuse the
-request, it drops it and starts the engine in `$HOME`. The first attempt at this
-fix did exactly that: it stopped the litter landing in the directory you were
-standing in and started it landing in your home directory instead, where it
-persists and where nobody is looking. Measured, both before and after.
+request, it drops it and starts the engine in `$HOME`. Measured by writing a
+file from inside both sandboxes and looking for it from the host: a cwd under
+`~/.cache` is honoured and the file appears there; a `/tmp` cwd puts the process
+in `/home/cam` instead.
+
+The first attempt at this fix did exactly that — it stopped the litter landing
+in the directory you were standing in and started it landing in your home
+directory instead, where it persists and where nobody is looking. The second
+attempt fell back to `$TMPDIR` on any `OSError`, so a single stray file at
+`~/.cache/slicelab` put the whole defect back **at exit 0** on a host that was
+otherwise healthy. Every fallback is now home-visible, and a relative
+`XDG_CACHE_HOME` is ignored rather than resolved against your working directory
+— which is what the basedir spec requires, and what stopped slicelab creating
+`./mycache/slicelab/engine-cwd` where you were standing.
 
 Until 0.0.1 none of this was true. `slicelab which orcaslicer`, run in an empty
 directory, left a 180-byte `result.json` behind at exit 0 — and this section

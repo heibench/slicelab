@@ -368,9 +368,25 @@ needs to *read* what the engine dropped passes its own.
 the litter rather than removing it. A Flatpak sandbox has its own `/tmp`, so a
 host `/tmp` path has nothing to translate to; `bwrap` does not refuse, it drops
 the request and starts the engine in `$HOME`. Measured against both installed
-apps with `flatpak run --command=sh <app> -c pwd`: a cwd of
-`/tmp/tmp.GRYOi6pQ0O` reports `/home/cam`, while a cwd of `~/.cache/...` reports
-itself verbatim. `engine.yml` had already written the reason down — *"a Flatpak
+apps by **writing a file from inside the sandbox and looking for it from the
+host** — a cwd under `~/.cache` is honoured and the file appears there, a cwd of
+`/tmp/tmp.GRYOi6pQ0O` puts the process in `/home/cam` instead. (`pwd` alone
+would not have settled it: the builtin reports `$PWD` when it is set, so it
+cannot distinguish a real working directory from an inherited one.)
+
+**Two further ways back in, both found by review of the fix.** Falling back to
+`tempfile`'s default on any `OSError` meant a single stray file at
+`~/.cache/slicelab` reinstated the whole defect, at exit 0, on a host whose home
+and whose Flatpak were both healthy — the argument in the first draft, that such
+a host "has bigger problems than litter", was about a case the code did not
+detect. And a **relative** `XDG_CACHE_HOME` was resolved against the process
+working directory, so `mkdir(parents=True)` created
+`./mycache/slicelab/engine-cwd` where the user was standing: the same litter,
+authored by slicelab rather than by the engine. The basedir spec says a relative
+value must be ignored, and it now is. Every rung of the fallback ladder is
+inside the home directory; only a host with no usable home reaches `tempfile`'s
+default, and that rung is named as the degradation it is rather than argued
+away. `engine.yml` had already written the reason down — *"a Flatpak
 is a materially different execution environment — sandboxed filesystem, its own
 /tmp, translated paths"* — which is the cost of a fact living in a CI comment
 rather than in the code it constrains. Scratch lives under `XDG_CACHE_HOME`,
@@ -389,6 +405,11 @@ Watching `$HOME` by *name* was not enough either: the session fixture's own
 discovery had already created `result.json` before the test body took its
 snapshot, so the run merely overwrote it and a set difference saw nothing. The
 fingerprint is name, mtime and size.
+
+**Also outstanding, smaller:** `TemporaryDirectory` cleans up on normal exit, on
+exception and on `KeyboardInterrupt`, but a `SIGKILL` leaks a `run-XXXXXX` under
+the scratch root that nothing ever sweeps. It costs an empty directory, not
+correctness, and the sweep belongs with the ledger below.
 
 **Still outstanding:** the honesty half. Nothing records `stray_files` yet,
 because no verb yet produces an `engine_run` record to put it in. That lands with
