@@ -1,38 +1,52 @@
-"""D11's repository half: slicelab tracks zero engine-written bytes.
+"""D11's repository half: slicelab ships zero engine-written bytes.
 
 ``docs/DECISIONS.md`` D11 says slicelab ships nothing an engine produced, and
 names this file as what pins it. The file did not exist, and the claim was
-false: ``result.json`` -- an OrcaSlicer slice-data artifact, committed by
-accident in #17 -- sat tracked at the repository root for four commits.
+false: ``result.json`` -- an OrcaSlicer artifact, committed by accident in #17
+-- sat tracked at the repository root for five commits.
 
 The release workflow asserts the *packaging* half, and asserted it only over
 the wheel. ``packages = ["slicelab"]`` means the wheel could never have carried
 a root-level file, so that guard was green over a stray it structurally could
-not see; the sdist, which takes everything git tracks, did carry it. Both
-halves are now checked: the workflow inspects the sdist too, and this file
-checks the tree the sdist is built from.
+not see; the sdist did carry it. Both halves are checked now: the workflow
+inspects the sdist too, and this file checks the tree the sdist is built from.
+
+**What the sdist actually takes is what git does not *ignore*** -- not what git
+tracks. So does this. An uncommitted ``result.json`` sitting in the working
+tree ships just as surely as a committed one, and a rule about the index would
+have reported green on the exact state that produced the incident.
 """
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parent.parent
 
-#: Formats an engine writes and slicelab authors none of. A tracked file with
-#: one of these suffixes is engine output that escaped into the repository --
-#: which is exactly how ``result.json`` arrived. Should slicelab ever need to
-#: author one of its own (a JSON schema, say), narrow the rule to the paths
-#: rather than deleting it: D11 is about provenance, not about extensions.
+#: Formats an engine writes and slicelab authors none of. A file with one of
+#: these suffixes headed for the sdist is engine output that escaped into the
+#: repository -- which is exactly how ``result.json`` arrived. ``.log`` is here
+#: for ``00000.log``, the litter D20 and V13 are written about. Should slicelab
+#: ever need to author one of its own (a JSON schema, say), narrow the rule to
+#: the paths rather than deleting it: D11 is about provenance, not extensions.
 ENGINE_WRITTEN_SUFFIXES = frozenset(
-    {".json", ".ini", ".gcode", ".bgcode", ".3mf", ".stl", ".obj", ".amf", ".step"}
+    {".json", ".ini", ".gcode", ".bgcode", ".log", ".3mf", ".stl", ".obj", ".amf", ".step"}
 )
 
 
-def _tracked() -> list[str]:
+def _sdist_candidates() -> list[str]:
+    """Every path hatchling would put in an sdist: tracked plus unignored.
+
+    ``--others --exclude-standard`` is the untracked-but-not-ignored half, and
+    it is the half that matters -- a stray file is a defect before it is
+    committed, not after.
+    """
     out = subprocess.run(
-        ["git", "ls-files"],
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
         cwd=_ROOT,
         capture_output=True,
         text=True,
@@ -41,22 +55,40 @@ def _tracked() -> list[str]:
     return [line for line in out.splitlines() if line]
 
 
-def test_git_reports_a_tracked_tree_at_all() -> None:
+@pytest.fixture(scope="module", autouse=True)
+def _needs_a_checkout() -> None:
+    """Skip loudly outside a git checkout rather than failing with a traceback.
+
+    This file ships in the sdist, so a distro packager or conda feedstock runs
+    it from an unpacked tarball with no ``.git`` and no reason to have git
+    installed. ``git ls-files`` there exits 128, and a `check=True` traceback
+    would tell them neither the cause nor the requirement. The check is about
+    what *this repository* is about to publish; from a published artifact there
+    is nothing left to check.
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed; this check reads the repository's own file list")
+    if not (_ROOT / ".git").exists():
+        pytest.skip("not a git checkout (running from an sdist?); nothing to check here")
+
+
+def test_git_reports_a_file_list_at_all() -> None:
     """A null result deserves the same evidence as a positive one.
 
-    Without this, a `git ls-files` that returned nothing -- wrong directory, no
-    git, an export with no repository -- would make every assertion below pass
-    over an empty list and report the strongest possible verdict having looked
-    at nothing.
+    Without this, a `git ls-files` that returned nothing would make the
+    assertion below pass over an empty list and report the strongest possible
+    verdict having looked at nothing.
     """
-    tracked = _tracked()
-    assert len(tracked) > 20, f"git ls-files returned {len(tracked)} paths; it was not read"
-    assert "pyproject.toml" in tracked
+    candidates = _sdist_candidates()
+    assert len(candidates) > 20, f"git listed {len(candidates)} paths; it was not read"
+    assert "pyproject.toml" in candidates
 
 
-def test_no_engine_written_artifact_is_tracked() -> None:
-    strays = sorted(p for p in _tracked() if Path(p).suffix.lower() in ENGINE_WRITTEN_SUFFIXES)
+def test_nothing_an_engine_wrote_is_headed_for_the_sdist() -> None:
+    strays = sorted(
+        p for p in _sdist_candidates() if Path(p).suffix.lower() in ENGINE_WRITTEN_SUFFIXES
+    )
     assert not strays, (
-        "these tracked files are in formats an engine writes and slicelab does "
-        f"not author, which D11 forbids shipping: {strays}"
+        "these files would ship in the sdist, in formats an engine writes and "
+        f"slicelab does not author, which D11 forbids: {strays}"
     )

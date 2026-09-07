@@ -28,9 +28,13 @@ htmlcov/
 *.bgcode
 slice.lock
 
-# Engine litter. OrcaSlicer writes 00000.log into the process CWD on a failing
-# run (D20); it is swept and recorded, but a stray one must never be committed.
+# Engine litter. OrcaSlicer writes into the process CWD: 00000.log on a failing
+# run (D20, V13), and result.json on any run at all -- including a successful
+# `which` probe. It is swept now, but the one that got committed was result.json
+# and it was NOT listed here, so nothing objected. Both are named, and both are
+# in the D11 vocabulary that tests/test_no_engine_data.py enforces.
 00000.log
+result.json
 
 # Editors / OS
 .DS_Store

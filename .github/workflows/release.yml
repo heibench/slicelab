@@ -71,9 +71,9 @@ jobs:
         # This step used to inspect the wheel only. `packages = ["slicelab"]`
         # means the wheel can only ever contain slicelab's own module, so that
         # check was green over a stray it structurally could not see -- while
-        # the sdist, which takes everything git tracks, shipped a committed
-        # OrcaSlicer `result.json` from the repository root. A guard that
-        # cannot fail is not a guard. Both artifacts are read now.
+        # the sdist, which takes everything git does not IGNORE, shipped a
+        # committed OrcaSlicer `result.json` from the repository root. A guard
+        # that cannot fail is not a guard. Both artifacts are read now.
         run: |
           set -eu
           python3 - <<'PY'
@@ -81,11 +81,13 @@ jobs:
 
           # The wheel is slicelab's own module and nothing else.
           WHEEL_ALLOWED = (".py", ".typed", ".txt", ".md")
-          # The sdist is the tracked tree, so it legitimately carries config and
-          # docs. What it must never carry is a format an engine writes --
-          # the same vocabulary tests/test_no_engine_data.py uses.
+          # The sdist is the working tree minus what git ignores, so it
+          # legitimately carries config and docs. What it must never carry is a
+          # format an engine writes -- the same vocabulary
+          # tests/test_no_engine_data.py uses, including `.log` for the
+          # `00000.log` that D20 and V13 are actually written about.
           ENGINE_WRITTEN = (
-              ".json", ".ini", ".gcode", ".bgcode",
+              ".json", ".ini", ".gcode", ".bgcode", ".log",
               ".3mf", ".stl", ".obj", ".amf", ".step",
           )
 
