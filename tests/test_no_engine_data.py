@@ -44,16 +44,26 @@ def _sdist_candidates() -> list[str]:
     ``--others`` is the untracked-but-not-ignored half, and it is the half that
     matters -- a stray file is a defect before it is committed, not after.
 
-    ``--exclude-per-directory``, deliberately, **not** ``--exclude-standard``.
-    The standard set also honours the user's global ``core.excludesFile`` and
-    ``.git/info/exclude``; hatchling reads neither, so those two rules diverge
-    in the unsafe direction. Measured: with ``*.log`` in a global gitignore --
-    one of the most common entries anyone has -- a stray ``.log`` is invisible
-    to ``--exclude-standard`` and ships in the sdist anyway. That matters here
-    precisely because ``.log`` is in the vocabulary below, for ``00000.log``.
+    ``--exclude-from=.gitignore``, deliberately, and neither of the two obvious
+    alternatives. Hatchling reads **exactly one** ignore file --- the
+    ``.gitignore`` at the project root --- so that is what this has to read.
+
+    * ``--exclude-standard`` additionally honours the user's global
+      ``core.excludesFile`` and ``.git/info/exclude``. With ``*.log`` in a
+      personal global gitignore, one of the most common entries anyone has, a
+      stray file is invisible here and ships anyway. That matters precisely
+      because ``.log`` is in the vocabulary below, for ``00000.log``.
+    * ``--exclude-per-directory=.gitignore`` fixes those two and introduces a
+      third: it reads *nested* ``.gitignore`` files, which hatchling does not.
+      A ``result.json`` under a subdirectory whose own ``.gitignore`` covers it
+      is then invisible here and ships anyway.
+
+    Measured against real sdists in all three of those cases plus a
+    force-added tracked artifact: this flag agrees with what hatchling shipped
+    every time.
     """
     out = subprocess.run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-per-directory=.gitignore"],
+        ["git", "ls-files", "--cached", "--others", "--exclude-from=.gitignore"],
         cwd=_ROOT,
         capture_output=True,
         text=True,
