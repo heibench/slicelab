@@ -91,68 +91,96 @@ def run(
     anyone would notice it.
     """
     if cwd is None:
-        with tempfile.TemporaryDirectory(prefix="run-", dir=_scratch_root()) as scratch:
+        with _scratch() as scratch:
             return _spawn(argv, Path(scratch), timeout)
     return _spawn(argv, cwd, timeout)
 
 
-def _scratch_root() -> Path | None:
-    """Where a scratch working directory may live so an engine can see it.
+def _scratch() -> tempfile.TemporaryDirectory[str]:
+    """A working directory for an engine, in the first location that works.
+
+    Descends ``_scratch_roots`` and stops at the first one that both exists and
+    accepts a new directory. Creating the directory *is* the usability test:
+    ``mkdir(exist_ok=True)`` succeeds on a directory that is already there and
+    unwritable, so a ladder that only called ``mkdir`` would settle on a root it
+    could not use and let the ``PermissionError`` escape from the launch rather
+    than descending to the next rung.
+
+    The final fallback is ``tempfile``'s own default, which under a Flatpak
+    means the engine starts in ``$HOME``. That is a real degradation, named
+    here as one: it is reached only when nothing inside the home directory can
+    hold a directory, which breaks the engine long before it breaks this.
+    """
+    for root in _scratch_roots():
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            return tempfile.TemporaryDirectory(prefix="run-", dir=root)
+        except OSError:
+            continue
+    return tempfile.TemporaryDirectory(prefix="slicelab-run-")
+
+
+def _scratch_roots() -> list[Path]:
+    """Places an engine's working directory may go, best first.
 
     A Flatpak sandbox has its **own** ``/tmp``, so a host ``/tmp`` path cannot
     be translated into it. ``bwrap`` does not refuse: it drops the request and
     starts the process in ``$HOME``. Measured against both installed apps by
     writing a file from inside the sandbox and looking for it from the host ---
-    a cwd under ``~/.cache`` is honoured and the file appears there; a cwd of
-    ``/tmp/tmp.GRYOi6pQ0O`` puts the process in ``/home/cam`` instead.
-    ``engine.yml`` had already written the reason down: "a Flatpak is a
-    materially different execution environment -- sandboxed filesystem, its own
-    /tmp, translated paths."
+    a cwd under ``~/.cache`` is honoured and the file appears there, a cwd of
+    ``/tmp/tmp.GRYOi6pQ0O`` puts the process in ``/home/cam`` and the file
+    lands there instead. ``engine.yml`` had already written the reason down:
+    "a Flatpak is a materially different execution environment -- sandboxed
+    filesystem, its own /tmp, translated paths."
 
-    So every candidate here is **inside the home directory**, which is the part
-    a Flatpak can see. The ladder descends only as far as it must:
+    So a candidate qualifies only if it is **under the home directory after
+    resolution**. Three rounds of review went into that sentence and each part
+    of it is load-bearing:
 
-    1. ``XDG_CACHE_HOME``, but only when it is **absolute**. The basedir spec
-       says a relative value "MUST be ignored", and honouring one was not
-       harmless: ``mkdir(parents=True)`` resolved it against the process cwd
-       and slicelab created ``./mycache/slicelab/engine-cwd`` in the directory
-       the user was standing in. That is the litter this function exists to
-       prevent, with slicelab as the author rather than the engine.
-    2. ``~/.cache``, the spec's own default.
-    3. The home directory itself, if neither of those can be created --- one
-       stray file at ``~/.cache/slicelab`` is enough, and so is ``EACCES`` or a
-       full disk. The scratch directory is still made and removed, so nothing
-       persists; it is only less tidy.
-    4. ``None``, handing ``tempfile`` its default, only when the home directory
-       is unusable too.
+    * *Absolute* is not enough. ``XDG_CACHE_HOME=/tmp/xdg`` is an ordinary
+      setting, and it put ``result.json`` back in ``$HOME`` at exit 0.
+    * *Lexically inside* is not enough either. ``~/cache-link -> /tmp/...`` is
+      inside ``$HOME`` by string and outside it by inode, and only
+      ``resolve()`` can tell. So can ``~/.cache/../../../tmp``.
+    * The **home directory must be absolute before it is resolved**.
+      ``Path.home()`` hands back ``$HOME`` verbatim, so ``HOME=relhome`` gives
+      ``Path("relhome")`` --- and resolving *that* anchors it to the process
+      working directory, which is exactly the litter this function exists to
+      prevent. Measured: it created ``./relhome/.cache/slicelab/engine-cwd``
+      where the user was standing.
 
-    Step 4 is a real degradation and is named as one: under a Flatpak it puts
-    the litter back in ``$HOME``. It is the last rung rather than the first
-    because a host with no writable home breaks the engine long before it
-    breaks this, and there is no better place left to point at. Every rung
-    above it was previously step 4: ``except OSError: return None`` sent an
-    ordinary stray file at ``~/.cache/slicelab`` straight to ``/tmp``, and
-    ``slicelab which orcaslicer`` wrote into ``$HOME`` again at exit 0.
+    An empty list means no home-visible location exists, and the caller falls
+    through to ``tempfile``'s default.
     """
-    base = os.environ.get("XDG_CACHE_HOME") or ""
+    raw_home = Path.home()
+    if not raw_home.is_absolute():
+        # A relative $HOME resolves against the process working directory.
+        # There is no home-visible location to offer, and inventing one out of
+        # the user's cwd is the defect rather than the fallback.
+        return []
+    home = raw_home.resolve()
+
     candidates = []
-    # Relative values are ignored, per the spec -- not resolved against cwd.
+    base = os.environ.get("XDG_CACHE_HOME") or ""
     if base and Path(base).is_absolute():
+        # The basedir spec: a relative value "MUST be ignored".
         candidates.append(Path(base) / "slicelab" / "engine-cwd")
-    try:
-        home = Path.home()
-    except (OSError, RuntimeError):  # no home directory to resolve at all
-        return None
     candidates.append(home / ".cache" / "slicelab" / "engine-cwd")
     candidates.append(home)
 
-    for candidate in candidates:
-        try:
-            candidate.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            continue
-        return candidate
-    return None
+    resolved = (_resolved(c) for c in candidates)
+    return [c for c in resolved if c is not None and _under(c, home)]
+
+
+def _resolved(path: Path) -> Path | None:
+    try:
+        return path.resolve()
+    except OSError:  # a symlink loop, or a path we cannot walk
+        return None
+
+
+def _under(path: Path, home: Path) -> bool:
+    return path == home or home in path.parents
 
 
 def _spawn(argv: list[str], cwd: Path, timeout: float) -> Completed:

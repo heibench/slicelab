@@ -19,7 +19,7 @@ import pytest
 
 from slicelab.adapters import EngineSpec
 from slicelab.engine.discover import discover
-from slicelab.engine.launch import _scratch_root, run
+from slicelab.engine.launch import _scratch, _scratch_roots, run
 
 PACKAGE = Path(__file__).resolve().parent.parent / "slicelab"
 
@@ -164,8 +164,11 @@ def _fingerprint(directory: Path) -> dict[str, tuple[int, int]]:
                 # Directories are deliberately skipped: a directory's mtime
                 # bumps when anything is added inside it, so a download landing
                 # mid-run would report `$HOME/Downloads` as engine litter and
-                # name an engine for something no engine did. Engine litter is
-                # a regular file at the top level, which is still caught.
+                # name an engine for something no engine did. Every stray we
+                # know of -- `result.json`, `00000.log` -- is a regular file at
+                # the top level and is still caught. An engine that dropped a
+                # DIRECTORY in `$HOME` would not be, which is a real gap and
+                # not one any observed engine has walked into.
                 continue
             stat = entry.stat()
         except OSError:  # vanished between listing and stat; not ours
@@ -174,8 +177,18 @@ def _fingerprint(directory: Path) -> dict[str, tuple[int, int]]:
     return seen
 
 
+@pytest.mark.parametrize(
+    "xdg",
+    [
+        pytest.param(None, id="ambient-environment"),
+        pytest.param("outside-home", id="xdg-cache-home-outside-home"),
+    ],
+)
 def test_no_real_engine_writes_outside_the_directory_it_was_given(
-    usable_engines: list[EngineSpec], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    xdg: str | None,
+    usable_engines: list[EngineSpec],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The guarantee the two tests above cannot see, checked against real engines.
 
@@ -192,6 +205,15 @@ def test_no_real_engine_writes_outside_the_directory_it_was_given(
     a missing engine into a failure, which is how `engine.yml`'s Flatpak job
     makes this bite.
     """
+    if xdg is not None:
+        # The case a reviewer had to find by hand, because the suite only ever
+        # ran in the ambient environment: an absolute XDG_CACHE_HOME pointing
+        # OUTSIDE the home directory. The sandbox cannot translate such a path,
+        # so it dropped the cwd and started the engine in $HOME -- at exit 0,
+        # with every test green. `tmp_path` is under the system temp directory,
+        # which is exactly the shape that broke it.
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / xdg))
+
     monkeypatch.chdir(tmp_path)
     home = Path.home()
     before = _fingerprint(home)
@@ -210,9 +232,9 @@ def test_no_real_engine_writes_outside_the_directory_it_was_given(
     assert launched, "no engine was launched, so this test established nothing"
     proof = "; ".join(launched)
 
-    assert not list(tmp_path.iterdir()), (
-        f"an engine wrote into the caller's working directory: "
-        f"{sorted(p.name for p in tmp_path.iterdir())} -- launched {proof}"
+    stray = [p.name for p in tmp_path.iterdir() if xdg is None or p.name != xdg]
+    assert not stray, (
+        f"an engine wrote into the caller's working directory: {sorted(stray)} -- launched {proof}"
     )
     after = _fingerprint(home)
     touched = sorted(name for name, mark in after.items() if before.get(name) != mark)
@@ -222,15 +244,74 @@ def test_no_real_engine_writes_outside_the_directory_it_was_given(
     )
 
 
-def test_an_absolute_xdg_cache_home_is_where_scratch_goes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.fixture
+def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A home directory the test owns, so the ladder can be walked safely."""
+    home = tmp_path / "home"
+    (home / ".cache").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    return home
+
+
+def test_an_absolute_xdg_cache_home_inside_home_is_preferred(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    assert _scratch_root() == tmp_path / "slicelab" / "engine-cwd"
+    xdg = fake_home / "xdg"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg))
+    assert _scratch_roots()[0] == xdg / "slicelab" / "engine-cwd"
+
+
+def test_an_xdg_cache_home_outside_the_home_directory_is_not_offered(
+    fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absolute is not enough; it has to be somewhere a Flatpak can see.
+
+    `XDG_CACHE_HOME=/var/cache/$USER` is an ordinary setting, and while only
+    `is_absolute()` was checked it put `result.json` back in `$HOME` at exit 0:
+    the sandbox cannot translate a path outside the home directory, so `bwrap`
+    drops the cwd and starts the engine in `$HOME` instead. Measured with the
+    real engine at `XDG_CACHE_HOME=/tmp/xdgprobe` -- 180 bytes, exit 0.
+    """
+    outside = tmp_path / "outside-home"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(outside))
+
+    roots = _scratch_roots()
+
+    assert all(fake_home in r.parents or r == fake_home for r in roots), (
+        f"a scratch root outside the home directory was offered: {roots}"
+    )
+    assert roots[0] == fake_home / ".cache" / "slicelab" / "engine-cwd"
+
+
+def test_a_symlink_out_of_the_home_directory_is_not_offered(
+    fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lexically inside `$HOME` and outside it by inode.
+
+    A containment check on the string would accept this. Only `resolve()` can
+    tell, which is why every candidate is resolved before it is judged.
+    """
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    link = fake_home / "cache-link"
+    link.symlink_to(outside)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(link))
+
+    # Judged AFTER resolution, deliberately. Asking whether the returned path
+    # is lexically under $HOME is the mistake this test exists to catch: the
+    # symlink satisfies that and still lands the engine outside the sandbox's
+    # reach. A test that judged the string would pass against the defect.
+    landing = [r.resolve() for r in _scratch_roots()]
+
+    assert landing, "the ladder offered nothing at all"
+    assert all(fake_home in r.parents or r == fake_home for r in landing), (
+        f"a symlink pointing out of the home directory was accepted: {landing}"
+    )
 
 
 def test_a_relative_xdg_cache_home_is_ignored_rather_than_resolved_against_cwd(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The basedir spec says a relative value MUST be ignored. It was honoured.
 
@@ -240,41 +321,79 @@ def test_a_relative_xdg_cache_home_is_ignored_rather_than_resolved_against_cwd(
     and ran the engine inside it -- the exact litter this whole mechanism
     exists to prevent, authored by slicelab rather than by the engine.
     """
-    monkeypatch.chdir(tmp_path)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
     monkeypatch.setenv("XDG_CACHE_HOME", "mycache")
 
-    root = _scratch_root()
+    roots = _scratch_roots()
 
-    assert root is not None
-    assert root.is_absolute(), f"a relative XDG_CACHE_HOME was honoured: {root}"
-    assert not list(tmp_path.iterdir()), (
-        "a relative XDG_CACHE_HOME was resolved against the working directory: "
-        f"{sorted(p.name for p in tmp_path.iterdir())}"
+    assert roots, "the ladder offered nothing at all"
+    assert all(r.is_absolute() for r in roots)
+    assert not list(cwd.iterdir()), (
+        f"a relative XDG_CACHE_HOME reached the working directory: "
+        f"{sorted(p.name for p in cwd.iterdir())}"
     )
 
 
-def test_an_unusable_cache_directory_falls_back_somewhere_the_sandbox_can_see(
+def test_a_relative_home_offers_nothing_rather_than_the_working_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The fallback must stay inside the home directory, not drop to /tmp.
+    """`Path.home()` hands back `$HOME` verbatim, relative and all.
 
-    `except OSError: return None` handed `tempfile` its default, which under a
-    Flatpak means the engine starts in `$HOME` -- so an ordinary stray file at
-    `~/.cache/slicelab` silently reinstated the defect, at exit 0, on a host
-    whose home and whose Flatpak were both perfectly healthy. Measured before
-    the fix: `$HOME/result.json`, 180 bytes, from a clean run.
+    The `XDG_CACHE_HOME` guard did not cover it, so `HOME=relhome slicelab
+    which orcaslicer` created `./relhome/.cache/slicelab/engine-cwd` where the
+    user was standing -- the same defect through the other variable. Resolving
+    a relative home would anchor it to the working directory, which is the
+    thing being prevented, so the honest answer is that there is no
+    home-visible location at all.
     """
-    home = tmp_path / "home"
-    home.mkdir()
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
     monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    # A plain file exactly where the cache directory needs to be.
-    (home / ".cache").mkdir()
-    (home / ".cache" / "slicelab").write_text("not a directory")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("relhome")))
 
-    root = _scratch_root()
-
-    assert root is not None, "scratch fell all the way through to tempfile's default"
-    assert home in root.parents or root == home, (
-        f"scratch fell outside the home directory a Flatpak can see: {root}"
+    assert _scratch_roots() == []
+    assert not list(cwd.iterdir()), (
+        f"a relative HOME reached the working directory: {sorted(p.name for p in cwd.iterdir())}"
     )
+
+
+def test_an_unusable_cache_directory_falls_back_inside_the_home_directory(
+    fake_home: Path,
+) -> None:
+    """`except OSError: return None` sent this straight to `/tmp`.
+
+    Under a Flatpak that means the engine starts in `$HOME`, so an ordinary
+    stray file at `~/.cache/slicelab` reinstated the whole defect, at exit 0,
+    on a host whose home and whose Flatpak were both healthy.
+    """
+    (fake_home / ".cache" / "slicelab").write_text("a file, where a directory is needed")
+
+    with _scratch() as scratch:
+        used = Path(scratch).resolve()
+
+    assert fake_home in used.parents, f"scratch fell outside the home directory: {used}"
+
+
+def test_a_root_that_exists_but_cannot_be_written_is_descended_past(
+    fake_home: Path,
+) -> None:
+    """Existence is not usability, and `mkdir(exist_ok=True)` cannot tell them apart.
+
+    It returns success on a directory that is already there and unwritable, so
+    a ladder that only called `mkdir` settled on a root it could not use and
+    let the `PermissionError` escape from the launch instead of descending.
+    """
+    blocked = fake_home / ".cache" / "slicelab" / "engine-cwd"
+    blocked.mkdir(parents=True)
+    blocked.chmod(0o500)  # readable and traversable, not writable
+    try:
+        with _scratch() as scratch:
+            used = Path(scratch).resolve()
+    finally:
+        blocked.chmod(0o700)
+
+    assert fake_home in used.parents, f"scratch fell outside the home directory: {used}"
+    assert blocked not in used.parents, "the unwritable root was used anyway"
