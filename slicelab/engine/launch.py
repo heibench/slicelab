@@ -152,7 +152,16 @@ def _scratch_roots() -> list[Path]:
     An empty list means no home-visible location exists, and the caller falls
     through to ``tempfile``'s default.
     """
-    raw_home = Path.home()
+    try:
+        raw_home = Path.home()
+    except (OSError, RuntimeError):
+        # Python 3.13+ raises RuntimeError when neither $HOME nor the passwd
+        # entry yields a home directory. An earlier draft guarded this; the
+        # rewrite that added the containment check dropped the guard, which
+        # would have turned "this host has no home directory" into an unhandled
+        # traceback out of `run` rather than a launch that carries on in a
+        # temporary directory.
+        return []
     if not raw_home.is_absolute():
         # A relative $HOME resolves against the process working directory.
         # There is no home-visible location to offer, and inventing one out of

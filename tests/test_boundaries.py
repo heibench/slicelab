@@ -409,3 +409,29 @@ def test_a_root_that_exists_but_cannot_be_written_is_descended_past(
 
     assert fake_home in used.parents, f"scratch fell outside the home directory: {used}"
     assert blocked not in used.parents, "the unwritable root was used anyway"
+
+
+def test_a_host_with_no_home_directory_at_all_offers_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`Path.home()` raises rather than returning something unusable.
+
+    Python 3.13+ raises `RuntimeError` when neither `$HOME` nor the passwd
+    entry yields a home directory. An earlier draft caught it; the rewrite that
+    added the containment check dropped the guard, so this would have escaped
+    `run()` as an unhandled traceback instead of a launch that carries on in a
+    temporary directory. slicelab turns environment faults into exit codes, and
+    a traceback is neither.
+    """
+
+    def no_home(cls: type[Path]) -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(no_home))
+
+    assert _scratch_roots() == []
+    # And the launch still happens, rather than raising.
+    completed = run([sys.executable, "-c", "print('alive')"])
+    assert completed.exit_status == 0
+    assert completed.stdout.strip() == "alive"
