@@ -40,6 +40,19 @@ class EngineSpec:
     flatpak_app_id: str | None
     macos_exec: tuple[str, ...] = ()
     preset_query: PresetQuery | None = None
+    base_keys: tuple[str, ...] = ()
+    """The option names an authored ``[<engine>.base]`` table must carry.
+
+    These are the ENGINE's names and they live here rather than in the core for the
+    reason D1's seam exists: PrusaSlicer addresses a preset triple by *name*
+    (``--printer-profile``), and OrcaSlicer has no such flag at all -- it takes
+    ``--load-settings`` with file *paths*, a different kind of address. A shared
+    constant naming PrusaSlicer's three would assume a mapping that does not exist,
+    which is the PrusaSlicer-shaped abstraction D2 refuses.
+
+    Empty means the adapter has not decided what its ``[base]`` contains, and
+    pre-flight refuses rather than guessing.
+    """
 
     @property
     def exec_names(self) -> tuple[str, ...]:

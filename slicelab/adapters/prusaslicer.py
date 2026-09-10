@@ -18,5 +18,6 @@ SPEC = EngineSpec(
     # stderr -- the same code it returns for "that printer was not found"
     # (notes/evidence.md V5). slicelab adjudicates the artifact, never this
     # exit code (D17).
+    base_keys=("printer-profile", "print-profile", "material-profile"),
     preset_query=PresetQuery(argv=("--query-printer-models",), root_key="printer_models"),
 )

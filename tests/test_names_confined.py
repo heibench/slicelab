@@ -68,6 +68,13 @@ DECLARED_VOCABULARY = frozenset(
         # Readback provenance labels (D4's trigger) -- the SHAPE of a readback,
         # never a key inside one.
         "unavailable",
+        # Intent-file structure: the table names slicelab defines, and the fields
+        # of the validated request. Not any engine's option names -- those live on
+        # EngineSpec.base_keys, under adapters/.
+        "base",
+        "set",
+        "overrides",
+        "source",
         # Report/lock structural field names slicelab owns.
         "verdict",
         "entries",
