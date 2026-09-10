@@ -600,3 +600,64 @@ released — the tool disagreeing with its own package, silently, which is the
 whole failure this project is named around. `pyproject.toml` now declares
 `dynamic = ["version"]` and hatchling reads it from the package. Structural, so
 no test is needed: the drift is not possible rather than merely detected.
+
+## D26 — The core's vocabulary boundary is a whitelist of slicelab's own terms
+
+`notes/critique.md`'s fatal-flaw list asked for a **stoplist** scoped to the FFF
+config-key namespace — the ~411 `--help-fff` option names — and said the stoplist
+itself must be a numbered decision rather than a quietly growing allowlist. This
+is that decision, and it inverts the construction.
+
+### Why not the stoplist as specified
+
+A list of PrusaSlicer's key names, committed to this repository, **is
+engine-derived data**, and D11 forbids shipping any. The alternatives were both
+worse than the problem: read the stoplist from D11's XDG cache and the test skips
+on every machine without an engine — a skipped test is not a passing test, and
+this is the one test D1's supersede clause is adjudicated by. Hand-author the 411
+names and D11 is broken outright, for a list that goes stale on the next engine
+release.
+
+There is also a coverage argument the stoplist loses. A blacklist only refuses the
+names someone thought to list; OrcaSlicer's `wall_loops`, a future engine's
+vocabulary, and any key added by an upstream release all pass it.
+
+### Decided
+
+Invert it. A string literal in a core module is either **prose** — it contains
+whitespace — or it is a term named in `DECLARED_VOCABULARY` in
+`tests/test_names_confined.py`. Everything else fails.
+
+That works because of an asymmetry in the two vocabularies: a config key is short
+and unspaced, and slicelab's own vocabulary is roughly thirty terms. Naming ours
+costs a list we would want reviewed anyway; refusing theirs then costs nothing and
+is total — it refuses every engine's keys, including the ones nobody has written
+yet.
+
+**Adding an entry to `DECLARED_VOCABULARY` is this decision being amended**, and it
+happens in a diff where someone can object. An engine's key name can never be
+added; that is the whole content of the rule.
+
+### What this is scoped to, and what it is not
+
+`test_boundaries.py::test_engine_names_appear_only_in_adapters` confines engine
+**identifiers** — the six executable names and Flatpak application ids computed
+from `REGISTRY`. It does not look at config keys, and `AGENTS.md` claimed it did
+for as long as the sentence existed. Measured, on 2026-09-09: with
+`return "wall_loops" in readback` appended to `slicelab/status.py`, all 16 tests in
+`test_boundaries.py` pass and `test_names_confined.py` fails. Both tests are kept;
+they make different claims.
+
+### Red-capability
+
+The red state of this test cannot be observed by breaking the source tree the way
+§2.4 usually asks, because the property under test is that the tree is *clean*. So
+the checker is exercised directly against deliberately dirty source in
+`test_the_checker_catches_an_engine_key`, and against an error message in
+`test_prose_is_not_flagged` so the rule is not merely red on everything.
+
+*Supersedes:* if the prose rule proves too coarse — a core module needing an
+unspaced literal that is genuinely not vocabulary, often enough that
+`DECLARED_VOCABULARY` becomes a dumping ground rather than a reviewed list — then
+narrow the scan to comparison, containment and subscript operands and record that
+here. The list growing without objection is the signal, not the list being long.
