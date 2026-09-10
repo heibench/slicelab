@@ -57,7 +57,16 @@ PROBE = OptionProbe(
     # Orca's spellings for the same eight shapes PrusaSlicer's probe uses. A
     # percent and a bare number are both real Orca value forms: `accel_to_decel_factor`
     # is `50%` and `wall_loops` is `2` in the default dump.
-    sentinels=("SLICELABPROBE", "7", "0.17", "37%", "1", "3x4", "0x0,7x0,7x7,0x7", "0.37,0.37"),
+    sentinels=(
+        ("SLICELABPROBE", "SLICELABOTHER"),
+        ("7", "3"),
+        ("0.17", "0.29"),
+        ("37%", "61%"),
+        ("1", "0"),
+        ("3x4", "5x6"),
+        ("0x0,7x0,7x7,0x7", "0x0,9x0,9x9,0x9"),
+        ("0.37,0.37", "0.53,0.53"),
+    ),
     # Empty, and that is a measurement rather than an omission. Orca 2.4.2 answers
     # `setup params error` at rc=254 for BOTH an option it does not have and a bad
     # value for one it does, having written no artifact either time. The two cases

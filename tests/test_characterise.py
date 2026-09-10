@@ -17,7 +17,7 @@ from __future__ import annotations
 import ast
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -29,7 +29,9 @@ from slicelab.adapters.prusaslicer import _options_from_help_fff, _read_ini
 from slicelab.engine.characterise import (
     Characterisation,
     CharacterisationError,
+    MapEntry,
     ProbeOutcome,
+    Tracking,
     _cache_root,
     _probe_one,
     _read_cache,
@@ -136,18 +138,42 @@ FORM = LaunchForm(LaunchKind.PATH, ["/nonexistent/engine"], "a stand-in")
 FOUND = Discovery(engine="stand-in", form=FORM, fidelity=ExitFidelity.ESTABLISHED, reason="test")
 BASELINE: Mapping[str, str] = {"alpha": "1", "beta": "2", "gamma": "3"}
 
+_PROBE = PRUSASLICER.option_probe
+assert _PROBE is not None
+PAIRS = _PROBE.sentinels
+#: The first pair tried, and the second. Read off the adapter rather than
+#: written out, so reordering the cascade cannot leave these tests asserting
+#: against values the probe no longer sends first.
+LOW, HIGH = PAIRS[0]
+NEXT_LOW, NEXT_HIGH = PAIRS[1]
+
+#: What the fake engine returns: exit status, what it said, what it wrote.
+#: ``None`` for the third means it wrote no readback at all.
+Reply = tuple[int, str, str | None]
+
 
 class FakeEngine:
-    """An engine that writes whatever the test says, and records nothing else."""
+    """An engine whose answer depends on the sentinel it was handed.
 
-    def __init__(self, sidecar: Path, script: Sequence[tuple[int, str, str | None]]) -> None:
+    Keyed by sentinel rather than by call order, because the property under test
+    is now about *two* runs of one option and what differs between them. A
+    call-ordered script would let a test pass while the probe sent the same value
+    twice, which is exactly the thing that must not happen.
+    """
+
+    def __init__(self, sidecar: Path, reply: Callable[[str], Reply]) -> None:
         self.sidecar = sidecar
-        self.script = list(script)
-        self.calls = 0
+        self.reply = reply
+        self.seen: list[str] = []
+
+    @property
+    def calls(self) -> int:
+        return len(self.seen)
 
     def __call__(self, argv: list[str], *, timeout: float = 0.0) -> Completed:
-        status, said, writes = self.script[min(self.calls, len(self.script) - 1)]
-        self.calls += 1
+        sentinel = next(a.split("=", 1)[1] for a in argv if a.startswith("--an-option="))
+        self.seen.append(sentinel)
+        status, said, writes = self.reply(sentinel)
         if writes is not None:
             self.sidecar.write_text(writes, encoding="utf-8")
         if status < 0:
@@ -159,73 +185,198 @@ def _ini(pairs: Mapping[str, str]) -> str:
     return "".join(f"{k} = {v}\n" for k, v in pairs.items())
 
 
+def _dumps(per_sentinel: Mapping[str, Mapping[str, str]]) -> Callable[[str], Reply]:
+    """Accept the named sentinels with the given dump; refuse every other."""
+
+    def reply(sentinel: str) -> Reply:
+        if sentinel in per_sentinel:
+            return (0, "", _ini(per_sentinel[sentinel]))
+        return (1, "Invalid value supplied", None)
+
+    return reply
+
+
 def _probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    script: Sequence[tuple[int, str, str | None]],
+    reply: Callable[[str], Reply],
     *,
     volatile: tuple[str, ...] = (),
-) -> tuple[ProbeOutcome, tuple[str, ...], FakeEngine]:
+) -> tuple[ProbeOutcome, MapEntry | None, FakeEngine]:
     sidecar = tmp_path / "readback"
-    engine = FakeEngine(sidecar, script)
+    engine = FakeEngine(sidecar, reply)
     monkeypatch.setattr("slicelab.engine.characterise.run", engine)
-    probe = PRUSASLICER.option_probe
-    assert probe is not None
-    outcome, keys = _probe_one(
-        PRUSASLICER, FOUND, probe, "an-option", sidecar, BASELINE, volatile, timeout=1.0
+    assert _PROBE is not None
+    outcome, entry = _probe_one(
+        PRUSASLICER, FOUND, _PROBE, "an-option", sidecar, BASELINE, volatile, timeout=1.0
     )
-    return outcome, keys, engine
+    return outcome, entry, engine
 
 
-def test_a_key_that_moved_is_the_mapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    outcome, keys, _ = _probe(tmp_path, monkeypatch, [(0, "", _ini({**BASELINE, "beta": "moved"}))])
-    assert (outcome, keys) == (ProbeOutcome.MAPPED, ("beta",))
+def test_every_sentinel_is_sent_as_a_pair_of_two_distinct_values() -> None:
+    """The pair is the mechanism, so a degenerate one would silently disable it."""
+    assert PAIRS, "the probe declares no sentinels"
+    for low, high in PAIRS:
+        assert low != high, f"sentinel pair {low!r}/{high!r} discriminates nothing"
 
 
-def test_several_keys_moving_is_recorded_as_several(
+def test_a_key_that_follows_the_value_is_the_mapping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fan-out is real: ``--extruder`` writes three keys on 2.9.6.
-
-    A mapping that kept one of them would let a readback report ``applied`` with
-    two keys never looked at -- green over an intent only partly honoured.
-    """
-    outcome, keys, _ = _probe(
+    outcome, entry, engine = _probe(
         tmp_path,
         monkeypatch,
-        [(0, "", _ini({**BASELINE, "alpha": "x", "gamma": "y"}))],
+        _dumps({LOW: {**BASELINE, "beta": LOW}, HIGH: {**BASELINE, "beta": HIGH}}),
     )
-    assert (outcome, keys) == (ProbeOutcome.MAPPED, ("alpha", "gamma"))
+    assert outcome is ProbeOutcome.MAPPED
+    assert entry == MapEntry(keys=("beta",), side_effects=(), tracking=Tracking.EXACT)
+    assert engine.seen == [LOW, HIGH], "one sentinel cannot establish tracking"
 
 
-def test_a_key_is_mapped_on_having_moved_and_not_on_matching_the_sentinel(
+def test_an_aggregate_option_maps_to_every_member(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The filter that looks obvious, refused on evidence.
+    """``--extruder`` at ``=2`` then ``=3``: all three members follow the value.
 
-    Keeping only the keys whose resolved value equals the sentinel verbatim would
-    look like a way to tell a real write from a dependent constraint. Measured
-    against 2.9.6 it **unmaps 89 of the 330 mapped options**, because the engine
-    normalises legitimately: ``--filament-shrinkage-compensation-xy=7`` resolves
-    to ``7%``, ``--draft-shield=1`` to ``enabled``, and a string sentinel to ``0``
-    on every numeric option. It also fails at the job it was for -- the
-    spiral-vase constraint sets ``perimeters`` to exactly the sentinel.
-
-    So the rule is that the key moved, and the sentinel's own value is not
-    consulted.
+    It is an aggregate, so every member IS the request. Keeping one of them and
+    dropping two would let a readback report ``applied`` with two keys never
+    looked at -- green over an intent only partly honoured.
     """
-    outcome, keys, _ = _probe(
-        tmp_path, monkeypatch, [(0, "", _ini({**BASELINE, "beta": "normalised-elsewhere"}))]
+    outcome, entry, _ = _probe(
+        tmp_path,
+        monkeypatch,
+        _dumps(
+            {
+                LOW: {"alpha": LOW, "beta": LOW, "gamma": LOW},
+                HIGH: {"alpha": HIGH, "beta": HIGH, "gamma": HIGH},
+            }
+        ),
     )
-    assert (outcome, keys) == (ProbeOutcome.MAPPED, ("beta",))
+    assert outcome is ProbeOutcome.MAPPED
+    assert entry is not None
+    assert entry.keys == ("alpha", "beta", "gamma")
+    assert entry.tracking is Tracking.EXACT
+
+
+def test_a_dependent_constraint_is_a_side_effect_and_never_a_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--spiral-vase`` at ``=1`` then ``=0``, which is `notes/critique.md` G4.
+
+    Measured on 2.9.6 it moves five keys, and only ``spiral_vase`` follows the
+    value. ``perimeters``, ``fill_density``, ``top_solid_layers`` and
+    ``filament_retract_layer_change`` are the engine adjusting the print around a
+    request that never named them -- on a slice PrusaSlicer performed exactly as
+    designed. Adjudicating the authored value against those four is G4's false
+    red, and one extra invocation separates them structurally.
+
+    ``gamma`` here is the constraint: it moves, and it reads the same under both
+    sentinels, which is the thing a key carrying the option's value cannot do.
+    """
+    outcome, entry, _ = _probe(
+        tmp_path,
+        monkeypatch,
+        _dumps(
+            {
+                LOW: {**BASELINE, "beta": LOW, "gamma": "forced"},
+                HIGH: {**BASELINE, "beta": HIGH, "gamma": "forced"},
+            }
+        ),
+    )
+    assert outcome is ProbeOutcome.MAPPED
+    assert entry == MapEntry(keys=("beta",), side_effects=("gamma",), tracking=Tracking.EXACT)
+
+
+def test_a_constraint_that_equals_the_sentinel_in_one_run_is_still_a_side_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The case a one-sentinel value filter could never catch.
+
+    ``--spiral-vase=1`` forces ``perimeters`` to ``1``, which is exactly the
+    sentinel -- so "did this key take the value I sent" says yes about a key that
+    was never requested. It takes the *second* run to see that it does not follow
+    the value.
+    """
+    outcome, entry, _ = _probe(
+        tmp_path,
+        monkeypatch,
+        _dumps(
+            {
+                LOW: {**BASELINE, "beta": LOW, "gamma": LOW},
+                HIGH: {**BASELINE, "beta": HIGH, "gamma": LOW},
+            }
+        ),
+    )
+    assert entry is not None
+    assert entry.keys == ("beta",)
+    assert entry.side_effects == ("gamma",)
+
+
+def test_a_key_that_normalises_the_value_is_mapped_inexactly_not_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Normalisation is the readback diff's problem, never a reason to unmap.
+
+    ``--fill-density=0.17`` resolves to ``17%`` and ``--draft-shield=1`` to
+    ``enabled``. The key responded to the value -- it reads differently under two
+    different sentinels, which a dependent constraint does not -- so it is the
+    option's key, and the entry says the tie is weaker rather than pretending
+    there is none. Measured: a rule that required the value verbatim unmapped 89
+    of 330 mapped options.
+    """
+    outcome, entry, _ = _probe(
+        tmp_path,
+        monkeypatch,
+        _dumps(
+            {
+                NEXT_LOW: {**BASELINE, "beta": f"{NEXT_LOW}%"},
+                NEXT_HIGH: {**BASELINE, "beta": f"{NEXT_HIGH}%"},
+            }
+        ),
+    )
+    assert outcome is ProbeOutcome.MAPPED
+    assert entry == MapEntry(keys=("beta",), side_effects=(), tracking=Tracking.INEXACT)
+
+
+def test_an_inexact_pair_does_not_stop_the_cascade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--fill-density`` again, and the reason the cascade keeps going.
+
+    The float pair is accepted and normalised, which is only an inexact tie. A
+    later pair of the right type carries the value verbatim. Settling for the
+    first non-empty answer would hand the readback a weaker entry than the engine
+    was willing to give.
+    """
+    later_low, later_high = PAIRS[3]
+    outcome, entry, engine = _probe(
+        tmp_path,
+        monkeypatch,
+        _dumps(
+            {
+                NEXT_LOW: {**BASELINE, "beta": f"{NEXT_LOW}%"},
+                NEXT_HIGH: {**BASELINE, "beta": f"{NEXT_HIGH}%"},
+                later_low: {**BASELINE, "beta": later_low},
+                later_high: {**BASELINE, "beta": later_high},
+            }
+        ),
+    )
+    assert entry is not None
+    assert entry.tracking is Tracking.EXACT
+    assert later_low in engine.seen
 
 
 def test_a_new_key_is_a_mapping_and_not_a_namespace_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``--bed-custom-texture`` adds a key the default dump does not have."""
-    outcome, keys, _ = _probe(tmp_path, monkeypatch, [(0, "", _ini({**BASELINE, "delta": "new"}))])
-    assert (outcome, keys) == (ProbeOutcome.MAPPED, ("delta",))
+    outcome, entry, _ = _probe(
+        tmp_path,
+        monkeypatch,
+        _dumps({LOW: {**BASELINE, "delta": LOW}, HIGH: {**BASELINE, "delta": HIGH}}),
+    )
+    assert outcome is ProbeOutcome.MAPPED
+    assert entry is not None and entry.keys == ("delta",)
 
 
 def test_a_dump_that_lost_baseline_keys_is_a_mode_switch(
@@ -238,8 +389,8 @@ def test_a_dump_that_lost_baseline_keys_is_a_mode_switch(
     prototype produced, and no count threshold is needed to refuse it -- a config
     option never removes a key.
     """
-    outcome, keys, _ = _probe(tmp_path, monkeypatch, [(0, "", _ini({"sla_only": "1"}))])
-    assert (outcome, keys) == (ProbeOutcome.NAMESPACE_CHANGED, ())
+    outcome, entry, _ = _probe(tmp_path, monkeypatch, _dumps({LOW: {"sla_only": "1"}}))
+    assert (outcome, entry) == (ProbeOutcome.NAMESPACE_CHANGED, None)
 
 
 def test_exit_zero_with_no_artifact_is_not_a_mapping(
@@ -250,15 +401,15 @@ def test_exit_zero_with_no_artifact_is_not_a_mapping(
     Without the gate the absent file parses to ``{}``, every baseline key reads as
     moved, and one option is recorded as writing all 343.
     """
-    outcome, keys, _ = _probe(tmp_path, monkeypatch, [(0, "", None)])
-    assert (outcome, keys) == (ProbeOutcome.NO_ARTIFACT, ())
+    outcome, entry, _ = _probe(tmp_path, monkeypatch, lambda s: (0, "", None))
+    assert (outcome, entry) == (ProbeOutcome.NO_ARTIFACT, None)
 
 
 def test_an_empty_artifact_counts_as_no_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Zero bytes parse to zero keys, which is the same false fan-out."""
-    outcome, _, _ = _probe(tmp_path, monkeypatch, [(0, "", "")])
+    outcome, _, _ = _probe(tmp_path, monkeypatch, lambda s: (0, "", ""))
     assert outcome is ProbeOutcome.NO_ARTIFACT
 
 
@@ -266,7 +417,7 @@ def test_an_engine_that_never_returns_is_not_an_engine_that_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``--gcodeviewer`` opens a window and waits. It must cost one timeout, once."""
-    outcome, _, engine = _probe(tmp_path, monkeypatch, [(-1, "", None)])
+    outcome, _, engine = _probe(tmp_path, monkeypatch, lambda s: (-1, "", None))
     assert outcome is ProbeOutcome.TIMED_OUT
     assert engine.calls == 1, "a hang must not be retried once per sentinel"
 
@@ -274,7 +425,9 @@ def test_an_engine_that_never_returns_is_not_an_engine_that_refused(
 def test_an_option_the_engine_does_not_have_stops_at_the_first_sentinel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    outcome, _, engine = _probe(tmp_path, monkeypatch, [(1, "Unknown option --an-option", None)])
+    outcome, _, engine = _probe(
+        tmp_path, monkeypatch, lambda s: (1, "Unknown option --an-option", None)
+    )
     assert outcome is ProbeOutcome.UNKNOWN_OPTION
     assert engine.calls == 1
 
@@ -283,39 +436,40 @@ def test_a_bad_value_costs_a_sentinel_and_not_the_option(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Options are typed: a rejection is "wrong value", not "no such option"."""
-    probe = PRUSASLICER.option_probe
-    assert probe is not None
-    outcome, keys, engine = _probe(
+    outcome, entry, engine = _probe(
         tmp_path,
         monkeypatch,
-        [
-            (1, "Invalid value supplied", None),
-            (0, "", _ini({**BASELINE, "beta": "7"})),
-        ],
+        _dumps(
+            {
+                NEXT_LOW: {**BASELINE, "beta": NEXT_LOW},
+                NEXT_HIGH: {**BASELINE, "beta": NEXT_HIGH},
+            }
+        ),
     )
-    assert (outcome, keys) == (ProbeOutcome.MAPPED, ("beta",))
-    assert engine.calls == 2
+    assert outcome is ProbeOutcome.MAPPED
+    assert entry is not None and entry.keys == ("beta",)
+    assert engine.seen == [LOW, NEXT_LOW, NEXT_HIGH], (
+        "a refused first value must not cost the pair's second run"
+    )
 
 
 def test_every_sentinel_refused_is_a_could_not_tell(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    probe = PRUSASLICER.option_probe
-    assert probe is not None
-    outcome, keys, engine = _probe(tmp_path, monkeypatch, [(1, "Invalid value supplied", None)])
-    assert (outcome, keys) == (ProbeOutcome.REJECTED, ())
-    assert engine.calls == len(probe.sentinels)
+    outcome, entry, engine = _probe(
+        tmp_path, monkeypatch, lambda s: (1, "Invalid value supplied", None)
+    )
+    assert (outcome, entry) == (ProbeOutcome.REJECTED, None)
+    assert engine.calls == len(PAIRS), "a refused low value must not trigger the high one"
 
 
 def test_an_accepted_option_that_moved_nothing_is_not_in_the_map(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """And only after every sentinel has been tried, not the first."""
-    probe = PRUSASLICER.option_probe
-    assert probe is not None
-    outcome, keys, engine = _probe(tmp_path, monkeypatch, [(0, "", _ini(BASELINE))])
-    assert (outcome, keys) == (ProbeOutcome.NO_KEY_MOVED, ())
-    assert engine.calls == len(probe.sentinels)
+    """And only after every pair has been tried, not the first."""
+    outcome, entry, engine = _probe(tmp_path, monkeypatch, lambda s: (0, "", _ini(BASELINE)))
+    assert (outcome, entry) == (ProbeOutcome.NO_KEY_MOVED, None)
+    assert engine.calls == 2 * len(PAIRS)
 
 
 def test_a_sentinel_that_resolves_to_the_default_is_not_an_answer(
@@ -331,16 +485,18 @@ def test_a_sentinel_that_resolves_to_the_default_is_not_an_answer(
     configuration, which is the opposite of the truth and would keep every one of
     them out of the map.
     """
-    outcome, keys, engine = _probe(
+    true_word, false_word = PAIRS[4]
+    outcome, entry, _ = _probe(
         tmp_path,
         monkeypatch,
-        [
-            (0, "", _ini(BASELINE)),
-            (0, "", _ini({**BASELINE, "beta": "1"})),
-        ],
+        lambda s: (
+            (0, "", _ini({**BASELINE, "beta": true_word}))
+            if s == true_word
+            else (0, "", _ini({**BASELINE, "beta": false_word}))
+        ),
     )
-    assert (outcome, keys) == (ProbeOutcome.MAPPED, ("beta",))
-    assert engine.calls == 2
+    assert outcome is ProbeOutcome.MAPPED
+    assert entry is not None and entry.keys == ("beta",)
 
 
 def test_a_key_that_will_not_hold_still_is_not_attributed_to_the_option(
@@ -352,13 +508,19 @@ def test_a_key_that_will_not_hold_still_is_not_attributed_to_the_option(
     habit -- reproducibility is measured, never assumed -- applied to the thing
     the whole map is diffed against.
     """
-    outcome, keys, _ = _probe(
+    outcome, entry, _ = _probe(
         tmp_path,
         monkeypatch,
-        [(0, "", _ini({**BASELINE, "alpha": "clock", "beta": "real"}))],
+        _dumps(
+            {
+                LOW: {**BASELINE, "alpha": "clock-a", "beta": LOW},
+                HIGH: {**BASELINE, "alpha": "clock-b", "beta": HIGH},
+            }
+        ),
         volatile=("alpha",),
     )
-    assert (outcome, keys) == (ProbeOutcome.MAPPED, ("beta",))
+    assert outcome is ProbeOutcome.MAPPED
+    assert entry == MapEntry(keys=("beta",), side_effects=(), tracking=Tracking.EXACT)
 
 
 # -- the cache: what it is keyed by, and what it refuses to believe -----------
@@ -423,7 +585,13 @@ def test_the_cache_round_trips_tuples_rather_than_lists(tmp_path: Path) -> None:
     result = Characterisation(
         engine="e",
         version="1",
-        name_map={"extruder": ("infill_extruder", "perimeter_extruder")},
+        entries={
+            "extruder": MapEntry(
+                keys=("infill_extruder", "perimeter_extruder"),
+                side_effects=(),
+                tracking=Tracking.EXACT,
+            )
+        },
         outcomes={"extruder": "mapped", "info": "no-artifact"},
         baseline_key_count=343,
         volatile_keys=(),
@@ -442,20 +610,31 @@ def test_the_cache_records_why_an_option_is_not_in_the_map(tmp_path: Path) -> No
     path = tmp_path / "m.json"
     _write_cache(
         path,
-        Characterisation("e", "1", {"a": ("a",)}, {"a": "mapped", "b": "no-key-moved"}, 1, ()),
+        Characterisation(
+            "e",
+            "1",
+            {"a": MapEntry(keys=("a",), side_effects=("z",), tracking=Tracking.EXACT)},
+            {"a": "mapped", "b": "no-key-moved"},
+            1,
+            (),
+        ),
     )
     document = json.loads(path.read_text(encoding="utf-8"))
     assert document["outcomes"]["b"] == "no-key-moved"
+    assert document["entries"]["a"]["side_effects"] == ["z"]
+    assert document["entries"]["a"]["tracking"] == "exact"
 
 
 @pytest.mark.parametrize(
     "content",
     [
         "not json at all",
-        '{"schema": 999, "map": {"a": ["b"]}}',
-        '{"schema": 1, "map": {}}',
-        '{"schema": 1, "map": {"a": "b"}}',
-        '{"schema": 1}',
+        '{"schema": 999, "entries": {"a": {"keys": ["b"]}}}',
+        '{"schema": 2, "entries": {}}',
+        '{"schema": 2, "entries": {"a": ["b"]}}',
+        '{"schema": 2, "entries": {"a": {"keys": "b"}}}',
+        '{"schema": 2}',
+        '{"schema": 2, "map": {"a": ["b"]}}',
         "[]",
     ],
 )
@@ -481,7 +660,16 @@ def test_a_cached_map_is_returned_without_touching_the_engine(
     _write_cache(
         cache_path_for(PRUSASLICER, "2.9.6"),
         Characterisation(
-            "prusaslicer", "2.9.6", {"after-layer-gcode": ("layer_gcode",)}, {}, 1, ()
+            "prusaslicer",
+            "2.9.6",
+            {
+                "after-layer-gcode": MapEntry(
+                    keys=("layer_gcode",), side_effects=(), tracking=Tracking.EXACT
+                )
+            },
+            {},
+            1,
+            (),
         ),
     )
 
@@ -493,9 +681,20 @@ def test_a_cached_map_is_returned_without_touching_the_engine(
 
 
 def test_a_build_that_will_not_state_its_version_is_refused(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``Identity.exact`` is False here, and caching under "" would poison the next build."""
+    """``Identity.exact`` is False here, and caching under "" would poison the next build.
+
+    The refusal must come **before** the engine is touched, not after a few
+    hundred invocations produce a map with nowhere honest to put it -- so the
+    probe is replaced with something that fails loudly if it is reached.
+    """
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    def refuse(*args: object, **kwargs: object) -> Characterisation:
+        raise AssertionError("an unknown version must be refused before probing")
+
+    monkeypatch.setattr("slicelab.engine.characterise.characterise", refuse)
     with pytest.raises(CharacterisationError, match="per-build"):
         load_name_map(PRUSASLICER, "  ")
 
@@ -669,6 +868,41 @@ def test_one_option_can_write_several_keys(tmp_path: Path, monkeypatch: pytest.M
     )
     keys = characterise(spec, "under-test").name_map["extruder"]
     assert len(keys) > 1, f"--extruder mapped to {keys}; fan-out is not representable"
+
+
+def test_the_engine_separates_a_written_key_from_an_adjusted_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G4's spiral-vase run, against the real engine, as the tracking rule sees it.
+
+    ``--spiral-vase=1`` moves five keys on 2.9.6 and the slice is exactly what
+    PrusaSlicer was asked for. Only ``spiral_vase`` follows the value across
+    ``=1`` and ``=0``; ``perimeters``, ``fill_density`` and ``top_solid_layers``
+    are the engine adjusting the print around a request that never named them.
+    Comparing the authored value against those is G4's false red, and it is now
+    structurally impossible: they are in ``side_effects``, which is not the map.
+
+    ``perimeters`` is named specifically because it is the case a one-run value
+    filter cannot catch -- the constraint sets it to ``1``, which is the sentinel.
+    """
+    from slicelab.engine.discover import ExitFidelity as Fidelity
+    from slicelab.engine.discover import discover
+
+    found = discover(PRUSASLICER)
+    if found.fidelity is not Fidelity.ESTABLISHED:
+        pytest.skip(f"prusaslicer: {found.reason}")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    probe = PRUSASLICER.option_probe
+    assert probe is not None
+    spec = replace(
+        PRUSASLICER,
+        option_probe=replace(probe, candidates=lambda listing, baseline: ("spiral-vase",)),
+    )
+    entry = characterise(spec, "under-test").entries["spiral-vase"]
+    assert entry.keys == ("spiral_vase",), f"spiral-vase mapped to {entry.keys}"
+    assert "perimeters" in entry.side_effects
+    assert "fill_density" in entry.side_effects
+    assert not set(entry.keys) & set(entry.side_effects)
 
 
 def test_an_option_that_writes_no_configuration_is_not_a_mapping(

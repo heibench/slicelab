@@ -900,17 +900,19 @@ no configuration. `presets` reports 2 today. The implementation lands with #19;
 this entry exists so `resolve` does not invent a third answer for the same
 condition, which is what #19 was filed to prevent.
 
-## D30 — the option-to-key map is probed, cached per build, and its value is a tuple of keys
 
-`notes/critique.md` G2's action 2, implemented. G2 called the name mapping
+## D30 — the option-to-key map is probed with two sentinels, cached per build, and its value is a tuple of keys
+
+`notes/critique.md` G2's actions 2 and 3, implemented. G2 called the name mapping
 "unstated and provably non-total" and reproduced a false `absent` from the only
-available rule; this entry records what replaced it and, more usefully, the three
+available rule; this entry records what replaced it and, more usefully, the four
 things measuring it established that reading could not.
 
 ### Decided
 
 `load_name_map(spec, version) -> Mapping[str, tuple[str, ...]]`, built by setting
-each option to a sentinel and observing which config key moved, cached under
+each option to **two** distinct sentinels and observing which config key followed
+the value, cached under
 `$XDG_CACHE_HOME/slicelab/characterisation/<engine>/<version>/`. Engine **and**
 version, because the map is a per-build fact: options are renamed and keys are
 added between releases, and a map carried across that boundary is confidently
@@ -918,18 +920,64 @@ wrong with nothing to report the gap. D11's half is unchanged — the cache is
 generated on the user's machine and slicelab ships none of it.
 
 The engine-neutral part — cascade, artifact gate, timeout, mode-switch rule,
-cache — is `slicelab/engine/characterise.py`. The four engine-shaped parts are
-`adapters.base.OptionProbe`: how to enumerate options, how to read a readback,
-this engine's sentinel spellings, and its wording for "no such option".
+tracking, cache — is `slicelab/engine/characterise.py`. The four engine-shaped
+parts are `adapters.base.OptionProbe`: how to enumerate options, how to read a
+readback, this engine's sentinel spellings, and its wording for "no such option".
 
-**The value is `tuple[str, ...]`, uniformly, including 1-tuples.** Measured on
-2.9.6, five options move more than one key, and `--extruder` moves three
-(`infill_extruder`, `perimeter_extruder`, `solid_infill_extruder`). A `str` value
-would have to pick one, and a readback comparing only the picked one reports
-`applied` while two keys went unchecked — green over a partly honoured intent,
-which is the worst outcome in this system. A value whose type depends on how many
-answers there happen to be is a second defect handed to the caller, so the
-1-tuples stay tuples.
+**The value is `tuple[str, ...]`, uniformly, including 1-tuples.** Four options
+write more than one key, and `--extruder` writes three (`infill_extruder`,
+`perimeter_extruder`, `solid_infill_extruder`). A `str` value would have to pick
+one, and a readback comparing only the picked one reports `applied` while two
+keys went unchecked — green over a partly honoured intent, which is the worst
+outcome in this system. A value whose type depends on how many answers there
+happen to be is a second defect handed to the caller, so the 1-tuples stay
+tuples.
+
+### Two sentinels, because one cannot tell a write from a constraint
+
+Setting an option once says which keys **moved**. Setting it twice says which of
+them **followed the value**. A key tracks when it holds sentinel A after the run
+with A and sentinel B after the run with B; only a key the option writes can do
+that. Measured on 2.9.6:
+
+```
+--extruder      (=2 vs =3)   tracks infill_extruder, perimeter_extruder, solid_infill_extruder
+--solid-layers  (=2 vs =5)   tracks bottom_solid_layers, top_solid_layers
+                             side effect solid_layers      (0 under both)
+--spiral-vase   (=1 vs =0)   tracks spiral_vase
+                             side effects perimeters, fill_density, top_solid_layers,
+                                          filament_retract_layer_change
+```
+
+So `notes/critique.md` G4's dependent constraints fall out **structurally**, with
+no heuristic and no threshold. `--extruder` is an aggregate and all three members
+are the request; `--spiral-vase` sets one key and the engine then adjusts four
+others, which were never requested and must never be adjudicated against the
+authored value. Those four are recorded on the entry as `side_effects`, because
+they are true, and kept out of `keys`, because comparing an authored value
+against them is G4's false red on a slice the engine performed exactly as
+designed.
+
+`perimeters` is why one sentinel could never have done it: the constraint sets it
+to `1`, which is precisely the value that was sent, so "did this key take my
+value" answers yes about a key nobody asked for.
+
+**A one-run value filter was tried first and is refuted**, which is why the
+second run rather than a cleverer rule. Keeping only keys whose resolved value
+equalled the sentinel verbatim unmapped **89 of the then-330 mapped options**,
+because the engine normalises legitimately — `7` resolves to `7%`, `1` to
+`enabled`, a string to `0` on every numeric option — and it still kept
+`perimeters`. It cost 89 correct answers and did not buy the one thing it was
+for. Normalisation is now carried as `Tracking.INEXACT`: the keys responded to
+both sentinels but carried neither verbatim, so the tie is real and weaker, and
+value normalisation is the readback diff's problem rather than the map's.
+
+**The cost is stated rather than hidden.** One extra invocation per candidate,
+and the cascade no longer stops at the first non-empty answer — an inexact pair
+is remembered and a later pair of the right type may still track exactly, which
+is what `--fill-density` needs. Measured solo on this host, PrusaSlicer went from
+**398 s to 1131 s**, about 2.8x rather than the 2x a per-candidate count
+suggests. Once per build, cached.
 
 ### Measured, 2026-09-10, on the two installed engines
 
@@ -937,20 +985,32 @@ answers there happen to be is a second defect handed to the caller, so the
 |---|---|---|
 | candidates probed | 416 | 616 |
 | baseline readback keys | 343 | 616 |
-| mapped | 330 | 527 |
-| of which fan out to >1 key | 5 | 4 |
-| moved no key | 41 | 27 |
-| every sentinel refused | 36 | 62 |
+| **mapped** | **342** | **545** |
+| of which tracking is exact | 336 | 375 |
+| of which tracking is inexact | 6 | 170 |
+| entries with >1 key | 4 | 4 |
+| entries carrying side effects | 3 | 0 |
+| moved no key | 29 | 8 |
+| every sentinel refused | 36 | 63 |
 | wrote no readback at exit 0 | 2 | 0 |
 | switched key namespace | 2 | 0 |
 | never returned | 5 | 0 |
-| wall clock | 398 s | 435 s |
+| wall clock | 1131 s | 1181 s |
 
-`--after-layer-gcode -> layer_gcode` is the **only** single-key PrusaSlicer option
-whose key is not its own dash-to-underscore form, and there are none on Orca. That
-does not make the transform nearly right: see the collision result below.
+The PrusaSlicer column is a solo run. Orca's was measured concurrently with a
+PrusaSlicer sweep and was not repeated; on the PrusaSlicer pair, concurrency
+moved wall clock by under 1%.
 
-### Three findings the probe produced that reading the engine did not
+Orca's 170 inexact entries are one cause, not a spread: its per-extruder keys are
+**JSON lists**, so `--activate-air-filtration=1` resolves to `["1"]` and responds
+to the value without carrying it. A container shape, not a value transform, and
+exactly the case `INEXACT` exists to carry rather than discard.
+
+`--after-layer-gcode -> layer_gcode` is the **only** single-key PrusaSlicer entry
+whose key is not its own dash-to-underscore form, and there are none on Orca.
+That does not make the transform nearly right: see the collision result below.
+
+### Four findings the probe produced that reading the engine did not
 
 **A mode switch is not a mapping, and it needs no threshold.** `--export-sla`
 swaps printer technology: it drops 334 of the 343 baseline keys and adds 143 of
@@ -971,9 +1031,15 @@ validate nothing and anything that is not literally `1` resolves to `0`, so
 `--spiral-vase=SLICELABPROBE` exits 0, resolves to the `0` already in the dump,
 and moves no key. That put **110 real options** — `--spiral-vase`,
 `--support-material`, `--thin-walls` among them — in a bucket meaning the exact
-opposite of the truth. Correcting it took mapped from 258 to 330. The rule now is
-that the cascade continues past a null result and `no-key-moved` is claimed only
-when every accepted sentinel moved nothing.
+opposite of the truth.
+
+**A bare number is not a percent, and the engine says so loudly.** `--fill-density`
+is a *fraction* when given without a unit: `=40` and `=7` are refused at rc=1
+with `Value out of range: fill_density` and **no ini written**, while `=0.4`
+resolves to `40%` and `=60%` to `60%`. This is a D5-adjacent boundary and it is
+benign only because D7's artifact gate is in place — the failing run writes
+nothing, so it is a rejection the cascade steps past rather than an empty answer
+read as "this option moves no key".
 
 ### The collision search G2 named as its own action
 
@@ -988,43 +1054,43 @@ line, which is where D28's five alias-only spellings come from. The test is: for
 every candidate, is its dash-to-underscore form a real config key that the probe
 established the option does **not** write?
 
-**Result: no collision of the kind G2 feared exists on either engine.** Not one
-option writes a key while its own underscore form names a *different* real key.
-Every case where the transform points at a real key the option does not write is
-an option that writes **no key at all** — 38 on PrusaSlicer, 89 on Orca — which
-is a false `applied` only if the run is separately green, and which the map
-already refuses by leaving those options out of it.
+**Result: no collision of the kind G2 feared exists on either engine.** Every
+case where the transform points at a real key the option does not write is an
+option that writes **no key at all** — 27 on PrusaSlicer, 71 on Orca — which the
+map already refuses by leaving those options out of it. (Both counts are against
+the default dump; a key absent from the defaults and created by the option, like
+`bed_custom_texture`, is not in that population.)
 
-That result is narrower than "the transform is safe", and the difference is the
-point. Two failure classes remain and both are real:
+What remains is narrower than "the transform is unsafe", and tracking shrank it:
 
-* **False `absent`** — 2 on PrusaSlicer: `--after-layer-gcode` and `--extruder`.
-  G2 reproduced the first.
-* **Right key, incomplete check** — 4 on PrusaSlicer, 4 on Orca: the transform
-  names one member of a fan-out and the other members go unchecked. This is the
-  false `applied` G2 was looking for, reached by a different route than the one it
-  proposed, and it is why the map's value is a tuple.
+* **False `absent`** — 4 on PrusaSlicer. `--after-layer-gcode` and `--extruder`
+  write differently-named keys; `--solid-layers` and `--solid-min-thickness` now
+  join them because their self-named key turned out to be a side effect rather
+  than a write.
+* **Right key, incomplete check** — **1** on PrusaSlicer, down from 4, and 4 on
+  Orca. This is the false `applied` G2 was looking for, reached by a different
+  route than the one it proposed: the transform names one member of a genuine
+  aggregate and the rest go unchecked. Tracking is what makes the membership
+  measured rather than assumed, so the class is now only as large as the
+  aggregates really are.
 
-### The limit this does not settle
+### The probe is not bit-identical between runs, and that is measured
 
-A multi-key entry mixes two populations the probe cannot separate: keys the
-option writes, and keys a **dependent constraint** moved. `--spiral-vase=1` moves
-five, and four of them are G4's case — `fill_density` to `0%`, `top_solid_layers`
-to `0`, `perimeters` to `1` — on a slice the engine performed exactly as designed.
+Two full PrusaSlicer sweeps of the same build disagreed on **2 of 416** entries:
+`--interlocking-beam` was `no-key-moved` in one and `mapped` in the other, and
+`--extruder` was labelled `inexact` in one and `exact` in the other. **The keys
+themselves were identical in both runs** — what moved was one option's presence
+and one confidence label, both in the weaker direction on the run that shared the
+host with a second sweep.
 
-The obvious filter is refused on evidence rather than on taste. Keeping only keys
-whose resolved value equals the sentinel verbatim **unmaps 89 of the 330 mapped
-options**, because the engine normalises legitimately: `7` resolves to `7%`, `1`
-to `enabled`, a string sentinel to `0` on every numeric option. And it still keeps
-`perimeters` in the spiral-vase entry, because that constraint's value happens to
-equal the sentinel. It costs 89 correct answers and does not buy the one thing it
-was for.
+The cause is that a transient engine failure is indistinguishable from a real
+refusal: a rejected sentinel means "try the next pair", and nothing tells the
+probe that this particular rejection was the machine rather than the option. That
+is a limit, not a bug to paper over with retries, which would equally suppress
+real refusals. Recorded because D8's rule is that reproducibility is a measured
+value, and this is the measurement: n=2, two entries moved, no key changed.
 
-So **which members of a multi-key entry a readback may adjudicate is open**, and
-it is five options wide on PrusaSlicer with the membership known. D27 holds the
-ground underneath it meanwhile: a value that differs is `coerced`, and `coerced`
-is `incomplete`, never `refused`.
-
-*Supersedes:* if a way is found to tell a dependent constraint from a write, it
-belongs on the `Characterisation` record beside the map rather than inside the
-mapping, so that the mapping stays the thing that was measured.
+*Supersedes:* if `side_effects` turns out to be something a readback should
+adjudicate rather than merely record, that is a change to `readback.py` and to
+D27, not to this map — the map states which keys followed the value, and that is
+the thing that was measured.

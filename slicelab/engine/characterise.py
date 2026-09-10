@@ -6,8 +6,8 @@ at the leading position of ``--help-fff``, 343 config keys in a default
 ``--save``. ``--after-layer-gcode`` writes ``layer_gcode``, so a
 dash-to-underscore transform returns ``absent`` for a key the engine applied
 exactly -- a correct run reported as exit 2. G2 names the fix and it is not a
-better transform: **probe**. Set one option to a sentinel, dump the
-configuration, and see which key moved.
+better transform: **probe**. Set one option to two different sentinels,
+dump the configuration each time, and see which key followed the value.
 
 Three things are established here rather than assumed, because each of them
 turns silence into data if it is not:
@@ -27,6 +27,12 @@ turns silence into data if it is not:
   and adds 143 of its own. A "moved" count in the hundreds is a mode switch, not
   a mapping, and the test for it needs no threshold -- see
   :data:`ProbeOutcome.NAMESPACE_CHANGED`.
+* **A key that moved is not necessarily a key the option wrote.** Each candidate
+  is probed with **two** distinct sentinels, and only a key that holds the first
+  under the first and the second under the second is the option's; the rest moved
+  because the engine adjusted the print around the request. One extra invocation
+  per candidate, and `notes/critique.md` G4's dependent constraints fall out
+  structurally instead of being guessed at.
 
 Nothing here knows any engine's option names. What differs per engine is the
 four fields of :class:`~slicelab.adapters.base.OptionProbe`, which live under
@@ -55,7 +61,9 @@ from slicelab.engine.launch import run
 __all__ = [
     "Characterisation",
     "CharacterisationError",
+    "MapEntry",
     "ProbeOutcome",
+    "Tracking",
     "cache_path_for",
     "characterise",
     "load_name_map",
@@ -68,7 +76,7 @@ A normal probe on 2.9.6 takes about 0.22 s, so this is generous by two orders of
 magnitude and still fails fast on the option that never returns at all.
 """
 
-SCHEMA = 1
+SCHEMA = 2
 """Bumped when the cache file's shape changes.
 
 A cache written by an older slicelab is *discarded*, not adapted. Reading an
@@ -128,19 +136,64 @@ class ProbeOutcome(StrEnum):
     """The engine never returned. ``--gcodeviewer`` opens a window and waits."""
 
 
+class Tracking(StrEnum):
+    """How firmly an entry's keys were tied to the option's own value."""
+
+    EXACT = "exact"
+    """Every key in the entry took sentinel A under A and sentinel B under B.
+
+    The strong result, and the one a readback may adjudicate a requested value
+    against without qualification.
+    """
+
+    INEXACT = "inexact"
+    """The keys responded to both sentinels but carried neither verbatim.
+
+    Value normalisation, which is the readback diff's problem and not this
+    module's: ``--fill-density=0.17`` resolves to ``17%`` and ``--draft-shield=1``
+    to ``enabled``. The key is still the option's -- it moved differently under
+    two different values, which a dependent constraint does not do -- but the
+    entry is weaker and says so.
+    """
+
+
+@dataclass(frozen=True)
+class MapEntry:
+    """One option's keys, and the keys that merely moved when it was set."""
+
+    keys: tuple[str, ...]
+    """What this option writes. The only keys a readback may compare against."""
+
+    side_effects: tuple[str, ...]
+    """Keys that moved but did not respond to the option's own value.
+
+    These are the engine's **dependent constraints**, and separating them is what
+    the second sentinel buys. ``--spiral-vase=1`` moves five keys; only
+    ``spiral_vase`` takes ``1`` under ``=1`` and ``0`` under ``=0``, while
+    ``perimeters``, ``fill_density``, ``top_solid_layers`` and
+    ``filament_retract_layer_change`` are the engine adjusting the print around
+    the request. `notes/critique.md` G4 is exactly the run where adjudicating the
+    authored value against those four turns a correct slice red. They are
+    recorded because they are true, and excluded from `keys` because they were
+    never requested.
+    """
+
+    tracking: Tracking
+
+
 @dataclass(frozen=True)
 class Characterisation:
     """One engine build's option-to-key map, and what it could not map.
 
     ``outcomes`` carries every candidate, including the ones that produced no
-    mapping. An option missing from ``name_map`` is then a fact with a recorded
+    mapping. An option missing from ``entries`` is then a fact with a recorded
     cause rather than an absence, which is what lets a caller refuse an unmapped
     option at 64 instead of reporting it as ``absent``.
     """
 
     engine: str
     version: str
-    name_map: dict[str, tuple[str, ...]]
+    entries: dict[str, MapEntry]
     outcomes: dict[str, str]
     baseline_key_count: int
     volatile_keys: tuple[str, ...]
@@ -150,6 +203,11 @@ class Characterisation:
     moves on its own moves under every option, and would otherwise be attributed
     to all of them at once.
     """
+
+    @property
+    def name_map(self) -> dict[str, tuple[str, ...]]:
+        """What `load_name_map` hands back: option -> the keys it writes."""
+        return {option: entry.keys for option, entry in self.entries.items()}
 
 
 def load_name_map(spec: EngineSpec, version: str) -> Mapping[str, tuple[str, ...]]:
@@ -173,27 +231,25 @@ def load_name_map(spec: EngineSpec, version: str) -> Mapping[str, tuple[str, ...
     derived from its own name -- that transform is what G2 reproduced a false
     ``absent`` from.
 
-    **The limit, stated because it was measured and not solved.** A multi-key
-    entry mixes two populations the probe cannot separate: keys the option really
-    writes, and keys a *dependent constraint* moved because the option was set.
-    ``--extruder`` is the first; ``--spiral-vase=1`` is the second, and it moves
-    ``fill_density`` to ``0%``, ``top_solid_layers`` to ``0`` and ``perimeters``
-    to ``1`` on a slice PrusaSlicer performed exactly as designed -- D27 and
-    ``notes/critique.md`` G4's case, arriving here by a new door.
+    **A dependent constraint is not a key, and the second sentinel is what says
+    so.** ``--spiral-vase=1`` moves five keys on 2.9.6, and only ``spiral_vase``
+    follows the value: it reads ``1`` under ``=1`` and ``0`` under ``=0``, while
+    ``perimeters``, ``fill_density``, ``top_solid_layers`` and
+    ``filament_retract_layer_change`` are the engine adjusting the print around a
+    request that never named them. Adjudicating an authored value against those
+    four is `notes/critique.md` G4's false red -- a correct slice reported as a
+    finding -- so they are recorded on the entry as ``side_effects`` and are not
+    in this mapping. The separation is structural, with no heuristic and no
+    threshold, and the whole of it is one extra invocation per candidate.
 
-    The obvious filter was tried and is refused on evidence: keeping only the keys
-    whose resolved value equals the sentinel verbatim **unmaps 89 of the 330
-    mapped options**, because the engine normalises legitimately (``7`` resolves
-    to ``7%``, ``1`` to ``enabled``, a string to ``0``) -- and it still keeps
-    ``perimeters`` in the spiral-vase entry, because the constraint's value
-    happens to equal the sentinel. It costs 89 correct answers and does not buy
-    the one it was for.
+    ``perimeters`` is why one sentinel could never do it: the constraint sets it
+    to ``1``, which is exactly what was sent, so "did this key take my value" says
+    yes about a key nobody asked for.
 
-    So the map states what was measured, five PrusaSlicer options have multi-key
-    entries, and **which members of a multi-key entry a readback may adjudicate is
-    an open question this does not settle**. D27 already holds the ground under
-    it: a value that differs is ``coerced``, and ``coerced`` is ``incomplete``,
-    never ``refused``.
+    Entries also carry how firmly the tie was measured. ``Tracking.INEXACT`` means
+    the keys responded to both sentinels but carried neither verbatim, which is
+    value normalisation -- ``--fill-density=0.17`` resolves to ``17%`` -- and is
+    the readback diff's problem rather than the map's.
     """
     if not version.strip():
         raise CharacterisationError(
@@ -253,20 +309,20 @@ def characterise(
                 "and every key would read as unmapped"
             )
 
-        name_map: dict[str, tuple[str, ...]] = {}
+        entries: dict[str, MapEntry] = {}
         outcomes: dict[str, str] = {}
         for option in options:
-            outcome, keys = _probe_one(
+            outcome, entry = _probe_one(
                 spec, found, probe, option, sidecar, baseline, volatile, timeout=timeout
             )
             outcomes[option] = outcome.value
-            if outcome is ProbeOutcome.MAPPED:
-                name_map[option] = keys
+            if entry is not None:
+                entries[option] = entry
 
     return Characterisation(
         engine=spec.name,
         version=version,
-        name_map=name_map,
+        entries=entries,
         outcomes=outcomes,
         baseline_key_count=len(baseline),
         volatile_keys=volatile,
@@ -319,63 +375,136 @@ def _probe_one(
     volatile: tuple[str, ...],
     *,
     timeout: float,
-) -> tuple[ProbeOutcome, tuple[str, ...]]:
-    """Cascade sentinels until one is accepted **and moves something**.
+) -> tuple[ProbeOutcome, MapEntry | None]:
+    """Cascade sentinel **pairs** until one shows which key carries the value.
 
-    Options are typed and one sentinel cannot fit them all: an int option rejects
-    a string at rc=1 and a points option rejects an int. Rejection is therefore
-    not an answer, and the next value is tried -- except when the engine says the
-    option does not exist, where no value can help.
+    Two sentinels, not one, and the second is what separates a key the option
+    *writes* from a key the engine *adjusted*. A key **tracks** when it holds
+    sentinel A after the run with A and sentinel B after the run with B; only a
+    key that follows the value can do that, and a dependent constraint cannot.
+    Measured on 2.9.6:
 
-    **Accepted-and-moved-nothing is not an answer either**, and stopping there is
-    a defect this probe shipped for one measurement before it was caught. D5:
-    PrusaSlicer's boolean options validate nothing, and anything that is not
-    literally ``1`` resolves to ``0``. So ``--spiral-vase=SLICELABPROBE`` exits 0,
-    resolves to ``0``, matches the default already in the dump, and moves no key
-    -- and the whole boolean class silently classified as "writes no
-    configuration". Measured: it put 110 real options, ``--spiral-vase``,
-    ``--support-material`` and ``--thin-walls`` among them, into a bucket meaning
-    the opposite of the truth. The cascade therefore continues past a null result,
-    and ``no-key-moved`` is claimed only when *every* accepted sentinel moved
-    nothing.
+    * ``--extruder`` at ``=2`` then ``=3`` -- all three of ``infill_extruder``,
+      ``perimeter_extruder`` and ``solid_infill_extruder`` track. It is an
+      aggregate, and all three members are the request.
+    * ``--solid-layers`` at ``=2`` then ``=5`` -- ``bottom_solid_layers`` and
+      ``top_solid_layers`` track; ``solid_layers`` reads ``0`` under both and is
+      a side effect.
+    * ``--spiral-vase`` at ``=1`` then ``=0`` -- only ``spiral_vase`` tracks.
+      ``perimeters``, ``fill_density``, ``top_solid_layers`` and
+      ``filament_retract_layer_change`` are the engine adjusting the print, and
+      they are `notes/critique.md` G4's false red if a readback compares the
+      authored value against them.
+
+    So G4's dependent constraints fall out structurally, with no heuristic and no
+    threshold. It also closes the residual false ``applied`` the collision search
+    named: fan-out membership is now measured rather than assumed.
+
+    Three earlier rules still hold, each because ignoring one turns silence into
+    data. Options are typed, so a **rejection** is not an answer and the next pair
+    is tried -- unless the engine says the option does not exist, where no value
+    helps. **Accepted-and-moved-nothing** is not an answer either: D5's boolean
+    options validate nothing, so ``--spiral-vase=SLICELABPROBE`` exits 0, resolves
+    to the ``0`` already in the dump, and moves no key. Stopping there put 110
+    real options in a bucket meaning the opposite of the truth. And a pair that
+    produces only an **inexact** result is kept but not settled for, because a
+    later pair of the right type may track exactly: ``--fill-density`` reads
+    ``17%`` from ``0.17`` and ``37%`` from ``37%``, and only the second tracks.
     """
     assert found.form is not None
     accepted = False
-    for sentinel in probe.sentinels:
-        completed = run(
-            argv_for(
-                found.form,
-                (f"--{option}={sentinel}", f"{spec.readback_flag}={sidecar}"),
-                (str(sidecar),),
-            ),
-            timeout=timeout,
+    inexact: MapEntry | None = None
+
+    for low, high in probe.sentinels:
+        outcome, first = _one_run(
+            spec, found, probe, option, low, sidecar, baseline, timeout=timeout
         )
-        if completed.timed_out:
-            return ProbeOutcome.TIMED_OUT, ()
-        if completed.exit_status != 0:
-            said = (completed.stderr + completed.stdout).lower()
-            if probe.unknown_option and probe.unknown_option in said:
-                return ProbeOutcome.UNKNOWN_OPTION, ()
-            _discard(sidecar)
+        if outcome is not None:
+            return outcome, None
+        if first is None:
             continue
-        text = _artifact_text(sidecar)
-        if text is None:
-            return ProbeOutcome.NO_ARTIFACT, ()
-        accepted = True
-        probed = probe.read_config(text)
-        _discard(sidecar)
-        if set(baseline) - set(probed):
-            return ProbeOutcome.NAMESPACE_CHANGED, ()
-        moved = tuple(
-            sorted(
-                key
-                for key in set(probed) | set(baseline)
-                if key not in volatile and baseline.get(key) != probed.get(key)
-            )
+        outcome, second = _one_run(
+            spec, found, probe, option, high, sidecar, baseline, timeout=timeout
         )
-        if moved:
-            return ProbeOutcome.MAPPED, moved
-    return ProbeOutcome.NO_KEY_MOVED if accepted else ProbeOutcome.REJECTED, ()
+        if outcome is not None:
+            return outcome, None
+        if second is None:
+            continue
+        accepted = True
+
+        moved = {
+            key
+            for key in set(first) | set(second) | set(baseline)
+            if key not in volatile
+            and (baseline.get(key) != first.get(key) or baseline.get(key) != second.get(key))
+        }
+        responded = {key for key in moved if first.get(key) != second.get(key)}
+        tracks = {key for key in responded if first.get(key) == low and second.get(key) == high}
+
+        if tracks:
+            return ProbeOutcome.MAPPED, MapEntry(
+                keys=tuple(sorted(tracks)),
+                side_effects=tuple(sorted(moved - tracks)),
+                tracking=Tracking.EXACT,
+            )
+        if responded and inexact is None:
+            inexact = MapEntry(
+                keys=tuple(sorted(responded)),
+                side_effects=tuple(sorted(moved - responded)),
+                tracking=Tracking.INEXACT,
+            )
+
+    if inexact is not None:
+        return ProbeOutcome.MAPPED, inexact
+    return (ProbeOutcome.NO_KEY_MOVED if accepted else ProbeOutcome.REJECTED), None
+
+
+def _one_run(
+    spec: EngineSpec,
+    found: Discovery,
+    probe: OptionProbe,
+    option: str,
+    sentinel: str,
+    sidecar: Path,
+    baseline: Mapping[str, str],
+    *,
+    timeout: float,
+) -> tuple[ProbeOutcome | None, Mapping[str, str] | None]:
+    """One probe invocation: a terminal outcome, a parsed dump, or neither.
+
+    ``(None, None)`` means "this sentinel was refused, try another" -- the one
+    result that is neither a verdict about the option nor a measurement.
+
+    The namespace check belongs here rather than beside the comparison, because
+    it is a property of **one** dump: if this run's configuration is missing keys
+    the baseline had, the engine answered a different question and the run is not
+    a data point to be paired with anything.
+    """
+    assert found.form is not None
+    completed = run(
+        argv_for(
+            found.form,
+            (f"--{option}={sentinel}", f"{spec.readback_flag}={sidecar}"),
+            (str(sidecar),),
+        ),
+        timeout=timeout,
+    )
+    if completed.timed_out:
+        return ProbeOutcome.TIMED_OUT, None
+    if completed.exit_status != 0:
+        said = (completed.stderr + completed.stdout).lower()
+        if probe.unknown_option and probe.unknown_option in said:
+            return ProbeOutcome.UNKNOWN_OPTION, None
+        _discard(sidecar)
+        return None, None
+    text = _artifact_text(sidecar)
+    if text is None:
+        return ProbeOutcome.NO_ARTIFACT, None
+    parsed = probe.read_config(text)
+    _discard(sidecar)
+    if set(baseline) - set(parsed):
+        return ProbeOutcome.NAMESPACE_CHANGED, None
+    return None, parsed
 
 
 def _dump(
@@ -437,14 +566,15 @@ def _read_cache(path: Path) -> dict[str, tuple[str, ...]] | None:
         return None
     if not isinstance(document, dict) or document.get("schema") != SCHEMA:
         return None
-    raw = document.get("map")
+    raw = document.get("entries")
     if not isinstance(raw, dict) or not raw:
         return None
     out: dict[str, tuple[str, ...]] = {}
-    for option, keys in raw.items():
-        if not isinstance(option, str) or not isinstance(keys, list):
+    for option, entry in raw.items():
+        if not isinstance(option, str) or not isinstance(entry, dict):
             return None
-        if not all(isinstance(key, str) for key in keys):
+        keys = entry.get("keys")
+        if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
             return None
         out[option] = tuple(keys)
     return out
@@ -462,7 +592,14 @@ def _write_cache(path: Path, result: Characterisation) -> None:
         "version": result.version,
         "baseline_key_count": result.baseline_key_count,
         "volatile_keys": list(result.volatile_keys),
-        "map": {option: list(keys) for option, keys in sorted(result.name_map.items())},
+        "entries": {
+            option: {
+                "keys": list(entry.keys),
+                "side_effects": list(entry.side_effects),
+                "tracking": entry.tracking.value,
+            }
+            for option, entry in sorted(result.entries.items())
+        },
         "outcomes": dict(sorted(result.outcomes.items())),
     }
     try:

@@ -40,14 +40,27 @@ class OptionProbe:
     PrusaSlicer-shaped, neither portable -- sit on the adapter side of D1's seam.
     """
 
-    sentinels: tuple[str, ...]
-    """Values to try, in order, until one is accepted.
+    sentinels: tuple[tuple[str, str], ...]
+    """**Pairs** of distinct values of the same type, tried in order.
 
     Options are typed and no single value fits them all: an int option rejects a
     string at rc=1, a points option rejects an int. Order is by how *distinctive*
     the result is rather than by likelihood -- a string marker is unambiguous when
     it lands, whereas a number can coincide with the default and read as "moved
     nothing".
+
+    **Two values, not one, and the pair is the mechanism rather than a retry.**
+    Setting an option once says which keys moved; setting it twice says which of
+    them *followed the value*. Only a key the option writes holds the first value
+    after the first run and the second after the second; a key the engine adjusted
+    as a dependent constraint does not. That is what separates ``spiral_vase``
+    from the four keys ``--spiral-vase=1`` also moves, with no heuristic and no
+    threshold, and it costs one extra invocation per candidate.
+
+    The two must be **distinct and of one type**, or the pair discriminates
+    nothing: a boolean given two different strings resolves both to ``0``, which
+    is why ``("1", "0")`` is here as its own pair rather than folded into the
+    numeric one.
     """
 
     unknown_option: str

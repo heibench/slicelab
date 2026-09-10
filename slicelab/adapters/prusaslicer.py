@@ -60,10 +60,28 @@ def _read_ini(text: str) -> Mapping[str, str]:
     return out
 
 
-#: Ordered by how distinctive the result is. Measured against 2.9.6: a string
-#: marker lands unambiguously where it is accepted, and the numeric forms follow
-#: for the typed options that reject it at rc=1.
-_SENTINELS = ("SLICELABPROBE", "7", "0.17", "37%", "1", "3x4", "0x0,7x0,7x7,0x7", "0.37,0.37")
+#: Pairs, ordered by how distinctive the result is: a string marker lands
+#: unambiguously where it is accepted, and the numeric forms follow for the typed
+#: options that reject it at rc=1.
+#:
+#: The percent pair earns its place twice over. `--fill-density` is a *fraction*
+#: when given bare, so `=7` and `=40` are refused at rc=1 with `Value out of
+#: range: fill_density` and no ini written -- loud, named, and handled by the
+#: cascade rather than read as "moved nothing", because D7's artifact gate is
+#: what tells a failed run from an empty answer. `=0.17` is accepted and resolves
+#: to `17%`, which responds to the value but does not carry it, so the float pair
+#: yields only an inexact entry; `=37%` tracks exactly. That is why the cascade
+#: keeps looking after an inexact result rather than settling for it.
+_SENTINELS = (
+    ("SLICELABPROBE", "SLICELABOTHER"),
+    ("7", "3"),
+    ("0.17", "0.29"),
+    ("37%", "61%"),
+    ("1", "0"),
+    ("3x4", "5x6"),
+    ("0x0,7x0,7x7,0x7", "0x0,9x0,9x9,0x9"),
+    ("0.37,0.37", "0.53,0.53"),
+)
 
 PROBE = OptionProbe(
     sentinels=_SENTINELS,
