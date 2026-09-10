@@ -47,7 +47,7 @@ def test_could_not_tell_and_environment_fault_are_distinct() -> None:
     ("status", "forced"),
     [
         (KeyStatus.APPLIED, None),
-        (KeyStatus.COERCED, Outcome.REFUSED),
+        (KeyStatus.COERCED, Outcome.INCOMPLETE),
         (KeyStatus.ABSENT, Outcome.INCOMPLETE),
         (KeyStatus.UNSUPPORTED, Outcome.REFUSED),
         (KeyStatus.UNVALIDATED, Outcome.INCOMPLETE),
@@ -62,9 +62,13 @@ def test_each_key_status_forces_its_documented_outcome(
 def test_refused_outranks_incomplete() -> None:
     """D14: a finding survives a partial inability to look.
 
-    One key coerced and another absent is ``refused``. The reverse would let a
-    single unreadable key mask a real unhonoured override, and exit 2 would
-    invite a retry that can never change the answer.
+    One key ``unsupported`` and another ``absent`` is ``refused``. The reverse
+    would let a single unreadable key mask a real unhonoured override, and exit 2
+    would invite a retry that can never change the answer.
+
+    ``coerced`` is deliberately no longer the example: since D14's amendment it
+    forces ``incomplete``, so coerced-plus-absent is ``incomplete`` on both counts
+    and would demonstrate no precedence at all.
     """
     assert worst_of([Outcome.INCOMPLETE, Outcome.REFUSED]) is Outcome.REFUSED
     assert worst_of([Outcome.REFUSED, Outcome.INCOMPLETE]) is Outcome.REFUSED
@@ -120,3 +124,18 @@ def test_empty_matches_partspecs_code_for_the_same_idea() -> None:
     slicelab is the second member using it -- see D24 and the escalation.
     """
     assert exit_code_for(Outcome.EMPTY) == 3
+
+
+def test_a_coerced_key_does_not_claim_a_cause() -> None:
+    """G4, settled. ``refused`` asserts slicelab established the intent was not
+    honoured, and over a coerced key it established no such thing.
+
+    Reproduced on PrusaSlicer 2.9.6 -- both rc=0, both 0 bytes on stderr, and
+    indistinguishable in the readback: ``--perimeters 4.7`` resolves to ``4``
+    with nothing honouring it, and ``--spiral-vase=1 --perimeters=4`` resolves
+    ``perimeters`` to ``1`` on a 41106-byte artifact the engine produced exactly
+    as designed. Calling the second one ``refused`` is a false red at the front
+    door, which is the silence rule inverted.
+    """
+    assert forced_outcome_for(KeyStatus.COERCED) is Outcome.INCOMPLETE
+    assert forced_outcome_for(KeyStatus.COERCED) is not Outcome.REFUSED
