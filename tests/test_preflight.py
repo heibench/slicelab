@@ -113,12 +113,17 @@ def test_a_boolean_is_accepted_where_the_spelling_was_measured() -> None:
 
 
 def test_a_boolean_renders_as_the_engines_word_not_pythons() -> None:
-    """`str(True)` is `"True"`, which PrusaSlicer 2.9.6 resolves to FALSE.
+    """`str(True)` is `"True"`, and what that means is decided per option.
 
-    Measured: `--spiral-vase=1` sets the flag, and `=true`, `=True`, `=banana`,
-    `=yes` and `=2` all resolve to `0` -- at exit 0, with nothing on stderr.
-    Boolean options are the only type that validates nothing, so this is the one
-    place a naive `str()` is silently the opposite of the request.
+    Measured across seven boolean options on 2.9.6, all at exit 0 with zero stderr:
+    `--spiral-vase=True` resolves to `0`, but `--thin-walls=False` resolves to `1`
+    -- the literal string "False" turning the option ON -- and `--cooling=True`
+    yields an empty value that is neither. Boolean options validate nothing, and
+    they do not agree with each other about what an unrecognised value means.
+
+    `1` and `0` were the only two spellings every option read alike, in both
+    directions. That is what `bool_words` records, and why guessing is refused: the
+    hazard is bidirectional, so "assume it reads as false" is not a safe fallback.
     """
     assert render(True, PRUSASLICER) == "1"
     assert render(False, PRUSASLICER) == "0"

@@ -84,10 +84,9 @@ def test_a_base_table_with_no_presets_is_refused(tmp_path: Path) -> None:
     """Zero presets is accepted by the engine at exit 0, yielding generic built-ins.
 
     WHICH names are required is the adapter's (`EngineSpec.base_keys`) and is checked
-    at pre-flight -- D15's home for a refusal slicelab's own argv would have caused,
-    and a module that does not exist yet. The parser owns the shape only, so today a
-    `[base]` naming the wrong keys parses clean and is caught by nothing; nothing
-    reaches an engine either, because no verb consumes `read_intent`.
+    at pre-flight -- D15's home for a refusal slicelab's own argv would have caused.
+    The parser owns the shape only, so a `[base]` naming the wrong keys parses clean
+    here and is refused by `preflight`, which is where the engine's names live.
     The parser owns the shape only.
     """
     with pytest.raises(IntentError, match="empty"):

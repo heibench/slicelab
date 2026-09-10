@@ -76,10 +76,9 @@ class EngineSpec:
     which is the PrusaSlicer-shaped abstraction D2 refuses.
 
     Empty means the adapter has not decided what its ``[base]`` contains, and
-    pre-flight will refuse rather than guess. **Nothing consumes this field yet**;
-    `preflight.py` lands with the second half of #5. It is declared here now
-    because the alternative was declaring it in the core, where
-    `test_names_confined.py` refuses it.
+    pre-flight will refuse rather than guess. Consumed by `preflight._check_base`. Declared
+    here rather than in the core because `test_names_confined.py` refuses an
+    engine's names there.
     """
 
     @property

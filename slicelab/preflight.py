@@ -55,8 +55,9 @@ def _check_base(intent: Intent, spec: EngineSpec) -> None:
 
     if extra:
         raise PreflightError(
-            f"[{intent.engine}.base] has no {', '.join(repr(k) for k in extra)}; "
-            f"{spec.name} addresses presets with {', '.join(spec.base_keys)}"
+            f"[{intent.engine}.base] names {', '.join(repr(k) for k in extra)}, "
+            f"which {spec.name} does not use; it addresses presets with "
+            f"{', '.join(spec.base_keys)}"
         )
     if missing:
         raise PreflightError(
@@ -78,8 +79,9 @@ def _check_override_types(intent: Intent, spec: EngineSpec) -> None:
             f"boolean overrides {', '.join(sorted(booleans))}: how {spec.name} "
             "spells true on the command line has not been measured. Guessing is the "
             "one thing that must not happen here: on the engine that HAS been "
-            "measured, a boolean option validates nothing and any value that is not "
-            "its true-word resolves to false, silently, at exit 0"
+            "measured, boolean options validate nothing and what an unrecognised "
+            "value means is decided per option -- some read it as false, some as "
+            "true, all at exit 0 with nothing on stderr"
         )
 
 
@@ -92,7 +94,12 @@ def render(value: IntentValue, spec: EngineSpec) -> str:
     catalogue has to be vendored (D11).
 
     A boolean is the exception, and `bool_words` is why: `str(True)` is `"True"`,
-    which PrusaSlicer resolves to **false**.
+    and what PrusaSlicer 2.9.6 does with that is **decided per option**. Measured
+    across seven: `--spiral-vase=True` resolves to `0`, `--thin-walls=False` resolves
+    to `1` -- the literal string "False" turning the option on -- and `--cooling=True`
+    yields an empty value that is neither. All at exit 0 with nothing on stderr. `1`
+    and `0` were the only two spellings every option read alike, which is why an
+    engine declares them rather than having them inferred.
     """
     if isinstance(value, bool):
         if spec.bool_words is None:  # pragma: no cover - preflight refuses first

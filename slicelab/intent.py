@@ -129,9 +129,8 @@ def _read_base(value: object, engine: str) -> dict[str, str]:
     `printer_model` -- the defaults trap arriving as a success (D16).
 
     **Which** names are required is engine knowledge and lives on `EngineSpec.base_keys`,
-    to be checked at pre-flight (D15), which **does not exist yet** -- `preflight.py`
-    lands with the second half of #5, and until it does nothing consumes
-    `base_keys`. PrusaSlicer addresses a triple by name; OrcaSlicer has
+    checked at pre-flight (D15) against `EngineSpec.base_keys`.
+    PrusaSlicer addresses a triple by name; OrcaSlicer has
     no such flag and takes file paths instead, so a constant here naming PrusaSlicer's
     three would be the abstraction D2 refuses -- and `test_names_confined.py` refuses it
     structurally, which is how this landed in the adapter rather than in the core.

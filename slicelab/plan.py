@@ -82,6 +82,16 @@ def plan_resolve(intent: Intent, spec: EngineSpec, sidecar: Path) -> Plan:
         requested[key] = value
         argv.append(f"--{key}={value}")
 
+    # The sidecar is resolved against slicelab's cwd HERE, once, because two
+    # different directories would otherwise claim it. `grants_for` resolves a
+    # relative path against this process's cwd, while `launch.run` runs the engine
+    # inside a scratch directory it deletes on exit -- so a relative sidecar is
+    # granted in one place, written in another, and destroyed. Measured: exit 0,
+    # zero stderr, and no file at either location. An exit-0 run that produced
+    # nothing is the failure this project is named after, so the path is made
+    # unambiguous before it can become one.
+    sidecar = sidecar.resolve()
+
     if spec.readback_flag is None:
         raise PlanError(
             f"{spec.name} has no measured way to dump its resolved configuration, so "
