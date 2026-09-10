@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-__all__ = ["EngineSpec", "PresetQuery"]
+__all__ = ["EngineSpec", "OptionProbe", "PresetQuery"]
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,72 @@ class PresetQuery:
 
     argv: tuple[str, ...]
     root_key: str
+
+
+@dataclass(frozen=True)
+class OptionProbe:
+    """How to characterise one engine's option-name -> config-key map.
+
+    ``notes/critique.md`` G2: there is no derivable rule. Measured on PrusaSlicer
+    2.9.6, ``--after-layer-gcode`` writes ``layer_gcode``, so a dash-to-underscore
+    transform reports ``absent`` on a key the engine applied exactly -- exit 2 on a
+    correct run. The map is established by *setting each option to a sentinel and
+    observing which key moved*, and the only parts of that which differ per engine
+    are the four fields below. The measuring itself is engine-neutral and lives in
+    :mod:`slicelab.engine.characterise`.
+
+    This exists so that ``--help-fff`` parsing and ini parsing -- both
+    PrusaSlicer-shaped, neither portable -- sit on the adapter side of D1's seam.
+    """
+
+    sentinels: tuple[str, ...]
+    """Values to try, in order, until one is accepted.
+
+    Options are typed and no single value fits them all: an int option rejects a
+    string at rc=1, a points option rejects an int. Order is by how *distinctive*
+    the result is rather than by likelihood -- a string marker is unambiguous when
+    it lands, whereas a number can coincide with the default and read as "moved
+    nothing".
+    """
+
+    unknown_option: str
+    """This engine's own wording for "there is no such option", or ``""``.
+
+    Distinguishing "no such option" from "wrong value for a real option" is what
+    lets the probe stop trying sentinels on a name that does not exist, instead of
+    charging through every one of them.
+
+    ``""`` means this engine does not distinguish the two, and it is a measurement
+    rather than an omission -- OrcaSlicer 2.4.2 answers the same words at the same
+    exit status for both. The probe then cascades every sentinel and records
+    ``rejected``, which is slower and is what the engine actually established.
+    """
+
+    candidates: Callable[[str, Mapping[str, str]], tuple[str, ...]]
+    """(enumeration output, baseline readback) -> option names to probe, no leading dashes.
+
+    A *candidate* generator, not an answer. It may over- or under-produce freely,
+    because the probe is what establishes truth; that is the whole difference
+    between this and the string transform G2 refuses. PrusaSlicer's reads
+    ``--help-fff``; OrcaSlicer has no such listing and derives candidates from the
+    keys of its own settings dump.
+    """
+
+    read_config: Callable[[str], Mapping[str, str]]
+    """The text of a readback artifact -> key/value pairs.
+
+    Takes text rather than a path on purpose. Whether the artifact exists and is
+    non-empty is D7's question, it is asked about every engine alike, and the
+    driver asks it -- so an adapter cannot answer ``{}`` for a file that was never
+    written and have the caller read that as "nothing moved".
+    """
+
+    enumerate_argv: tuple[str, ...] = ()
+    """Argv that makes this engine list its options, or ``()`` if it will not.
+
+    Empty means :attr:`candidates` is called with an empty string and must work
+    from the baseline readback alone.
+    """
 
 
 @dataclass(frozen=True)
@@ -63,6 +130,13 @@ class EngineSpec:
     Boolean options are the one type that validates nothing, so a wrong guess here
     is silently the opposite of what the author wrote. Orca's spelling is unmeasured,
     so Orca declines the question instead of inheriting PrusaSlicer's answer.
+    """
+
+    option_probe: OptionProbe | None = None
+    """How to build this engine's option-to-key map, or ``None`` if unmeasured.
+
+    ``None`` is a refusal, not a gap: with no probe there is no honest map, and
+    the alternative -- transforming the name -- is the defect G2 reproduced.
     """
 
     base_keys: tuple[str, ...] = ()
