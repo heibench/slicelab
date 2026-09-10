@@ -273,6 +273,10 @@ instruction.
 **`refused` (1) outranks `incomplete` (2).** A run with one `coerced` key and one
 `absent` key is `refused`.
 
+**Superseded in part by D27:** the `coerced` example above is no longer correct.
+`coerced` forces `incomplete`, so a coerced-plus-absent run is `incomplete` on both
+counts. The precedence rule itself stands; only its illustration moved.
+
 A finding about the request is a statement slicelab established, and it stays one even
 when some other key could not be evaluated. The reverse would let a single unreadable
 key mask a real unhonoured override — and exit 2 invites a retry that will never change
@@ -688,3 +692,176 @@ unspaced literal that is genuinely not vocabulary, often enough that
 `DECLARED_VOCABULARY` becomes a dumping ground rather than a reviewed list — then
 narrow the scan to comparison, containment and subscript operands and record that
 here. The list growing without objection is the signal, not the list being long.
+
+## D27 — `coerced` folds to `incomplete` (2); it names no cause
+
+`notes/critique.md` G4, settled. Supersedes D14's `COERCED -> REFUSED` mapping and
+the sentence in D14 that reads `coerced` as something slicelab *established*.
+
+`refused` is defined as **slicelab established the intent was not honoured**. Over
+a coerced key it established no such thing, because two different situations
+arrive in the readback as the same bytes. Both reproduced here on PrusaSlicer
+2.9.6, Flatpak, 2026-09-09, both `rc=0` with **0 bytes on stderr**:
+
+```console
+$ $P --export-gcode cube.stl -o v1.gcode --save v1.ini --perimeters 4.7
+rc=0   perimeters = 4
+```
+
+Nothing honoured that request; the engine truncated it and said nothing.
+
+```console
+$ $P --export-gcode cube.stl -o g4.gcode --save g4.ini \
+     --spiral-vase=1 --perimeters=4 --top-solid-layers=5 --fill-density=60%
+rc=0   g4.gcode = 41106 B
+       perimeters = 1   top_solid_layers = 0   fill_density = 0%
+```
+
+That request **was** honoured, correctly. Spiral vase mode has documented
+dependent constraints and the engine applied them, producing a real artifact.
+
+From the readback alone the two are indistinguishable: requested != resolved,
+`rc=0`, no diagnostic, no stated cause. Under the old mapping the second run
+exits **1** with no lock and an unpromoted artifact — a false red on a perfect
+slice, at the tool's front door. That is the silence rule inverted, and G4 is
+right that it is an epistemic problem rather than a strictness one: the verdict
+word was wrong, not merely harsh.
+
+### Decided
+
+`COERCED` forces `INCOMPLETE` (exit 2). `coerced` means **requested != resolved,
+cause unknown** — which is what slicelab actually knows.
+
+The mechanism is unweakened. `sliced` still requires every requested key to come
+back `applied`, so neither run above can be green. What changes is only the
+sentence slicelab prints about a run it did not diagnose.
+
+### Why not the `normalized` split G4 recommends first
+
+G4's preferred fix is a second status: `normalized` for a value changed by a
+constraint slicelab **probed and recorded**, at most `incomplete`, never
+`refused`. That is the better answer and it is not available. It requires a probe
+of the engine's dependent constraints, which does not exist, and `status.py`
+already declined to add the enum member before that probe existed. Shipping the
+word without the probe would name a cause on no evidence — the substitution one
+level up, which is the defect this decision is fixing.
+
+### What this costs, stated rather than skipped
+
+The repo has adjudicated the other way twice, and D27 loses those arguments on
+balance rather than dissolving them. D14 and `notes/refuted.md` both object that
+"exit 2 means 'could not tell', which is false here and tells a user to retry when
+retrying will never change the answer" — naming `--perimeters 4.7 -> 4`
+specifically. That objection is correct about V1: it is deterministic, and exit 2
+does invite a retry that cannot help. It loses to G4 because the spiral-vase false
+red is the worse error and it is the one at the front door — a *correct* slice
+reported as a refusal. A misleading retry costs a user a minute; a false red costs
+them their trust in the verdict, and `--report PATH` names the diverging key either
+way.
+
+### Consequence for `refused`, which is not cosmetic
+
+After D27 the only `KeyStatus` forcing `REFUSED` is `UNSUPPORTED`, and its own
+docstring records that as unreachable while the core vocabulary is empty (D2). So no
+**readback-derived** route to exit 1 remains. Exit 1 is not dead — D15 and D16 refuse
+**pre-flight**, before the engine is touched, and a partial `[base]` triple is a real
+user-reachable case — but `Outcome.REFUSED`'s docstring still reads "we looked, and
+the answer is no", which is now the one thing it cannot mean by looking at a readback.
+Re-read it when `preflight.py` lands.
+
+*Supersedes:* when a constraint probe lands, add `NORMALIZED` and route it to
+`incomplete` with the constraint named, leaving `coerced` as the genuinely
+unexplained case. At that point `coerced` may become a candidate for `refused`
+again, because it will then mean something narrower than it does today.
+
+## D28 — `[set]`'s authored surface is the CLI-option set
+
+`notes/critique.md` G6.5 asked which one it is, and the plan never said.
+
+They are not the same set, though the difference is smaller and differently
+shaped than a first count suggests. Measured on 2.9.6: **411** options at the
+leading position of a `--help-fff` line, **343** config keys in a default `--save`
+dump.
+
+`--compatible-printers-condition=` answers `Unknown option`, yet
+`compatible_printers_condition` is a real config key that round-trips through
+`--load`/`--save`. It is in **neither** population — not in the 343 and not in the
+411 — which is what actually establishes that the two sets differ.
+
+**A first draft of this entry also named `idle_temperature` and `layer_gcode` as
+keys with no option. That was wrong, and one command refutes each:**
+
+```console
+$ $P --save o1.ini --idle-temperature=175      # rc=0 -> idle_temperature = 175
+$ $P --save o2.ini --layer-gcode=";HELLO"      # rc=0 -> layer_gcode = ;HELLO
+```
+
+Both have working options. `--layer-gcode` is an **alias**, printed in `--help-fff`
+as `--after-layer-gcode ABCD, --layer-gcode ABCD`, and a scan that reads only the
+leading option on each line does not see it — which is where the 411 comes from and
+why set-subtracting it against the 343 manufactures orphans that do not exist. The
+repo had already measured the alias relationship (`AGENTS.md`: "`--after-layer-gcode`
+writes `layer_gcode`, so dash-to-underscore reports a false `absent` on a perfect
+run"), so this was a claim contradicted by evidence already in the tree.
+
+Recorded rather than quietly corrected, because substituting arithmetic over a
+flawed scan for a measurement already in hand is the defect this project is named
+after, and a decision entry is exactly where it must not happen.
+
+### Decided
+
+An authored key under `[prusaslicer.set]` is a **CLI option name**.
+
+slicelab emits `--key=value` (D5), so the option set is exactly what it can
+express. Authoring the config-key set would let a user write something with no
+emittable form, which slicelab could only refuse at run time for a reason the
+file gives no hint of.
+
+The consequence is that a config key with no option — `compatible_printers_condition`
+is the one confirmed case — is unauthorable through `[set]`. That is honest: there
+is no CLI surface for it, and accepting it would mean failing later for a reason the
+file gives no hint of.
+
+*Supersedes:* if an engine appears whose config keys are the authored surface and
+whose options are derived, this is per-adapter rather than global, and D1's seam
+is where that difference belongs.
+
+## D29 — an installed-but-unconfigured engine is an environment fault (4)
+
+Issue #19, settled. Option B of the three it records.
+
+A freshly installed PrusaSlicer has no configuration, and asking it to enumerate
+presets gives a log line on **stdout** where JSON was expected, at engine exit 1.
+slicelab reports `incomplete` (2). But slicelab *can* tell, and the answer is
+specific: **the engine is installed and not configured.** Org contract §2.2 lists
+"an engine that will not start, a source file that is not there" as environment
+faults, and this is that shape — a fixable condition in the environment, not an
+indeterminate result about the request.
+
+### Decided
+
+Exit **4**, established by a **datadir precondition check** living in
+`adapters/<engine>/`: ask whether the engine has a configuration before querying
+it, rather than inferring it from the engine's error prose.
+
+Option C — matching the prose — is refused. It puts engine-specific strings
+outside `adapters/`, it is locale-sensitive, and it breaks on a wording change
+upstream can make without notice (§7).
+
+Two things this decision does not get to assume:
+
+- The check must resolve the **effective** datadir for the launch form discovery
+  actually chose. Flatpak sandboxes it under `~/.var/app/...`, a native build uses
+  the platform default, and `--datadir` overrides both. A hardcoded path would be
+  the per-machine constant D18 already refuses for launch forms.
+- A datadir can exist and carry no vendor bundle. That is a **third** state, and
+  it is the one producing G3's `{"printer_models": ""}`. Absence of a datadir and
+  presence of an empty one are not the same fault.
+
+### Status
+
+**Decided, not yet implemented.** `which` is unaffected and correctly exits 0 on a
+fresh install, because discovery asks the engine to identify itself and that needs
+no configuration. `presets` reports 2 today. The implementation lands with #19;
+this entry exists so `resolve` does not invent a third answer for the same
+condition, which is what #19 was filed to prevent.

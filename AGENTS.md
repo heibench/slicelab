@@ -131,12 +131,21 @@ is still promoted, and no lock is written. `3` is partspec's code for the same
 idea and is **not** in §6.2's table; slicelab is the second member using it, and
 that is escalated rather than assumed. See D24.
 
-**`refused` outranks `incomplete`.** When one requested key is `coerced` and another
-is `absent`, the run is `refused` (1), not `incomplete` (2). A finding about the
-request stays a finding even when some other key could not be evaluated; the reverse
-would let one unreadable key mask a real one. Taken from netspec D26, which settled
-the same precedence for the verify layer — this is the driver's form of it, adopted
-rather than re-derived.
+**`refused` outranks `incomplete`.** When one requested key is `unsupported` and
+another is `absent`, the run is `refused` (1), not `incomplete` (2). A finding about
+the request stays a finding even when some other key could not be evaluated; the
+reverse would let one unreadable key mask a real one. Taken from netspec D26, which
+settled the same precedence for the verify layer — this is the driver's form of it,
+adopted rather than re-derived.
+
+**A `coerced` key names no cause, and forces `incomplete` (2)** — D27, settling
+`notes/critique.md` G4. `refused` claims slicelab *established* the intent was not
+honoured, and over a coerced key it established nothing: `--perimeters 4.7`
+resolving to `4` (nothing honoured it) and `--spiral-vase=1 --perimeters=4`
+resolving `perimeters` to `1` (a documented constraint honoured it, on a real
+artifact) are the same bytes in the readback, both at `rc=0` with zero stderr. This
+paragraph previously used `coerced` as the precedence example, which D27 makes
+wrong: coerced-plus-absent is `incomplete` on both counts.
 
 The renderer prints the outcome word as the **first token** of output (D14). A
 past-tense verb leading a non-zero run reads green to a human skimming CI logs.
@@ -152,8 +161,9 @@ past-tense verb leading a non-zero run reads green to a human skimming CI logs.
   Until 2026-09-09 only the first existed while this sentence described the
   second. Measured: with `_orca_wall_count()` returning `"wall_loops" in readback`
   added to `slicelab/status.py`, the suite is **85 passed** and `just check` is
-  clean; with `test_names_confined.py` present the same tree is **1 failed, 91
-  passed**, naming the module and the term.
+  clean; with `test_names_confined.py` present the same tree goes **red**,
+  naming the module and the term. (No pass count here on purpose: a count in prose
+  beside a suite that grows is a claim that rots.)
 - **The `sliced` outcome must be unreachable with an empty subject set.** With
   zero requested keys, "every requested key was applied" is vacuously true, and
   a base-only `slice.toml` is the first file anyone writes. See G1 in

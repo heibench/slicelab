@@ -25,9 +25,15 @@ def test_first_token_holds_with_no_summary_and_no_detail(outcome: Outcome) -> No
 
 
 def test_detail_lines_are_indented_under_the_outcome() -> None:
-    text = render(Outcome.REFUSED, "1 override was not honoured", ["perimeters: 4.7 -> 4"])
+    """The fixture is V1, and after D27 V1 is `incomplete` rather than `refused`.
+
+    `render` is a pure formatter with no coupling to `forced_outcome_for`, so this
+    passed either way -- which is exactly why it was the copy of the old claim that
+    a sweep of the code missed. A depiction that cannot happen is still a depiction.
+    """
+    text = render(Outcome.INCOMPLETE, "1 override was not honoured", ["perimeters: 4.7 -> 4"])
     lines = text.splitlines()
-    assert lines[0] == "refused: 1 override was not honoured"
+    assert lines[0] == "incomplete: 1 override was not honoured"
     assert lines[1] == "  perimeters: 4.7 -> 4"
 
 

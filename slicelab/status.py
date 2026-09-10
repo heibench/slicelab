@@ -108,12 +108,21 @@ class KeyStatus(StrEnum):
     """Present in the engine's readback with exactly the requested value."""
 
     COERCED = "coerced"
-    """Present, value differs (``notes/evidence.md`` V1).
+    """Present, value differs, and **the cause is unknown**.
 
-    ``notes/critique.md`` G4 is unresolved and lands with the readback issue:
-    slicelab cannot yet distinguish "the engine ignored you" from "the engine
-    applied a documented dependent constraint", and a NORMALIZED member is not
-    added here before the probe that would justify telling them apart.
+    ``notes/critique.md`` G4, settled by D14's amendment. slicelab cannot tell
+    "the engine ignored you" from "the engine applied a documented dependent
+    constraint", because in the readback they are the same bytes. Both reproduced
+    on PrusaSlicer 2.9.6, both rc=0 with 0 B on stderr:
+
+    * ``--perimeters 4.7`` resolves to ``4`` -- nothing honoured it (V1).
+    * ``--spiral-vase=1 --perimeters=4`` resolves ``perimeters`` to ``1`` on a
+      41106-byte artifact the engine produced exactly as designed.
+
+    So this forces ``INCOMPLETE``, not ``REFUSED``. A ``NORMALIZED`` member telling
+    the two apart needs a probe recording the engine's dependent constraints, and
+    that does not exist; until it does, naming a cause is the substitution this
+    project exists to refuse.
     """
 
     ABSENT = "absent"
@@ -137,7 +146,7 @@ def forced_outcome_for(status: KeyStatus) -> Outcome | None:
         case KeyStatus.APPLIED:
             return None
         case KeyStatus.COERCED:
-            return Outcome.REFUSED
+            return Outcome.INCOMPLETE
         case KeyStatus.ABSENT:
             return Outcome.INCOMPLETE
         case KeyStatus.UNSUPPORTED:
