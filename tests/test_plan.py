@@ -31,14 +31,24 @@ def intent(overrides: dict[str, object] | None = None) -> Intent:
     )
 
 
-def test_the_argv_is_the_preset_triple_then_the_overrides_then_the_sidecar() -> None:
-    plan = plan_resolve(intent({"perimeters": 4}), PRUSASLICER, Path("/tmp/out.ini"))
+def test_the_argv_is_the_preset_triple_then_the_overrides_then_the_sidecar(
+    tmp_path: Path,
+) -> None:
+    """The sidecar is compared as a resolved Path, not as a POSIX string.
+
+    `plan_resolve` resolves the path, and a resolved path is platform-shaped --
+    `/tmp/out.ini` becomes `D:\\tmp\\out.ini` on Windows. Hardcoding the POSIX form
+    passed on this host and reddened CI's Windows leg, which is the whole reason
+    that leg exists.
+    """
+    sidecar = tmp_path / "out.ini"
+    plan = plan_resolve(intent({"perimeters": 4}), PRUSASLICER, sidecar)
     assert plan.argv == (
         "--printer-profile=Original Prusa i3 MK3S & MK3S+",
         "--print-profile=0.20mm QUALITY @MK3",
         "--material-profile=Prusament PLA",
         "--perimeters=4",
-        "--save=/tmp/out.ini",
+        f"--save={sidecar.resolve()}",
     )
 
 
@@ -48,7 +58,7 @@ def test_no_geometry_and_no_export_are_in_the_argv() -> None:
     That is what makes it ~0.2 s, and it is why the verb can ship before anything
     that produces an artifact exists.
     """
-    plan = plan_resolve(intent({"perimeters": 4}), PRUSASLICER, Path("/tmp/o.ini"))
+    plan = plan_resolve(intent({"perimeters": 4}), PRUSASLICER, Path(__file__))
     joined = " ".join(plan.argv)
     assert "--export-gcode" not in joined
     assert ".stl" not in joined
@@ -58,12 +68,8 @@ def test_no_geometry_and_no_export_are_in_the_argv() -> None:
 def test_the_argv_is_deterministic_across_authoring_order() -> None:
     """A Plan is diffed by humans and compared in tests; a reordering argv is one
     nobody can read. Base keys follow the engine's declared order, overrides sort."""
-    a = plan_resolve(
-        intent({"perimeters": 4, "fill-density": "60%"}), PRUSASLICER, Path("/tmp/x.ini")
-    )
-    b = plan_resolve(
-        intent({"fill-density": "60%", "perimeters": 4}), PRUSASLICER, Path("/tmp/x.ini")
-    )
+    a = plan_resolve(intent({"perimeters": 4, "fill-density": "60%"}), PRUSASLICER, Path(__file__))
+    b = plan_resolve(intent({"fill-density": "60%", "perimeters": 4}), PRUSASLICER, Path(__file__))
     assert a.argv == b.argv
 
 
@@ -74,19 +80,18 @@ def test_requested_records_the_string_that_was_emitted() -> None:
     `absent` by transforming a name, and the same trap exists for values -- a
     boolean emitted as `1` must not be compared as `True`.
     """
-    plan = plan_resolve(
-        intent({"spiral-vase": True, "perimeters": 4}), PRUSASLICER, Path("/tmp/x.ini")
-    )
+    plan = plan_resolve(intent({"spiral-vase": True, "perimeters": 4}), PRUSASLICER, Path(__file__))
     assert plan.requested == {"spiral-vase": "1", "perimeters": "4"}
 
 
-def test_an_empty_subject_set_plans_a_run_that_checks_nothing() -> None:
+def test_an_empty_subject_set_plans_a_run_that_checks_nothing(tmp_path: Path) -> None:
     """G1/D24: the first file anyone writes. `keys_checked` is 0, and the run that
     follows is `empty` at exit 3 rather than `sliced` at 0."""
-    plan = plan_resolve(intent(), PRUSASLICER, Path("/tmp/x.ini"))
+    sidecar = tmp_path / "x.ini"
+    plan = plan_resolve(intent(), PRUSASLICER, sidecar)
     assert plan.keys_checked == 0
     assert plan.requested == {}
-    assert "--save=/tmp/x.ini" in plan.argv
+    assert f"--save={sidecar.resolve()}" in plan.argv
 
 
 def test_keys_checked_counts_the_authored_delta_not_the_resolution() -> None:
@@ -96,13 +101,13 @@ def test_keys_checked_counts_the_authored_delta_not_the_resolution() -> None:
     checks. Presenting it as one would be the vacuous green wearing a bigger number.
     """
     plan = plan_resolve(
-        intent({"perimeters": 4, "fill-density": "60%"}), PRUSASLICER, Path("/tmp/x.ini")
+        intent({"perimeters": 4, "fill-density": "60%"}), PRUSASLICER, Path(__file__)
     )
     assert plan.keys_checked == 2
 
 
 def test_plan_is_frozen() -> None:
-    plan = plan_resolve(intent(), PRUSASLICER, Path("/tmp/x.ini"))
+    plan = plan_resolve(intent(), PRUSASLICER, Path(__file__))
     try:
         plan.argv = ()  # type: ignore[misc]
     except AttributeError:
