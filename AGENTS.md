@@ -150,7 +150,10 @@ past-tense verb leading a non-zero run reads green to a human skimming CI logs.
   and `test_names_confined.py` confines the **config-key namespace**, by requiring
   every non-prose literal in a core module to be a term slicelab declared (D26).
   Until 2026-09-09 only the first existed while this sentence described the
-  second, so `"wall_loops" in readback` inside `status.py` was green.
+  second. Measured: with `_orca_wall_count()` returning `"wall_loops" in readback`
+  added to `slicelab/status.py`, the suite is **85 passed** and `just check` is
+  clean; with `test_names_confined.py` present the same tree is **1 failed, 91
+  passed**, naming the module and the term.
 - **The `sliced` outcome must be unreachable with an empty subject set.** With
   zero requested keys, "every requested key was applied" is vacuously true, and
   a base-only `slice.toml` is the first file anyone writes. See G1 in
