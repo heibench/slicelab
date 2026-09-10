@@ -40,6 +40,31 @@ class EngineSpec:
     flatpak_app_id: str | None
     macos_exec: tuple[str, ...] = ()
     preset_query: PresetQuery | None = None
+    readback_flag: str | None = None
+    """The option that makes this engine dump its resolved configuration, or `None`.
+
+    PrusaSlicer writes an ini with `--save`; OrcaSlicer writes JSON with
+    `--export-settings` [V11]. Two engines, two mechanisms -- a 376-key ini and a
+    626-key JSON -- answering one question, which is the fact that makes the readback
+    seam real rather than a PrusaSlicer trick. The core asks for *a* readback and
+    never for `--save`, or D1's supersede clause is decided by default.
+
+    `None` means the emission form is unmeasured for this engine, and planning
+    refuses rather than composing an argv nobody has run.
+    """
+
+    bool_words: tuple[str, str] | None = None
+    """How this engine spells true and false on the command line, or `None`.
+
+    `None` means **not measured**, and pre-flight refuses a boolean override rather
+    than guessing. That is not caution for its own sake: PrusaSlicer 2.9.6 accepts
+    `--spiral-vase=1`, resolves `--spiral-vase=true` to `0`, and resolves
+    `--spiral-vase=` to `1` -- at exit 0, with nothing on stderr, in every case.
+    Boolean options are the one type that validates nothing, so a wrong guess here
+    is silently the opposite of what the author wrote. Orca's spelling is unmeasured,
+    so Orca declines the question instead of inheriting PrusaSlicer's answer.
+    """
+
     base_keys: tuple[str, ...] = ()
     """The option names an authored ``[<engine>.base]`` table must carry.
 
@@ -51,10 +76,9 @@ class EngineSpec:
     which is the PrusaSlicer-shaped abstraction D2 refuses.
 
     Empty means the adapter has not decided what its ``[base]`` contains, and
-    pre-flight will refuse rather than guess. **Nothing consumes this field yet**;
-    `preflight.py` lands with the second half of #5. It is declared here now
-    because the alternative was declaring it in the core, where
-    `test_names_confined.py` refuses it.
+    pre-flight will refuse rather than guess. Consumed by `preflight._check_base`. Declared
+    here rather than in the core because `test_names_confined.py` refuses an
+    engine's names there.
     """
 
     @property

@@ -73,6 +73,10 @@ DECLARED_VOCABULARY = frozenset(
         # EngineSpec.base_keys, under adapters/.
         "base",
         "set",
+        "argv",
+        "requested",
+        "sidecar",
+        "paths",
         "overrides",
         "source",
         # Report/lock structural field names slicelab owns.

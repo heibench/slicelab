@@ -8,14 +8,16 @@ project's founding defect at the very bottom of the stack (D18).
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
 from slicelab.adapters import EngineSpec
 from slicelab.engine import flatpak
+from slicelab.engine.flatpak import grants_for
 from slicelab.engine.launch import run
 
-__all__ = ["Discovery", "ExitFidelity", "LaunchForm", "discover"]
+__all__ = ["Discovery", "ExitFidelity", "LaunchForm", "argv_for", "discover"]
 
 #: A flag no slicer will ever accept. Deliberately namespaced, so that if some
 #: engine ever grows it, the collision is ours and obvious rather than silent.
@@ -101,6 +103,26 @@ def candidate_forms(spec: EngineSpec) -> list[LaunchForm]:
             )
         )
     return forms
+
+
+def argv_for(form: LaunchForm, argv: Sequence[str], paths: Iterable[str]) -> list[str]:
+    """Prefix an engine argv with its launch form, granting the paths it touches.
+
+    A Flatpak sees its own filesystem, so a path slicelab hands it does not exist
+    inside the sandbox unless it is granted. Unwired, this is the failure mode D19
+    names: the engine reports a missing file the author is looking at, and the fault
+    slicelab caused arrives as one the engine found.
+
+    Grants go immediately before the application id, which is the last element of a
+    Flatpak prefix -- `flatpak run [opts] APP [app args]`. Appending them after it
+    passes them to the *engine* instead, where they are unknown options.
+
+    A PATH launch grants nothing, because there is nothing to grant.
+    """
+    if form.kind is LaunchKind.PATH:
+        return [*form.argv_prefix, *argv]
+    grants = grants_for(set(paths))
+    return [*form.argv_prefix[:-1], *grants, form.argv_prefix[-1], *argv]
 
 
 def discover(spec: EngineSpec, *, timeout: float = PROBE_TIMEOUT_S) -> Discovery:
