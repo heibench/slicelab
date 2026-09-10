@@ -1003,7 +1003,8 @@ and the cascade no longer stops at the first non-empty answer — an inexact pai
 is remembered and a later pair of the right type may still track exactly, which
 is what `--fill-density` needs. Measured solo on a quiet host, PrusaSlicer went
 from **398 s to 1105 s**, about 2.8x rather than the 2x a per-candidate count
-suggests. Once per build, cached.
+suggests, and the confirmation pass below takes it to 1205 s. Once per build,
+cached.
 
 ### Measured, 2026-09-10, on the two installed engines
 
@@ -1025,8 +1026,13 @@ this probe had itself degraded; see *Reproducibility* below.
 | wrote no readback at exit 0 | 2 | 0 |
 | switched key namespace | 2 | 0 |
 | never returned | 5 | 0 |
+| disagreed on confirmation | 0 | — |
 | **inconclusive** | **45** | **63** |
-| wall clock | 1105 s | 1165 s |
+| wall clock | 1205 s | 1165 s |
+
+The PrusaSlicer column includes the confirmation pass described below: **101 s**
+of the 1205 s, re-probing 29 options, all 29 confirmed. The Orca column predates
+it and is 1165 s without.
 
 `inconclusive` is the count `MapEntry.conclusive` refuses: everything except
 `mapped` and `no-key-moved`. On PrusaSlicer all 45 are properties of the option
@@ -1069,8 +1075,8 @@ opposite of the truth.
 as a fraction.** `=40` and `=7` are refused at rc=1 with `Value out of range:
 fill_density` and **no ini written**, while `=0.4` resolves to `40%` and `=60%`
 to `60%`. Stated for that option and not as a rule about percent-typed options:
-adversarial review found `fill_angle` and `first_layer_speed` accepting a bare
-`40` as `40`, while the extrusion-width family rejects it on a units check. Three
+`fill_angle` and `first_layer_speed` accept a bare `40` as `40`, while the
+extrusion-width family rejects it on a units check. Three
 behaviours across one nominal "type" is why D5 refuses to ship an option
 catalogue and why this map is probed.
 
@@ -1142,8 +1148,8 @@ off.
 ### Reproducibility, restated as what it is
 
 An earlier revision of this entry reported "2 of 416" from a pair of sweeps, one
-of which shared the host with another sweep. Adversarial review measured **308 of
-416 outcomes disagreeing** at load 200 — the load this probe was itself creating.
+of which shared the host with another sweep. Re-measured at load 200 — the load
+this probe was itself creating — **308 of 416 outcomes disagree**.
 The figure was not wrong about the runs; it was measured on a machine the probe
 had degraded, and the entry did not say so.
 
@@ -1166,16 +1172,46 @@ namespace (`--export-sla` and its alias `--sla`).
 The one that moved is `--enable-dynamic-overhang-speeds`: `mapped` in A,
 `no-key-moved` in B, and `mapped` 3/3 when probed alone. **Its direction is the
 uncomfortable part.** `no-key-moved` is a *finding* — `MapEntry.conclusive` is
-true for it — so this residue is not caught by the could-not-tell channel. A
+true for it — so that residue is not caught by the could-not-tell channel. A
 transient engine failure on the one pair that discriminates leaves only
-inert-looking evidence behind, and inert is indistinguishable from genuinely
-inert.
+inert-looking evidence, and inert is indistinguishable from genuinely inert.
 
-That is a known limit, recorded rather than mitigated. Retrying would suppress
-real refusals along with transient ones, and raising the ceiling treats a symptom
-of host load that the leak fix has now removed at source. What is claimed is
-therefore narrow: **keys are stable, presence is load-dependent, and the
-load-dependence was largely self-inflicted.**
+### So the inert set, and only the inert set, is confirmed
+
+A first draft of this entry refused to retry anything, on the argument that a
+retry suppresses a real refusal. **That argument is right about `rejected` and
+wrong as a generalisation**, and leaving it to cover the whole probe was letting
+one true sentence do work it could not.
+
+A confirmation pass over `NO_KEY_MOVED` touches no refusal at all. It re-probes
+the 29 of 416 options that appeared to write nothing, and a disagreement demotes
+the option to `UNSTABLE`, which is **not** conclusive. Promoting the more
+interesting answer would be picking a winner between two runs that disagreed.
+`REJECTED` and `TIMED_OUT` are excluded deliberately and for different reasons:
+re-probing a refusal hides a genuine "no" behind a lucky second run, and
+re-probing a hang is what poisons the host in the first place. Both are already
+could-not-tells, so a retry buys nothing there and costs the property.
+
+Cost measured, not estimated: **101 s of a 1205 s sweep**, 29 options re-probed,
+all 29 confirming. The sweep without it was 1105 s.
+
+What is claimed is therefore narrow: **keys are stable, presence is
+load-dependent, the load-dependence was largely self-inflicted, and the one
+negative finding a caller may act on is now established twice.**
+
+### One unattributed test failure, recorded as unattributed
+
+`test_the_engine_writes_a_key_the_options_name_does_not_predict` failed once
+across four full suite runs on the fixed host and passes in isolation. Two full
+sweeps either side of it were clean, so the transient is rare rather than
+routine.
+
+**Which** transient it was is not established: the run captured no output, and a
+single failure with nothing recorded does not identify a cause. It is written
+down as unattributed rather than filed under the load-sensitivity above, because
+attributing it to the nearest known story is the substitution this project is
+named after. The action if it recurs is to capture the engine's streams at the
+point of failure, not to reason about it further from here.
 
 ### A partial map must be able to say so
 

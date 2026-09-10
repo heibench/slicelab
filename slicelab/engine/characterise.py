@@ -135,6 +135,16 @@ class ProbeOutcome(StrEnum):
     TIMED_OUT = "timed-out"
     """The engine never returned. ``--gcodeviewer`` opens a window and waits."""
 
+    UNSTABLE = "unstable"
+    """Two probes of the same option on the same build disagreed.
+
+    Only reachable from the confirmation pass, and only over options that first
+    read as ``NO_KEY_MOVED``. "This option writes no key" is the one negative
+    finding a caller may act on, and it is also what a transient engine failure
+    looks like, so it is the one worth asking twice. A disagreement is not
+    resolved by picking the more interesting answer -- it is a could-not-tell.
+    """
+
 
 class Tracking(StrEnum):
     """How firmly an entry's keys were tied to the option's own value."""
@@ -376,6 +386,9 @@ def characterise(
             )
             for option in options
         }
+        _confirm_the_inert(
+            entries, spec, found, probe, sidecar, baseline, volatile, timeout=timeout
+        )
 
     return Characterisation(
         engine=spec.name,
@@ -420,6 +433,47 @@ def _enumerate(found: Discovery, argv: tuple[str, ...], *, timeout: float) -> st
     assert found.form is not None
     completed = run(argv_for(found.form, argv, ()), timeout=timeout)
     return completed.stdout + completed.stderr
+
+
+def _confirm_the_inert(
+    entries: dict[str, MapEntry],
+    spec: EngineSpec,
+    found: Discovery,
+    probe: OptionProbe,
+    sidecar: Path,
+    baseline: Mapping[str, str],
+    volatile: tuple[str, ...],
+    *,
+    timeout: float,
+) -> None:
+    """Ask a second time about the options that appeared to write nothing.
+
+    ``NO_KEY_MOVED`` is the only *negative* result a caller may act on --
+    ``MapEntry.conclusive`` is true for it, because "this option writes no key"
+    is a finding. It is also exactly what a transient engine failure leaves
+    behind: if the one sentinel pair that would have moved a key happens to be
+    refused, everything else looks inert, and inert is indistinguishable from
+    genuinely inert. Measured across two full sweeps,
+    ``--enable-dynamic-overhang-speeds`` flipped this way while mapping 3/3 when
+    probed alone.
+
+    So it is re-probed, and a disagreement demotes the option to ``UNSTABLE``
+    rather than promoting the more interesting answer -- two runs disagreeing is
+    a could-not-tell, not a mapping.
+
+    **Only this set.** A confirmation pass over ``REJECTED`` would ask again
+    about options the engine actually refused, and a retry there suppresses a
+    real refusal; the same argument covers ``TIMED_OUT``, where the retry is what
+    poisons the host. The narrow pass touches no refusal at all: 29 of 416
+    options on PrusaSlicer.
+    """
+    inert = [
+        option for option, entry in entries.items() if entry.outcome is ProbeOutcome.NO_KEY_MOVED
+    ]
+    for option in inert:
+        again = _probe_one(spec, found, probe, option, sidecar, baseline, volatile, timeout=timeout)
+        if again.outcome is not ProbeOutcome.NO_KEY_MOVED:
+            entries[option] = _unmapped(ProbeOutcome.UNSTABLE)
 
 
 def _probe_one(

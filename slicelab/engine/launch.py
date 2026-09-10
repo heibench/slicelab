@@ -236,7 +236,7 @@ def _spawn(argv: list[str], cwd: Path, timeout: float) -> Completed:
     ) as proc:
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as expired:
             _terminate_tree(proc, posix=posix)
             # Drain what the tree managed to say before it died, and **bound the
             # drain**. The write ends of these pipes are inherited by every
@@ -248,10 +248,16 @@ def _spawn(argv: list[str], cwd: Path, timeout: float) -> Completed:
             try:
                 stdout, stderr = proc.communicate(timeout=KILL_GRACE_S)
             except subprocess.TimeoutExpired:
-                # Something in the tree still holds the pipes. Say what we have --
-                # nothing -- rather than block; `timed_out` already tells the
-                # caller not to read anything into this run's output.
-                stdout, stderr = "", ""
+                # Something in the tree still holds the pipes. Fall back to what
+                # the FIRST timeout captured rather than blocking -- it is not
+                # nothing, and an earlier revision that returned empty strings
+                # here silently dropped an engine's diagnostic. Measured: the
+                # first `TimeoutExpired` carried the child's stdout in full while
+                # this path returned ''. Losing the one message a hung engine
+                # managed to emit is the failure prusaslicer-py D5 exists to
+                # prevent.
+                stdout = _as_text(expired.stdout)
+                stderr = _as_text(expired.stderr)
             return Completed(
                 argv=list(argv),
                 exit_status=None,
@@ -284,10 +290,29 @@ def _spawn(argv: list[str], cwd: Path, timeout: float) -> Completed:
 def _terminate_tree(proc: subprocess.Popen[str], *, posix: bool) -> None:
     """Kill the timed-out process and everything it started.
 
-    The group id is read from the live process rather than assumed to equal its
-    pid: if the child has already been reaped there is no group to signal, and
-    signalling pid 0 would mean *this* process's group -- slicelab killing
-    itself and whatever launched it.
+    Three things this gets wrong if written the obvious way, and all three were
+    written the obvious way first.
+
+    **The group id is read from the live process** rather than assumed to equal
+    its pid: if the child has already been reaped there is no group to signal,
+    and signalling pid 0 means *this* process's group.
+
+    **A group that is our own is never signalled.** Guarding pid 0 is not enough.
+    This is a module-level function taking any ``Popen``, and nothing in its
+    signature says the child was started with ``start_new_session=True`` -- that
+    happens twenty lines away in :func:`_spawn`. A child sharing our group is
+    therefore reachable, and ``killpg`` on it terminates slicelab and whatever
+    launched slicelab. Measured, by flipping ``start_new_session`` to ``False``:
+    the process doing the killing died at exit 143 on SIGTERM. The guard also
+    makes that flag safe to mutation-test, which it was not.
+
+    **SIGKILL after the grace period is unconditional.** Waiting on the *direct
+    child* and escalating only if that wait times out reintroduces the original
+    defect one level in: a launcher that dies politely on SIGTERM while a
+    descendant ignores it makes the wait return immediately, the escalation never
+    fires, and the descendant survives -- which is the exact shape ``flatpak run``
+    has. Signalling an already-dead group is a no-op, so there is nothing to save
+    by asking first.
     """
     if not posix:  # pragma: no cover - exercised only on Windows runners
         proc.kill()
@@ -297,13 +322,17 @@ def _terminate_tree(proc: subprocess.Popen[str], *, posix: bool) -> None:
     except (ProcessLookupError, PermissionError):  # pragma: no cover - it is already gone
         proc.kill()
         return
+    if group == os.getpgrp():
+        # The child never left our group, so there is no tree to signal that does
+        # not also contain us. Kill the one process we are certain about.
+        proc.kill()
+        return
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(group, signal.SIGTERM)
-    try:
+    with contextlib.suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=KILL_GRACE_S)
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(group, signal.SIGKILL)
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(group, signal.SIGKILL)
 
 
 def _as_text(raw: str | bytes | None) -> str:

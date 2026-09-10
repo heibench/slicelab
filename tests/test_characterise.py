@@ -34,6 +34,7 @@ from slicelab.engine.characterise import (
     ProbeOutcome,
     Tracking,
     _cache_root,
+    _confirm_the_inert,
     _probe_one,
     _read_cache,
     _safe,
@@ -627,6 +628,92 @@ def test_an_option_the_probe_could_not_settle_reaches_the_caller_as_such(
     assert timed_out.outcome is not measured.outcome
 
 
+def test_an_option_that_reads_inert_is_asked_a_second_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`no-key-moved` is a finding, and a transient failure looks exactly like it.
+
+    Measured across two full sweeps, `--enable-dynamic-overhang-speeds` came back
+    `mapped` in one and `no-key-moved` in the other while mapping 3/3 when probed
+    alone. That residue lands in a **conclusive** bucket, so the could-not-tell
+    channel does not catch it -- which is why this set, and only this set, is
+    re-probed.
+
+    A disagreement demotes to `unstable`. Promoting the more interesting answer
+    would be picking a winner between two runs that disagreed.
+    """
+    sidecar = tmp_path / "readback"
+    calls = {"n": 0}
+
+    def reply(sentinel: str) -> Reply:
+        # Inert on the first full cascade; on the confirmation pass the key moves.
+        calls["n"] += 1
+        if calls["n"] <= 2 * len(PAIRS):
+            return (0, "", _ini(BASELINE))
+        return (0, "", _ini({**BASELINE, "beta": sentinel}))
+
+    engine = FakeEngine(sidecar, reply)
+    monkeypatch.setattr("slicelab.engine.characterise.run", engine)
+    assert _PROBE is not None
+    entries = {
+        "an-option": _probe_one(
+            PRUSASLICER, FOUND, _PROBE, "an-option", sidecar, BASELINE, (), timeout=1.0
+        )
+    }
+    assert entries["an-option"].outcome is ProbeOutcome.NO_KEY_MOVED
+
+    _confirm_the_inert(entries, PRUSASLICER, FOUND, _PROBE, sidecar, BASELINE, (), timeout=1.0)
+    assert entries["an-option"].outcome is ProbeOutcome.UNSTABLE
+    assert not entries["an-option"].conclusive, (
+        "two runs that disagreed established nothing a caller may act on"
+    )
+    assert entries["an-option"].keys == ()
+
+
+def test_a_stable_inert_option_survives_the_confirmation_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pass must not turn every honest negative into a could-not-tell."""
+    sidecar = tmp_path / "readback"
+    engine = FakeEngine(sidecar, lambda s: (0, "", _ini(BASELINE)))
+    monkeypatch.setattr("slicelab.engine.characterise.run", engine)
+    assert _PROBE is not None
+    entries = {
+        "an-option": _probe_one(
+            PRUSASLICER, FOUND, _PROBE, "an-option", sidecar, BASELINE, (), timeout=1.0
+        )
+    }
+    _confirm_the_inert(entries, PRUSASLICER, FOUND, _PROBE, sidecar, BASELINE, (), timeout=1.0)
+    assert entries["an-option"].outcome is ProbeOutcome.NO_KEY_MOVED
+    assert entries["an-option"].conclusive
+
+
+def test_the_confirmation_pass_never_asks_again_about_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the inert set. A retry over a refusal suppresses a real refusal.
+
+    ``rejected`` means the engine turned every value down, and ``timed-out``
+    means it hung -- re-probing the first hides a genuine "no" behind a lucky
+    second run, and re-probing the second is what poisons the host. Both are
+    already could-not-tells, so a retry buys nothing and costs the property.
+    """
+    sidecar = tmp_path / "readback"
+    engine = FakeEngine(sidecar, lambda s: (0, "", _ini(BASELINE)))
+    monkeypatch.setattr("slicelab.engine.characterise.run", engine)
+    assert _PROBE is not None
+    entries = {
+        "refused": _unmapped(ProbeOutcome.REJECTED),
+        "hung": _unmapped(ProbeOutcome.TIMED_OUT),
+        "silent": _unmapped(ProbeOutcome.NO_ARTIFACT),
+        "switched": _unmapped(ProbeOutcome.NAMESPACE_CHANGED),
+    }
+    before = dict(entries)
+    _confirm_the_inert(entries, PRUSASLICER, FOUND, _PROBE, sidecar, BASELINE, (), timeout=1.0)
+    assert entries == before
+    assert engine.calls == 0, "the confirmation pass reached an option it must not touch"
+
+
 def test_a_characterisation_says_when_it_is_partial() -> None:
     """A partial map that cannot say it is partial is what this project refuses."""
     whole = Characterisation(
@@ -931,32 +1018,37 @@ def test_the_import_boundary_test_is_not_vacuous() -> None:
 _KEY_SHAPED = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
 
 
-def _defined_names(tree: ast.AST) -> set[str]:
-    """Every name this module binds: assignments, fields, parameters, defs.
+def _schema_bindings(tree: ast.AST) -> set[str]:
+    """Names bound in the two class-body positions that carry a data vocabulary.
 
-    A literal that matches a name the module itself defines is that name being
-    spelled twice -- a dict key for a dataclass field, an enum value -- not an
-    engine's vocabulary arriving from outside.
+    Deliberately **not** every name the module binds. An earlier revision
+    collected every ``ast.Name``, which let the guard whitelist itself:
+    ``layer_gcode = "layer_gcode"`` at module level defines the name, so the
+    literal matched it and the check stayed green. A planted mutation confirmed
+    it, and only the engine-backed test caught it -- which runs on dispatch and a
+    weekly cron, so on a pull request the evasion shipped.
+
+    Narrowed to dataclass fields and class-body assignments, which is where a
+    *data* vocabulary legitimately lands and is the same position D26's own
+    schema scan looks at. A literal matching one of those is a field name spelled
+    twice for a dict key or an enum value; anything else came from outside.
     """
     out: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            out.add(node.id)
-        elif isinstance(node, ast.arg):
-            out.add(node.arg)
-        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            out.add(node.name)
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            out.add(node.target.id)
-        elif isinstance(node, ast.Attribute):
-            out.add(node.attr)
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for stmt in node.body:
+            if isinstance(stmt, ast.Assign):
+                out.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                out.add(stmt.target.id)
     return out
 
 
 def key_shaped_strangers(source: str, filename: str = "<test>") -> list[str]:
     """Config-key-shaped literals that this module does not itself define."""
     tree = ast.parse(source, filename=filename)
-    defined = _defined_names(tree)
+    defined = _schema_bindings(tree)
     found = {
         term
         for term in undeclared_terms(source, filename)
@@ -1004,6 +1096,19 @@ def test_the_engine_shaped_guard_catches_a_real_key() -> None:
     """
     dirty = 'def f(readback):\n    return readback["wall_loops"] or "layer_gcode" in readback\n'
     assert key_shaped_strangers(dirty) == ["layer_gcode", "wall_loops"]
+
+
+def test_the_engine_shaped_guard_cannot_be_whitelisted_by_assigning_the_name() -> None:
+    """The evasion an earlier revision allowed, pinned so it cannot come back.
+
+    Collecting every bound name meant a module could exempt an engine key simply
+    by assigning it: ``layer_gcode = "layer_gcode"`` defined the name, so the
+    literal matched. Only a class-body field or enum member counts now.
+    """
+    evasion = 'layer_gcode = "layer_gcode"\n'
+    assert key_shaped_strangers(evasion) == ["layer_gcode"]
+    local = 'def f():\n    wall_loops = "wall_loops"\n    return wall_loops\n'
+    assert key_shaped_strangers(local) == ["wall_loops"]
 
 
 def test_the_engine_shaped_guard_does_not_flag_our_own_field_names() -> None:
