@@ -19,8 +19,12 @@ have reported green on the exact state that produced the incident.
 
 from __future__ import annotations
 
+import ast
+import json
+import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -125,3 +129,101 @@ def test_nothing_an_engine_wrote_is_headed_for_the_sdist() -> None:
         "these files would ship in the sdist, in formats an engine writes and "
         f"slicelab does not author, which D11 forbids: {strays}"
     )
+
+
+#: Above what slicelab writes, far below any engine's vocabulary.
+#:
+#: Measured on the tracked tree: the densest file is 8 distinct snake_case string
+#: literals (``tests/test_names_confined.py``, which names slicelab's own outcome
+#: words). The smallest engine corpus D11 forbids is PrusaSlicer's 343 config keys;
+#: OrcaSlicer's dump is 616 and the probed option map 342. So the gap between "what
+#: this project authors" and "a corpus" is a factor of forty, and any threshold in
+#: between is arbitrary only in the sense that the middle of a chasm is.
+CORPUS_THRESHOLD = 40
+
+_KEYISH = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
+
+
+def _snake_case_literals(path: Path) -> set[str]:
+    """Distinct snake_case string literals in a file, whatever its extension.
+
+    Read as source where it parses as Python, and as text otherwise, because the
+    point is to catch a corpus regardless of the container someone chose for it.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return set()
+    if path.suffix == ".py":
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return set()
+        return {
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and _KEYISH.match(node.value)
+        }
+    return {
+        m.group(1) for m in re.finditer(r'"([a-z][a-z0-9_]+)"', text) if _KEYISH.match(m.group(1))
+    }
+
+
+def test_no_corpus_of_engine_key_names_is_headed_for_the_sdist() -> None:
+    """D11 by content, because the suffix rule alone does not pin what D11 claims.
+
+    ``test_nothing_an_engine_wrote_is_headed_for_the_sdist`` matches on extension,
+    so the characterisation map -- 342 option names and the config keys they write
+    -- ships green as ``option_key_map.py``, ``.txt``, ``.csv``, or with no
+    extension at all. D11 says it is "pinned by ``test_no_engine_data.py``"; until
+    this test existed, that claim was larger than the file delivered.
+
+    The two rules answer different questions and both are kept: the suffix rule
+    catches an engine's *output format* landing in the tree (how ``result.json``
+    arrived), and this one catches an engine's *vocabulary* landing in any format.
+    """
+    dense = {}
+    for candidate in _sdist_candidates():
+        path = _ROOT / candidate
+        if not path.is_file():
+            continue
+        found = _snake_case_literals(path)
+        if len(found) > CORPUS_THRESHOLD:
+            dense[candidate] = len(found)
+    assert not dense, (
+        "these files carry a corpus of engine-shaped key names and would ship in "
+        f"the sdist, which D11 forbids: {dense}. Generate it into the XDG cache "
+        "instead, and gitignore it."
+    )
+
+
+def test_the_corpus_rule_catches_a_map_in_any_container() -> None:
+    """Red-capability, proven against the containers the suffix rule misses.
+
+    Org contract 2.4: a check whose red state you have not observed is not a check.
+    This one's red state cannot be reached by breaking the tree, because the
+    property under test is that the tree is clean -- so the detector is run against
+    a corpus directly, in each format someone might reach for.
+    """
+    corpus = [f"config_key_{n}" for n in range(CORPUS_THRESHOLD + 10)]
+    written = {
+        "map.py": "KEYS = " + repr(corpus),
+        "map.txt": "\n".join(f'"{k}"' for k in corpus),
+        "map.csv": ",".join(f'"{k}"' for k in corpus),
+        "option-key-map": json.dumps({k: [k] for k in corpus}),
+    }
+    with tempfile.TemporaryDirectory() as scratch:
+        for name, body in written.items():
+            path = Path(scratch) / name
+            path.write_text(body, encoding="utf-8")
+            found = _snake_case_literals(path)
+            assert len(found) > CORPUS_THRESHOLD, f"{name} evaded the corpus rule"
+
+
+def test_the_corpus_rule_is_not_red_on_what_slicelab_writes() -> None:
+    """A guard on the guard: a rule red on our own source would be deleted, not fixed."""
+    ours = _ROOT / "slicelab" / "status.py"
+    assert ours.is_file()
+    assert len(_snake_case_literals(ours)) <= CORPUS_THRESHOLD

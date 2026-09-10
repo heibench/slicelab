@@ -217,8 +217,30 @@ tochnology" is a literal inside the AGPL binary.
 
 Everything slicelab needs about an engine is generated on the user's machine into
 XDG cache and gitignored: the default key set, the nondeterministic-setting list,
-the preset catalogue, the option-to-key map (D5, [G2]). Pinned by
-`test_no_engine_data.py`.
+the preset catalogue, the option-to-key map (D5, [G2]).
+
+`test_no_engine_data.py` pins this, and it is worth saying **what** it pins,
+because for a while the sentence above claimed more than the file delivered. Two
+rules, answering different questions:
+
+- **By format** — nothing headed for the sdist may carry a suffix an engine writes
+  and slicelab authors none of. That catches an engine's *output* landing in the
+  tree, which is how a `result.json` once arrived.
+- **By content** — nothing headed for the sdist may carry a *corpus* of
+  engine-shaped key names, whatever container it is in. That catches an engine's
+  *vocabulary*, which the format rule cannot see.
+
+The second exists because the first was doing the whole job on its own and could
+not. Measured 2026-09-10: the probed option map, committed as
+`slicelab/option_key_map.py` with the engine's real 343 config keys in it, **passes**
+the format rule and **fails** the content rule. `.txt`, `.csv` and an extension-free
+file evade the format rule identically.
+
+The threshold is 40 distinct snake_case string literals. It is not tuned: the
+densest file this project writes has **8** — `tests/test_names_confined.py`, naming
+slicelab's own outcome words — and the smallest corpus D11 forbids is PrusaSlicer's
+**343** keys. Anything between those is arbitrary only in the sense that the middle
+of a chasm is.
 
 Tests that consume a generated corpus **skip loudly** when it is absent, never
 pass vacuously.
