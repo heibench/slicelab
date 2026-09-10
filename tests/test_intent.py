@@ -84,7 +84,10 @@ def test_a_base_table_with_no_presets_is_refused(tmp_path: Path) -> None:
     """Zero presets is accepted by the engine at exit 0, yielding generic built-ins.
 
     WHICH names are required is the adapter's (`EngineSpec.base_keys`) and is checked
-    at pre-flight, D15's home for a refusal slicelab's own argv would have caused.
+    at pre-flight -- D15's home for a refusal slicelab's own argv would have caused,
+    and a module that does not exist yet. The parser owns the shape only, so today a
+    `[base]` naming the wrong keys parses clean and is caught by nothing; nothing
+    reaches an engine either, because no verb consumes `read_intent`.
     The parser owns the shape only.
     """
     with pytest.raises(IntentError, match="empty"):
@@ -103,11 +106,48 @@ def test_an_empty_preset_name_is_refused(tmp_path: Path) -> None:
 
 
 def test_an_empty_override_value_is_refused(tmp_path: Path) -> None:
-    """D5's boundary, and it is a class rather than one option: --post-process=,
-    --filament-notes= and --bed-custom-texture= all answer 'No value supplied'.
-    "Clear this key" is refused with a reason, never a silent no-op."""
-    with pytest.raises(IntentError, match="not\n?\\s*expressible|expressible"):
+    """ "Clear this key" is refused with a reason, never a silent no-op (D5)."""
+    with pytest.raises(IntentError, match="blank"):
         read_intent(write(tmp_path, VALID + '\npost-process = ""\n'))
+
+
+def test_a_whitespace_only_override_value_is_refused(tmp_path: Path) -> None:
+    """The route that actually clears a key, and it is not the one D5 recorded.
+
+    Measured on 2.9.6 -- `--notes=` answers `No value supplied` at rc=1, which is
+    the boundary D5 wrote down. But `--notes="   "` exits **0**, writes the key
+    empty, and puts nothing on stderr. So the loud case was the one already
+    refused, and the silent one was getting through: an earlier revision of this
+    parser checked `not raw` rather than `not raw.strip()` and accepted it while
+    its own message said clearing a key is refused.
+    """
+    with pytest.raises(IntentError, match="blank"):
+        read_intent(write(tmp_path, VALID + '\nnotes = "   "\n'))
+
+
+def test_a_file_that_is_not_utf8_is_refused_by_name(tmp_path: Path) -> None:
+    """Not as a raw UnicodeDecodeError traceback."""
+    path = tmp_path / "slice.toml"
+    path.write_bytes(b'[prusaslicer.base]\nprinter-profile = "\xff\xfe"\n')
+    with pytest.raises(IntentError, match="not UTF-8"):
+        read_intent(path)
+
+
+def test_lone_carriage_returns_are_refused_as_tomllib_refuses_them(
+    tmp_path: Path,
+) -> None:
+    """D13 says `tomllib.load`, and reading bytes is what makes that literally true.
+
+    `tomllib.loads(path.read_text())` puts universal-newline translation in front of
+    the parser: a lone-CR file parses that `tomllib.load` rejects, and a decode error
+    then names a character the author never wrote. A parser that reports a fault in
+    a file it silently rewrote is the substituted diagnosis this module exists to
+    refuse on the engine's behalf.
+    """
+    path = tmp_path / "slice.toml"
+    path.write_bytes(b'[prusaslicer.base]\rprinter-profile = "x"\r')
+    with pytest.raises(IntentError, match="not valid TOML"):
+        read_intent(path)
 
 
 def test_an_override_written_as_a_flag_is_refused(tmp_path: Path) -> None:

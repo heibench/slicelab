@@ -72,11 +72,28 @@ def _require_mapping(value: object, what: str) -> dict[str, object]:
 
 
 def read_intent(path: Path) -> Intent:
-    """Parse and validate a `slice.toml`, or refuse it with a named reason."""
+    """Parse and validate a `slice.toml`, or refuse it with a named reason.
+
+    Reads **bytes**. D13 says the parser is `tomllib.load`, and that is not a
+    stylistic preference: `tomllib.loads(path.read_text())` puts universal-newline
+    translation in front of the parser, so a file with lone-CR line endings parses
+    here and would not parse there -- and worse, a decode error then names a
+    character the author never wrote, which is exactly the substituted diagnosis
+    this module refuses on the engine's behalf.
+
+    The **engine name is deliberately not validated here.** Whether `prusaslicer`
+    names an adapter is `spec_for`'s question at the next layer, and answering it
+    in the core would put the registry -- and through it every engine's identity --
+    inside the module D26 keeps free of them. An unknown name reaches a refusal, it
+    just does not reach this one.
+    """
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as handle:
+            raw = tomllib.load(handle)
     except OSError as exc:
         raise IntentError(f"cannot read {path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise IntentError(f"{path} is not UTF-8: {exc}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise IntentError(f"{path} is not valid TOML: {exc}") from exc
 
@@ -112,7 +129,9 @@ def _read_base(value: object, engine: str) -> dict[str, str]:
     `printer_model` -- the defaults trap arriving as a success (D16).
 
     **Which** names are required is engine knowledge and lives on `EngineSpec.base_keys`,
-    checked at pre-flight (D15). PrusaSlicer addresses a triple by name; OrcaSlicer has
+    to be checked at pre-flight (D15), which **does not exist yet** -- `preflight.py`
+    lands with the second half of #5, and until it does nothing consumes
+    `base_keys`. PrusaSlicer addresses a triple by name; OrcaSlicer has
     no such flag and takes file paths instead, so a constant here naming PrusaSlicer's
     three would be the abstraction D2 refuses -- and `test_names_confined.py` refuses it
     structurally, which is how this landed in the adapter rather than in the core.
@@ -162,11 +181,13 @@ def _read_overrides(value: object, engine: str) -> dict[str, IntentValue]:
         if isinstance(raw, bool):
             out[key] = raw
         elif isinstance(raw, str):
-            if not raw:
+            if not raw.strip():
                 raise IntentError(
-                    f"[{engine}.{SET_TABLE}] {key} is empty, and an empty value is not "
-                    "expressible: the engine answers 'No value supplied'. Clearing a "
-                    "key is refused here rather than silently doing nothing (D5)"
+                    f"[{engine}.{SET_TABLE}] {key} is blank. Clearing a key is refused "
+                    "here rather than silently doing nothing -- and whitespace is the "
+                    "route that works: --notes= answers 'No value supplied' at rc=1, "
+                    'while --notes="   " exits 0 and writes the key empty with nothing '
+                    "on stderr (D5, and its recorded boundary is narrower than this)"
                 )
             out[key] = raw
         elif isinstance(raw, int | float):

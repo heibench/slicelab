@@ -54,9 +54,10 @@ def test_the_engine_owns_its_preset_flag_names_and_the_core_does_not() -> None:
 def test_an_adapter_with_no_declared_base_is_not_guessed_for() -> None:
     """Orca's `[base]` is undecided, and an empty tuple says so rather than lying.
 
-    Pre-flight refuses on an empty `base_keys` instead of falling back to the other
+    Pre-flight will refuse on an empty `base_keys` rather than fall back to the other
     engine's names -- degrading to a neighbouring answer is the shape org contract
-    section 3 calls a could-not-tell, not a success.
+    section 3 calls a could-not-tell, not a success. `preflight.py` does not exist
+    yet, so this pins the declaration and not the behaviour.
     """
     assert ORCASLICER.base_keys == ()
 

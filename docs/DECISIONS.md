@@ -34,10 +34,14 @@ splits into two per-engine tools sharing only the lock schema and the status enu
 ## D2 — The core normalized vocabulary is EMPTY in v0.1.0
 
 Authored keys are the engine's own native names under an engine-namespaced table.
-`test_vocabulary_empty.py` will assert `CORE_KEYS == frozenset()`. **Neither
-exists yet**; both land with the intent parser (#5). This sentence was written
-in the present tense before the thing it describes, which is the status-claim
-defect org contract 2.5 names -- recorded here rather than quietly reworded.
+`tests/test_vocabulary_empty.py` asserts `CORE_KEYS == frozenset()`. Both landed
+with the intent parser (#5).
+
+This sentence has now been wrong in **both** directions, which is why it says so
+rather than reading as though it was always right: it was written in the present
+tense before either existed, corrected to the future tense in #27, and corrected
+back when #29 made it true. A status claim is part of the gate (org contract 2.5),
+and that cuts the same way when a change makes one true.
 
 135 of PrusaSlicer's 343 config keys share a *name* with an Orca key, and at least
 five of the first dozen adjudicated are traps: `gcode_label_objects` is an enum in
@@ -98,6 +102,36 @@ the need to vendor or regenerate an AGPL option catalogue (D11).
 `--post-process=`, `--filament-notes=` and `--bed-custom-texture=` all give
 rc=1 `No value supplied`. "Clear this key" is refused at exit 1 with a named
 reason, never a silent no-op. This is a class, not one option.
+
+**Boundary, corrected 2026-09-10 — the sentence above is true and not general.**
+Measured on 2.9.6, and the loud case turned out to be the one already handled:
+
+| argv | rc | resolved |
+|---|---|---|
+| `--notes=` | 1 | `No value supplied` |
+| `--notes="   "` | **0** | `notes = ` — cleared, **0 bytes stderr** |
+| `--perimeters=banana` | 1 | `Invalid value supplied` |
+| `--spiral-vase=banana` | **0** | `spiral_vase = 0` |
+| `--spiral-vase=true` | **0** | `spiral_vase = 0` |
+| `--spiral-vase=` | **0** | `spiral_vase = 1` |
+
+Two corrections follow. **Whitespace clears a key silently**, so the refusal D5
+describes was being reached by the loud route and missed by the quiet one — the
+parser now refuses on `not value.strip()`, and `--notes=` was never the dangerous
+form. And **boolean options validate nothing at all**: anything that is not
+literally `1` resolves to `0`, and an *empty* value resolves to `1` — the opposite
+polarity from every other type, which all reject a bad value at rc=1.
+
+So "empty is not expressible" holds for every type **except** booleans, where empty
+is not only expressible but means *on*. A driver that emitted a TOML `true` as
+`"true"` would set the flag *off* while the author read the file as setting it on,
+at exit 0 with nothing on stderr. That is why `intent.py` preserves the authored
+type rather than stringifying: the decision belongs to the adapter, which is the
+only layer entitled to know that `1` is the engine's word for true.
+
+The readback diff catches all of this after the fact — requested `true`, resolved
+`0` is a `coerced` key and cannot be green. Refusing earlier is better, and knowing
+which of the two the tool is relying on is better still.
 
 *Supersedes:* if any option class rejects `=`, D5 collapses into needing
 engine-derived option metadata, which D11 forbids shipping, and the fallback is

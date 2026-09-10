@@ -82,9 +82,10 @@ reproduction in `notes/evidence.md`.
    native names under an engine-namespaced table. A key enters only through D3's
    recorded admission procedure. A vocabulary written from one engine *is* the
    PrusaSlicer-shaped abstraction this project exists to avoid.
-   `CORE_KEYS == frozenset()` is **not yet asserted by a test** — there is no
-   `CORE_KEYS` until the intent parser lands (#5). This sentence claimed the
-   assertion existed before the thing it asserts did.
+   `CORE_KEYS == frozenset()`, asserted by `tests/test_vocabulary_empty.py`. Both
+   landed with the intent parser (#5) — after this sentence had claimed the
+   assertion existed before the thing it asserts did, and then claimed it did not
+   exist after it had.
 4. **Never adjudicate on an engine's exit code without probing it first** (D17,
    D18). `--query-printer-models` returns exit 1 with 6550 bytes of valid JSON —
    the same code it returns for "not found" [V5]. And the Flatpak entrypoint
