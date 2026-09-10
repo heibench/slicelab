@@ -234,9 +234,14 @@ def _spawn(argv: list[str], cwd: Path, timeout: float) -> Completed:
         cwd=cwd,
         start_new_session=posix,
     ) as proc:
+        # Read off the live pipes, before `communicate` closes them. The timeout
+        # paths get raw bytes from `TimeoutExpired` and have to decode them the
+        # way the normal path would; hardcoding UTF-8 there makes a timed-out run
+        # disagree with a completed one under any other locale.
+        encoding, errors = _pipe_text_config(proc)
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired as expired:
+        except subprocess.TimeoutExpired:
             _terminate_tree(proc, posix=posix)
             # Drain what the tree managed to say before it died, and **bound the
             # drain**. The write ends of these pipes are inherited by every
@@ -247,23 +252,26 @@ def _spawn(argv: list[str], cwd: Path, timeout: float) -> Completed:
             # leak surfaced as a slow success rather than as a failure.
             try:
                 stdout, stderr = proc.communicate(timeout=KILL_GRACE_S)
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as drained:
                 # Something in the tree still holds the pipes. Fall back to what
-                # the FIRST timeout captured rather than blocking -- it is not
-                # nothing, and an earlier revision that returned empty strings
-                # here silently dropped an engine's diagnostic. Measured: the
-                # first `TimeoutExpired` carried the child's stdout in full while
-                # this path returned ''. Losing the one message a hung engine
-                # managed to emit is the failure prusaslicer-py D5 exists to
-                # prevent.
-                stdout = _as_text(expired.stdout)
-                stderr = _as_text(expired.stderr)
+                # was captured rather than blocking -- and take it from the
+                # SECOND exception, not the first. CPython accumulates into the
+                # same per-stream buffer across `communicate` calls, so the
+                # second carries everything the first did plus whatever arrived
+                # during the grace period. Measured: first `b'FIRST\n'`, second
+                # `b'FIRST\nSECOND\n'`. That window is exactly when a tree being
+                # SIGKILLed emits its last diagnostic, and two earlier revisions
+                # threw it away -- one returning empty strings, one reading the
+                # first snapshot. Losing what a hung engine managed to say is the
+                # failure prusaslicer-py D5 exists to prevent.
+                stdout = _as_text(drained.stdout, encoding=encoding, errors=errors)
+                stderr = _as_text(drained.stderr, encoding=encoding, errors=errors)
             return Completed(
                 argv=list(argv),
                 exit_status=None,
                 signal=None,
-                stdout=_as_text(stdout),
-                stderr=_as_text(stderr),
+                stdout=_as_text(stdout, encoding=encoding, errors=errors),
+                stderr=_as_text(stderr, encoding=encoding, errors=errors),
                 timed_out=True,
             )
         returncode = proc.returncode
@@ -313,6 +321,17 @@ def _terminate_tree(proc: subprocess.Popen[str], *, posix: bool) -> None:
     fires, and the descendant survives -- which is the exact shape ``flatpak run``
     has. Signalling an already-dead group is a no-op, so there is nothing to save
     by asking first.
+
+    **Two limits, named because they are limits and not oversights.** The
+    same-group fallback and the Windows branch both call ``proc.kill()``, which
+    ends the direct child only -- a tree started that way is orphaned exactly as
+    before, with nothing recorded to say so. Neither is reachable from
+    :func:`_spawn` on a POSIX host, which is the only place slicelab launches an
+    engine; they are reachable by a future caller, which is why this function
+    documents what it does not do. And ``PermissionError`` is suppressed on both
+    signals, so a kill that fails outright still returns ``timed_out=True`` with
+    no field distinguishing "killed it" from "could not". Closing that means a
+    channel on :class:`Completed`, which is a wider change than this one.
     """
     if not posix:  # pragma: no cover - exercised only on Windows runners
         proc.kill()
@@ -335,9 +354,30 @@ def _terminate_tree(proc: subprocess.Popen[str], *, posix: bool) -> None:
         os.killpg(group, signal.SIGKILL)
 
 
-def _as_text(raw: str | bytes | None) -> str:
+def _pipe_text_config(proc: subprocess.Popen[str]) -> tuple[str, str]:
+    """The encoding and error policy the normal path decodes with.
+
+    Taken from the live stream objects, because ``communicate`` closes them and a
+    closed ``TextIOWrapper`` will not answer. Falls back to this module's own
+    contract -- UTF-8 and ``replace`` -- if the pipes cannot say.
+    """
+    stream = proc.stdout or proc.stderr
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    errors = getattr(stream, "errors", None) or "replace"
+    return encoding, errors
+
+
+def _as_text(raw: str | bytes | None, *, encoding: str = "utf-8", errors: str = "replace") -> str:
+    """Bytes from a timeout, decoded the way a completed run's output would be.
+
+    ``TimeoutExpired`` carries **bytes** even from a text-mode ``Popen``, because
+    it is raised before the decode step. Decoding it differently from the normal
+    path -- a hardcoded UTF-8, no newline translation -- means a timed-out run
+    and a completed one disagree about the same bytes under any other locale, and
+    on the one path where the caller is least able to check.
+    """
     if raw is None:
         return ""
     if isinstance(raw, bytes):
-        return raw.decode("utf-8", errors="replace")
-    return raw
+        raw = raw.decode(encoding, errors=errors)
+    return raw.replace("\r\n", "\n").replace("\r", "\n")

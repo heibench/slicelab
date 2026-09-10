@@ -556,10 +556,17 @@ def test_the_escalation_to_sigkill_actually_happens(tmp_path: Path) -> None:
 #: it, and which keeps the inherited stdout pipe open. This is the only shape that
 #: reaches the bounded-drain fallback: with the group kill working, SIGKILL closes
 #: the pipes and the drain simply succeeds.
+#:
+#: It writes its line **after** the parent's deadline has passed, so the line
+#: lands inside the grace window rather than before it. The parent cannot be the
+#: one to write it: the group SIGTERM kills the parent at the deadline, so
+#: anything it was going to say later is never said.
 _ESCAPEE = (
     "import os, sys, time\n"
     "os.setsid()\n"
-    "sys.stderr.write('escaped\\n'); sys.stderr.flush()\n"
+    # Past the 5 s deadline, inside the 5 s grace window that follows it.
+    "time.sleep(7)\n"
+    "sys.stdout.write('DURING-THE-GRACE-PERIOD\\n'); sys.stdout.flush()\n"
     "time.sleep(120)\n"
 )
 
@@ -581,6 +588,13 @@ def test_a_timed_out_run_reports_what_the_engine_managed_to_say(tmp_path: Path) 
     here calls ``setsid``, so no group signal reaches it and it holds the pipe
     open past the grace period -- which is also a real scenario, since a
     misbehaving launcher can do exactly this.
+
+    **Two lines, not one**, because a second revision of this fix still lost the
+    later one. Reading ``TimeoutExpired.stdout`` from the *first* deadline drops
+    everything that arrives while the tree is being killed -- which is exactly
+    when a process being torn down says what went wrong. CPython accumulates into
+    the same buffer across ``communicate`` calls, so the second exception carries
+    both and the first carries only the earlier line.
     """
     if os.name != "posix":
         pytest.skip("the drain path is only reachable where the group kill is")
@@ -588,7 +602,7 @@ def test_a_timed_out_run_reports_what_the_engine_managed_to_say(tmp_path: Path) 
     marker = tmp_path / "escapee.pid"
     script = (
         "import subprocess, sys, time\n"
-        "sys.stdout.write('IMPORTANT-DIAGNOSTIC-ON-STDOUT\\n'); sys.stdout.flush()\n"
+        "sys.stdout.write('BEFORE-THE-DEADLINE\\n'); sys.stdout.flush()\n"
         f"child = subprocess.Popen([sys.executable, '-c', {_ESCAPEE!r}])\n"
         f"open({str(marker)!r}, 'w').write(str(child.pid))\n"
         "time.sleep(120)\n"
@@ -602,8 +616,13 @@ def test_a_timed_out_run_reports_what_the_engine_managed_to_say(tmp_path: Path) 
             _reap(int(marker.read_text(encoding="utf-8")))
 
     assert completed.timed_out
-    assert "IMPORTANT-DIAGNOSTIC-ON-STDOUT" in completed.stdout, (
+    assert "BEFORE-THE-DEADLINE" in completed.stdout, (
         "the engine said something before it hung, and the timeout path dropped it"
+    )
+    assert "DURING-THE-GRACE-PERIOD" in completed.stdout, (
+        "output that arrived while the tree was being killed was thrown away. "
+        "CPython accumulates across communicate() calls, so the SECOND exception "
+        "carries it and the first does not."
     )
 
 

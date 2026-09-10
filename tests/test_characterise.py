@@ -670,6 +670,60 @@ def test_an_option_that_reads_inert_is_asked_a_second_time(
     assert entries["an-option"].keys == ()
 
 
+def test_characterise_actually_runs_the_confirmation_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The call site, not the function body -- and nothing was checking it.
+
+    The three tests around this one call ``_confirm_the_inert`` directly, so
+    deleting its call from ``characterise`` left the whole suite green, engine
+    tests included. The feature could be removed and ship. Mutation-testing the
+    function's *body* looked like coverage and was measuring the wrong site.
+
+    So this drives ``characterise`` end to end against a stand-in engine and
+    asserts the outcome only the confirmation pass can produce: an option that
+    reads inert on the first cascade and moves on the second is ``unstable``,
+    where without the pass it would be a conclusive ``no-key-moved``.
+    """
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr("slicelab.engine.characterise.discover", lambda spec: FOUND)
+
+    seen: list[str] = []
+
+    def reply(argv: list[str], *, timeout: float = 0.0) -> Completed:
+        saves = [a.split("=", 1)[1] for a in argv if a.startswith("--save=")]
+        if not saves:  # the enumeration run, which this spec answers from nothing
+            return Completed(argv=argv, exit_status=0)
+        sidecar = saves[0]
+        option = [a for a in argv if a.startswith("--an-option=")]
+        if not option:  # the two baseline dumps
+            Path(sidecar).write_text(_ini(BASELINE), encoding="utf-8")
+            return Completed(argv=argv, exit_status=0)
+        sentinel = option[0].split("=", 1)[1]
+        seen.append(sentinel)
+        # Inert for the whole first cascade; responsive for the confirmation one.
+        moved = BASELINE if len(seen) <= 2 * len(PAIRS) else {**BASELINE, "beta": sentinel}
+        Path(sidecar).write_text(_ini(moved), encoding="utf-8")
+        return Completed(argv=argv, exit_status=0)
+
+    monkeypatch.setattr("slicelab.engine.characterise.run", reply)
+    probe = PRUSASLICER.option_probe
+    assert probe is not None
+    spec = replace(
+        PRUSASLICER,
+        option_probe=replace(probe, candidates=lambda listing, baseline: ("an-option",)),
+    )
+
+    result = characterise(spec, "under-test")
+    entry = result.entries["an-option"]
+    assert entry.outcome is ProbeOutcome.UNSTABLE, (
+        f"characterise() returned {entry.outcome}; the confirmation pass never ran"
+    )
+    assert not entry.conclusive
+    assert result.inconclusive == ("an-option",)
+    assert len(seen) > 2 * len(PAIRS), "the option was probed only once"
+
+
 def test_a_stable_inert_option_survives_the_confirmation_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1017,44 +1071,64 @@ def test_the_import_boundary_test_is_not_vacuous() -> None:
 #: either engine has an uppercase letter, a dash, or a single segment.
 _KEY_SHAPED = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
 
-
-def _schema_bindings(tree: ast.AST) -> set[str]:
-    """Names bound in the two class-body positions that carry a data vocabulary.
-
-    Deliberately **not** every name the module binds. An earlier revision
-    collected every ``ast.Name``, which let the guard whitelist itself:
-    ``layer_gcode = "layer_gcode"`` at module level defines the name, so the
-    literal matched it and the check stayed green. A planted mutation confirmed
-    it, and only the engine-backed test caught it -- which runs on dispatch and a
-    weekly cron, so on a pull request the evasion shipped.
-
-    Narrowed to dataclass fields and class-body assignments, which is where a
-    *data* vocabulary legitimately lands and is the same position D26's own
-    schema scan looks at. A literal matching one of those is a field name spelled
-    twice for a dict key or an enum value; anything else came from outside.
-    """
-    out: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        for stmt in node.body:
-            if isinstance(stmt, ast.Assign):
-                out.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
-            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-                out.add(stmt.target.id)
-    return out
+#: slicelab's own key-shaped terms under ``slicelab/engine/``, and the only ones
+#: allowed there. Thirteen entries, each a field or member this package defines.
+#:
+#: **A whitelist, not an exemption rule**, and that is the whole correction. Two
+#: earlier revisions tried to derive the exemption from the source: first "any
+#: name the module binds", which let ``layer_gcode = "layer_gcode"`` exempt
+#: itself, and then "any class-body field or enum member" -- which is the
+#: *identical set* ``_schema_names`` contributes to ``undeclared_terms``, so it
+#: subtracted exactly what it was supposed to catch and made the class body
+#: structurally invisible. Measured: ``class Keys: layer_gcode = "layer_gcode"``,
+#: ``class R: layer_gcode: str = "unset"`` and ``class K(StrEnum): LAYER_GCODE =
+#: auto()`` all passed. Those are precisely the three leaks ``_schema_names``'
+#: own docstring exists to name.
+#:
+#: Any rule that derives the exemption from the code being checked is exemptible
+#: by writing the code. D26 reached the same conclusion for the core modules and
+#: answered it with a declared vocabulary; this is that answer, scoped to the
+#: config-key shape so the list stays short. **An engine's key can never be added
+#: here** -- that is the entire content of the rule, and adding an entry happens
+#: in a diff where someone can object.
+ENGINE_PACKAGE_TERMS = frozenset(
+    {
+        # `ProbeOutcome` members and `Characterisation` / `MapEntry` fields.
+        "namespace_changed",
+        "no_artifact",
+        "no_key_moved",
+        "timed_out",
+        "unknown_option",
+        "baseline_key_count",
+        "side_effects",
+        "volatile_keys",
+        # `LaunchKind` and `LaunchForm`.
+        "flatpak_bypass",
+        "argv_prefix",
+        # `Identity` and `Completed`.
+        "digest_of",
+        "exit_status",
+        # The XDG base-directory spec's own variable name.
+        "xdg_cache_home",
+    }
+)
 
 
 def key_shaped_strangers(source: str, filename: str = "<test>") -> list[str]:
-    """Config-key-shaped literals that this module does not itself define."""
-    tree = ast.parse(source, filename=filename)
-    defined = _schema_bindings(tree)
-    found = {
-        term
-        for term in undeclared_terms(source, filename)
-        if _KEY_SHAPED.match(term) and term not in defined
-    }
-    return sorted(found)
+    """Config-key-shaped terms that are not slicelab's own.
+
+    Case-folded before matching, because a ``StrEnum`` member is uppercase and
+    carries the lowercase value: ``LAYER_GCODE = auto()`` *is* ``"layer_gcode"``
+    with no such literal in the file, and a lowercase-only test misses it twice
+    over -- once on the shape and once on the name.
+    """
+    return sorted(
+        {
+            term
+            for term in undeclared_terms(source, filename)
+            if _KEY_SHAPED.match(term.lower()) and term.lower() not in ENGINE_PACKAGE_TERMS
+        }
+    )
 
 
 def test_no_engine_shaped_key_reaches_the_engine_package() -> None:
@@ -1098,17 +1172,57 @@ def test_the_engine_shaped_guard_catches_a_real_key() -> None:
     assert key_shaped_strangers(dirty) == ["layer_gcode", "wall_loops"]
 
 
-def test_the_engine_shaped_guard_cannot_be_whitelisted_by_assigning_the_name() -> None:
-    """The evasion an earlier revision allowed, pinned so it cannot come back.
+@pytest.mark.parametrize(
+    ("shape", "source", "expected"),
+    [
+        ("module-level binding", 'layer_gcode = "layer_gcode"\n', "layer_gcode"),
+        (
+            "local binding",
+            'def f():\n    wall_loops = "wall_loops"\n    return wall_loops\n',
+            "wall_loops",
+        ),
+        ("class-body assignment", 'class Keys:\n    layer_gcode = "layer_gcode"\n', "layer_gcode"),
+        (
+            "dataclass field",
+            "from dataclasses import dataclass\n@dataclass\nclass R:\n"
+            '    layer_gcode: str = "unset"\n',
+            "layer_gcode",
+        ),
+        (
+            "StrEnum member carrying the value",
+            "from enum import StrEnum, auto\nclass K(StrEnum):\n    LAYER_GCODE = auto()\n",
+            "LAYER_GCODE",
+        ),
+        ("subscript", 'def f(rb):\n    return rb["spiral_vase"]\n', "spiral_vase"),
+    ],
+    # Named ids, so a failure says which shape evaded rather than echoing the
+    # whole source fixture -- and so a mutation can be aimed at one of them.
+    ids=[
+        "module-level-binding",
+        "local-binding",
+        "class-body-assignment",
+        "dataclass-field",
+        "strenum-member",
+        "subscript",
+    ],
+)
+def test_the_engine_shaped_guard_catches_every_shape_a_key_can_arrive_in(
+    shape: str, source: str, expected: str
+) -> None:
+    """The five evasions two earlier revisions of this guard allowed.
 
-    Collecting every bound name meant a module could exempt an engine key simply
-    by assigning it: ``layer_gcode = "layer_gcode"`` defined the name, so the
-    literal matched. Only a class-body field or enum member counts now.
+    Both tried to derive the exemption from the source being checked -- first
+    "any name the module binds", then "any class-body field or enum member" --
+    and a rule of that kind is exemptible by writing the code it inspects. The
+    second was worse than the first: it subtracted exactly the set
+    ``_schema_names`` contributes, so the class body became invisible and the
+    three shapes that docstring exists to name all passed.
+
+    ``LAYER_GCODE = auto()`` is the sharpest: it carries the value
+    ``"layer_gcode"`` with no such literal in the file, and it evades a
+    lowercase-only test twice over -- once on the shape and once on the name.
     """
-    evasion = 'layer_gcode = "layer_gcode"\n'
-    assert key_shaped_strangers(evasion) == ["layer_gcode"]
-    local = 'def f():\n    wall_loops = "wall_loops"\n    return wall_loops\n'
-    assert key_shaped_strangers(local) == ["wall_loops"]
+    assert expected in key_shaped_strangers(source), f"{shape} evaded the guard"
 
 
 def test_the_engine_shaped_guard_does_not_flag_our_own_field_names() -> None:
