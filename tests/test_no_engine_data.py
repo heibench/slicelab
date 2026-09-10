@@ -133,13 +133,19 @@ def test_nothing_an_engine_wrote_is_headed_for_the_sdist() -> None:
 
 #: Above what slicelab writes, far below any engine's vocabulary.
 #:
-#: Measured on the tracked tree: the densest file is 8 distinct snake_case string
-#: literals (``tests/test_names_confined.py``, which names slicelab's own outcome
-#: words). The smallest engine corpus D11 forbids is PrusaSlicer's 343 config keys;
-#: OrcaSlicer's dump is 616 and the probed option map 342. So the gap between "what
-#: this project authors" and "a corpus" is a factor of forty, and any threshold in
-#: between is arbitrary only in the sense that the middle of a chasm is.
-CORPUS_THRESHOLD = 40
+#: The smallest corpus D11 forbids is PrusaSlicer's 343 config keys; OrcaSlicer's
+#: dump is 616 and the probed option map 342. What this project itself authors is
+#: two orders of magnitude below that, so any threshold in the gap is arbitrary
+#: only in the sense that the middle of a chasm is.
+#:
+#: The lower bound is deliberately NOT written down here. It moved from 8 to 22 the
+#: first time a substantial module landed, which is what a count in prose beside a
+#: growing tree does. ``test_the_threshold_keeps_headroom_over_what_we_write``
+#: measures it instead, and fails when the gap closes rather than when a comment
+#: goes stale -- as it did on its first run, which is why this is 60 and not the 40
+#: originally guessed. 60 also catches a *partial* corpus: the 70 options with no
+#: matching config key would ship under a threshold of 100.
+CORPUS_THRESHOLD = 60
 
 _KEYISH = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
 
@@ -227,3 +233,28 @@ def test_the_corpus_rule_is_not_red_on_what_slicelab_writes() -> None:
     ours = _ROOT / "slicelab" / "status.py"
     assert ours.is_file()
     assert len(_snake_case_literals(ours)) <= CORPUS_THRESHOLD
+
+
+def test_the_threshold_keeps_headroom_over_what_we_write() -> None:
+    """The rule is only useful while our densest file is far below the line.
+
+    Measured rather than asserted, because the number moves: it was 8 when this
+    test was written and 22 one merge later. If slicelab ever legitimately authors
+    a file near the threshold, this fails and the rule needs rethinking -- which is
+    the honest failure, rather than a comment quietly describing a tree that has
+    moved on.
+    """
+    densest = max(
+        (
+            (len(_snake_case_literals(_ROOT / c)), c)
+            for c in _sdist_candidates()
+            if (_ROOT / c).is_file()
+        ),
+        default=(0, "<none>"),
+    )
+    count, where = densest
+    assert count * 2 <= CORPUS_THRESHOLD, (
+        f"{where} carries {count} snake_case literals against a threshold of "
+        f"{CORPUS_THRESHOLD}. The rule separates 'what we author' from 'a corpus' "
+        "only while there is room between them."
+    )
