@@ -12,8 +12,11 @@ the repository contains, not about what happens to be imported at runtime.
 from __future__ import annotations
 
 import ast
+import contextlib
 import os
+import signal
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -445,3 +448,77 @@ def test_a_host_with_no_home_directory_at_all_offers_nothing(
     completed = run([sys.executable, "-c", "print('alive')"])
     assert completed.exit_status == 0
     assert completed.stdout.strip() == "alive"
+
+
+def test_a_timeout_kills_the_whole_process_tree(tmp_path: Path) -> None:
+    """A timed-out launcher must not leave the process it started alive.
+
+    ``subprocess.run(timeout=...)`` kills only the direct child, and for every
+    engine here the direct child is a launcher: ``flatpak run`` spawns ``bwrap``
+    spawns the slicer. Measured on this host, repeated characterisation sweeps
+    left **75** orphaned engine processes alive, the oldest 8 h 17 m old, at a
+    fifteen-minute load average of 60 -- the timeout doing the exact opposite of
+    its job, turning one hang into several permanent ones per sweep.
+
+    A stand-in process tree is used rather than an engine, so this runs on every
+    runner including the ones with no slicer: the property is about ``run``, not
+    about any engine.
+    """
+    if os.name != "posix":
+        pytest.skip("process groups and killpg are POSIX; the Flatpak leak cannot arise here")
+
+    marker = tmp_path / "grandchild.pid"
+    script = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"open({str(marker)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(120)\n"
+    )
+    started = time.monotonic()
+    completed = run([sys.executable, "-c", script], timeout=5.0)
+    elapsed = time.monotonic() - started
+    assert completed.timed_out
+
+    # The stand-in and its grandchild both sleep 120 s. A `run` that takes
+    # anywhere near that long did not kill anything -- it waited. That is how the
+    # first version of this test passed against the broken code: the post-kill
+    # drain inherited the orphan's pipe and blocked until the orphan finished on
+    # its own, so the leak read as a slow success.
+    assert elapsed < 30.0, (
+        f"run() took {elapsed:.1f}s for a 5s timeout; it waited for the tree rather than killing it"
+    )
+
+    assert marker.exists(), "the stand-in never started a grandchild; nothing was tested"
+    grandchild = int(marker.read_text(encoding="utf-8"))
+
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if not _alive(grandchild):
+            return
+        time.sleep(0.1)
+    _reap(grandchild)
+    pytest.fail(
+        f"pid {grandchild} outlived the timeout that killed its parent. A launcher's "
+        "children are the engine; killing only the launcher orphans them forever."
+    )
+
+
+def _alive(pid: int) -> bool:
+    """Whether a pid still names a running process.
+
+    A killed grandchild is reparented to init and reaped there, so this stops
+    being true shortly after the group signal lands rather than instantly.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - alive and owned by someone else
+        return True
+    return True
+
+
+def _reap(pid: int) -> None:  # pragma: no cover - only on the failure path
+    """Do not leave the very process this test is complaining about running."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.kill(pid, signal.SIGKILL)

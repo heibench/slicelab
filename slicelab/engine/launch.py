@@ -6,7 +6,9 @@ to be honest about is decided here, once, rather than at every call site.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -70,7 +72,10 @@ def run(
     becomes a verdict on a run that succeeded (prusaslicer-py D5).
 
     A ``timeout`` at all -- an engine that never returns is an environment
-    fault, not a hang in slicelab.
+    fault, not a hang in slicelab. And a timeout that kills the **whole process
+    group**, because the direct child is usually a launcher: ``flatpak run``
+    spawns ``bwrap`` spawns the slicer, and killing only the launcher leaves a
+    GUI process alive forever. See :func:`_spawn`.
 
     A scratch ``cwd`` by default -- OrcaSlicer writes into the process working
     directory, and ``cwd=None`` meant *the directory the user ran slicelab
@@ -192,45 +197,113 @@ def _under(path: Path, home: Path) -> bool:
     return path == home or home in path.parents
 
 
+KILL_GRACE_S = 5.0
+"""How long a timed-out process group gets to die politely before SIGKILL."""
+
+
 def _spawn(argv: list[str], cwd: Path, timeout: float) -> Completed:
-    try:
-        proc = subprocess.run(  # noqa: S603 - argv is a list; never shell=True
-            argv,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            stdin=subprocess.DEVNULL,
-            cwd=cwd,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as expired:
-        return Completed(
-            argv=list(argv),
-            exit_status=None,
-            signal=None,
-            stdout=_as_text(expired.stdout),
-            stderr=_as_text(expired.stderr),
-            timed_out=True,
-        )
+    """Run to completion, or kill the **whole process tree** and say it timed out.
+
+    ``subprocess.run(timeout=...)`` kills only the direct child, and the direct
+    child is very often not the engine. ``flatpak run`` spawns ``bwrap``, which
+    spawns the slicer; killing the launcher orphans both, and an orphaned GUI
+    process never exits on its own. Measured on this host: repeated
+    characterisation sweeps left **75** orphaned engine processes alive, the
+    oldest 8 h 17 m old, at a fifteen-minute load average of 60.
+
+    That is the timeout doing the opposite of its job. It exists so one hung
+    option cannot hang the machine; without a group kill it converts one hang
+    into several permanent ones per sweep, cumulatively, and the second sweep on
+    that machine then measures a host under load rather than an engine.
+
+    So the child gets its own session, and a timeout signals the **group**:
+    SIGTERM, a grace period, then SIGKILL. POSIX only -- ``setsid`` and
+    ``killpg`` do not exist on Windows, where this degrades to the old
+    single-process kill. That is a real gap and it is named rather than papered
+    over; the Flatpak launcher this is written for is POSIX-only, so the leak it
+    fixes cannot arise there.
+    """
+    posix = os.name == "posix"
+    with subprocess.Popen(  # noqa: S603 - argv is a list; never shell=True
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        errors="replace",
+        cwd=cwd,
+        start_new_session=posix,
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _terminate_tree(proc, posix=posix)
+            # Drain what the tree managed to say before it died, and **bound the
+            # drain**. The write ends of these pipes are inherited by every
+            # descendant, so an unbounded `communicate` waits for the last one to
+            # let go -- which is precisely the orphan this function just tried to
+            # kill. Measured: with the group kill disabled, the drain blocked for
+            # the orphan's full 120 s lifetime and then returned normally, so the
+            # leak surfaced as a slow success rather than as a failure.
+            try:
+                stdout, stderr = proc.communicate(timeout=KILL_GRACE_S)
+            except subprocess.TimeoutExpired:
+                # Something in the tree still holds the pipes. Say what we have --
+                # nothing -- rather than block; `timed_out` already tells the
+                # caller not to read anything into this run's output.
+                stdout, stderr = "", ""
+            return Completed(
+                argv=list(argv),
+                exit_status=None,
+                signal=None,
+                stdout=_as_text(stdout),
+                stderr=_as_text(stderr),
+                timed_out=True,
+            )
+        returncode = proc.returncode
 
     # POSIX reports a signal death as a negative returncode. Split it, rather
     # than passing on a number that means two different things.
-    if proc.returncode < 0:
+    if returncode < 0:
         return Completed(
             argv=list(argv),
             exit_status=None,
-            signal=-proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
+            signal=-returncode,
+            stdout=_as_text(stdout),
+            stderr=_as_text(stderr),
         )
     return Completed(
         argv=list(argv),
-        exit_status=proc.returncode,
+        exit_status=returncode,
         signal=None,
-        stdout=proc.stdout,
-        stderr=proc.stderr,
+        stdout=_as_text(stdout),
+        stderr=_as_text(stderr),
     )
+
+
+def _terminate_tree(proc: subprocess.Popen[str], *, posix: bool) -> None:
+    """Kill the timed-out process and everything it started.
+
+    The group id is read from the live process rather than assumed to equal its
+    pid: if the child has already been reaped there is no group to signal, and
+    signalling pid 0 would mean *this* process's group -- slicelab killing
+    itself and whatever launched it.
+    """
+    if not posix:  # pragma: no cover - exercised only on Windows runners
+        proc.kill()
+        return
+    try:
+        group = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError):  # pragma: no cover - it is already gone
+        proc.kill()
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(group, signal.SIGTERM)
+    try:
+        proc.wait(timeout=KILL_GRACE_S)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(group, signal.SIGKILL)
 
 
 def _as_text(raw: str | bytes | None) -> str:

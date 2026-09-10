@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -36,6 +37,7 @@ from slicelab.engine.characterise import (
     _probe_one,
     _read_cache,
     _safe,
+    _unmapped,
     _write_cache,
     cache_path_for,
     characterise,
@@ -202,15 +204,15 @@ def _probe(
     reply: Callable[[str], Reply],
     *,
     volatile: tuple[str, ...] = (),
-) -> tuple[ProbeOutcome, MapEntry | None, FakeEngine]:
+) -> tuple[ProbeOutcome, MapEntry, FakeEngine]:
     sidecar = tmp_path / "readback"
     engine = FakeEngine(sidecar, reply)
     monkeypatch.setattr("slicelab.engine.characterise.run", engine)
     assert _PROBE is not None
-    outcome, entry = _probe_one(
+    entry = _probe_one(
         PRUSASLICER, FOUND, _PROBE, "an-option", sidecar, BASELINE, volatile, timeout=1.0
     )
-    return outcome, entry, engine
+    return entry.outcome, entry, engine
 
 
 def test_every_sentinel_is_sent_as_a_pair_of_two_distinct_values() -> None:
@@ -229,7 +231,13 @@ def test_a_key_that_follows_the_value_is_the_mapping(
         _dumps({LOW: {**BASELINE, "beta": LOW}, HIGH: {**BASELINE, "beta": HIGH}}),
     )
     assert outcome is ProbeOutcome.MAPPED
-    assert entry == MapEntry(keys=("beta",), side_effects=(), tracking=Tracking.EXACT)
+    assert entry == MapEntry(
+        keys=("beta",),
+        side_effects=(),
+        tracking=Tracking.EXACT,
+        outcome=ProbeOutcome.MAPPED,
+    )
+    assert entry.conclusive
     assert engine.seen == [LOW, HIGH], "one sentinel cannot establish tracking"
 
 
@@ -284,7 +292,12 @@ def test_a_dependent_constraint_is_a_side_effect_and_never_a_key(
         ),
     )
     assert outcome is ProbeOutcome.MAPPED
-    assert entry == MapEntry(keys=("beta",), side_effects=("gamma",), tracking=Tracking.EXACT)
+    assert entry == MapEntry(
+        keys=("beta",),
+        side_effects=("gamma",),
+        tracking=Tracking.EXACT,
+        outcome=ProbeOutcome.MAPPED,
+    )
 
 
 def test_a_constraint_that_equals_the_sentinel_in_one_run_is_still_a_side_effect(
@@ -335,7 +348,12 @@ def test_a_key_that_normalises_the_value_is_mapped_inexactly_not_dropped(
         ),
     )
     assert outcome is ProbeOutcome.MAPPED
-    assert entry == MapEntry(keys=("beta",), side_effects=(), tracking=Tracking.INEXACT)
+    assert entry == MapEntry(
+        keys=("beta",),
+        side_effects=(),
+        tracking=Tracking.INEXACT,
+        outcome=ProbeOutcome.MAPPED,
+    )
 
 
 def test_an_inexact_pair_does_not_stop_the_cascade(
@@ -390,7 +408,12 @@ def test_a_dump_that_lost_baseline_keys_is_a_mode_switch(
     option never removes a key.
     """
     outcome, entry, _ = _probe(tmp_path, monkeypatch, _dumps({LOW: {"sla_only": "1"}}))
-    assert (outcome, entry) == (ProbeOutcome.NAMESPACE_CHANGED, None)
+    assert (outcome, entry.keys, entry.tracking) == (
+        ProbeOutcome.NAMESPACE_CHANGED,
+        (),
+        None,
+    )
+    assert not entry.conclusive
 
 
 def test_exit_zero_with_no_artifact_is_not_a_mapping(
@@ -402,7 +425,8 @@ def test_exit_zero_with_no_artifact_is_not_a_mapping(
     moved, and one option is recorded as writing all 343.
     """
     outcome, entry, _ = _probe(tmp_path, monkeypatch, lambda s: (0, "", None))
-    assert (outcome, entry) == (ProbeOutcome.NO_ARTIFACT, None)
+    assert (outcome, entry.keys) == (ProbeOutcome.NO_ARTIFACT, ())
+    assert not entry.conclusive, "an engine that wrote nothing established nothing"
 
 
 def test_an_empty_artifact_counts_as_no_artifact(
@@ -459,7 +483,8 @@ def test_every_sentinel_refused_is_a_could_not_tell(
     outcome, entry, engine = _probe(
         tmp_path, monkeypatch, lambda s: (1, "Invalid value supplied", None)
     )
-    assert (outcome, entry) == (ProbeOutcome.REJECTED, None)
+    assert (outcome, entry.keys) == (ProbeOutcome.REJECTED, ())
+    assert not entry.conclusive
     assert engine.calls == len(PAIRS), "a refused low value must not trigger the high one"
 
 
@@ -468,7 +493,8 @@ def test_an_accepted_option_that_moved_nothing_is_not_in_the_map(
 ) -> None:
     """And only after every pair has been tried, not the first."""
     outcome, entry, engine = _probe(tmp_path, monkeypatch, lambda s: (0, "", _ini(BASELINE)))
-    assert (outcome, entry) == (ProbeOutcome.NO_KEY_MOVED, None)
+    assert (outcome, entry.keys) == (ProbeOutcome.NO_KEY_MOVED, ())
+    assert entry.conclusive, "writing no key is a finding, not a could-not-tell"
     assert engine.calls == 2 * len(PAIRS)
 
 
@@ -520,7 +546,130 @@ def test_a_key_that_will_not_hold_still_is_not_attributed_to_the_option(
         volatile=("alpha",),
     )
     assert outcome is ProbeOutcome.MAPPED
-    assert entry == MapEntry(keys=("beta",), side_effects=(), tracking=Tracking.EXACT)
+    assert entry == MapEntry(
+        keys=("beta",),
+        side_effects=(),
+        tracking=Tracking.EXACT,
+        outcome=ProbeOutcome.MAPPED,
+    )
+
+
+def test_a_stale_readback_is_never_read_as_this_option_s_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sidecar is one path reused by every probe, so a leftover is data.
+
+    The harm is precise, and a weaker version of this test missed it. Every exit
+    from a run already removes the file, so within one process the only window is
+    a file left by something *else* -- a previous characterisation killed
+    mid-sweep, say. Plant one, then have the engine exit 0 writing nothing for
+    the first sentinel and write a real dump for the second: without the
+    clear-before-run, the stale file becomes the first half of a comparison and
+    this option is mapped to whatever the last one wrote. With it, the first run
+    is honestly ``no-artifact``.
+
+    The earlier fixture had the engine write nothing for *both* sentinels, so the
+    second run found the file already removed and the outcome came out
+    ``no-artifact`` either way. It passed against the missing clear -- the
+    mutation sweep is what said so.
+    """
+    sidecar = tmp_path / "readback"
+    stale = _ini({**BASELINE, "beta": "LEFT-BY-THE-LAST-OPTION"})
+    sidecar.write_text(stale, encoding="utf-8")
+
+    def reply(sentinel: str) -> Reply:
+        if sentinel == LOW:
+            return (0, "", None)
+        return (0, "", _ini({**BASELINE, "beta": HIGH}))
+
+    engine = FakeEngine(sidecar, reply)
+    monkeypatch.setattr("slicelab.engine.characterise.run", engine)
+    assert _PROBE is not None
+    entry = _probe_one(PRUSASLICER, FOUND, _PROBE, "an-option", sidecar, BASELINE, (), timeout=1.0)
+    assert entry.outcome is ProbeOutcome.NO_ARTIFACT, (
+        f"the engine wrote nothing, so the answer is no-artifact; got {entry.outcome} "
+        f"with keys {entry.keys} -- read out of a file the last option left behind"
+    )
+    assert entry.keys == ()
+
+
+def test_the_sidecar_does_not_outlive_a_failed_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every exit from a run removes it, including the ones that raise nothing."""
+    sidecar = tmp_path / "readback"
+    engine = FakeEngine(sidecar, lambda s: (-1, "", _ini(BASELINE)))
+    monkeypatch.setattr("slicelab.engine.characterise.run", engine)
+    assert _PROBE is not None
+    entry = _probe_one(PRUSASLICER, FOUND, _PROBE, "an-option", sidecar, BASELINE, (), timeout=1.0)
+    assert entry.outcome is ProbeOutcome.TIMED_OUT
+    assert not sidecar.exists(), "a timed-out probe left its readback for the next option"
+
+
+def test_an_option_the_probe_could_not_settle_reaches_the_caller_as_such(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The G2 defect's route back in, closed.
+
+    A timed-out option used to be simply missing from the map, which is what an
+    option that does not exist also looks like. A readback cannot tell those
+    apart, so it says ``absent`` -- a claim about the engine -- for a key it
+    never measured, and one bad afternoon of host load turns into a green run
+    over an unhonoured intent. The outcome travels with the entry so the caller
+    can refuse instead.
+    """
+    _, timed_out, _ = _probe(tmp_path, monkeypatch, lambda s: (-1, "", None))
+    _, measured, _ = _probe(tmp_path, monkeypatch, lambda s: (0, "", _ini(BASELINE)))
+
+    assert timed_out.keys == measured.keys == ()
+    assert measured.conclusive, "the engine answered: this option writes no key"
+    assert not timed_out.conclusive, "the engine never answered"
+    assert timed_out.outcome is not measured.outcome
+
+
+def test_a_characterisation_says_when_it_is_partial() -> None:
+    """A partial map that cannot say it is partial is what this project refuses."""
+    whole = Characterisation(
+        "e",
+        "1",
+        {
+            "a": MapEntry(("a",), (), Tracking.EXACT, ProbeOutcome.MAPPED),
+            "b": _unmapped(ProbeOutcome.NO_KEY_MOVED),
+        },
+        1,
+        (),
+    )
+    assert whole.inconclusive == ()
+
+    partial = Characterisation(
+        "e", "1", {**whole.entries, "c": _unmapped(ProbeOutcome.TIMED_OUT)}, 1, ()
+    )
+    assert partial.inconclusive == ("c",)
+
+
+def test_an_inexact_entry_claims_no_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Because an inexact pair did not separate them, and guessing would be worse.
+
+    ``INEXACT`` does not only mean "the value was normalised". It means the pair
+    that answered did not carry either value verbatim, which is exactly the
+    condition under which a dependent constraint is indistinguishable from a
+    write -- so the entry claims no separation rather than an arbitrary one.
+    """
+    _, entry, _ = _probe(
+        tmp_path,
+        monkeypatch,
+        _dumps(
+            {
+                LOW: {**BASELINE, "beta": "normalised-low", "gamma": "forced"},
+                HIGH: {**BASELINE, "beta": "normalised-high", "gamma": "forced"},
+            }
+        ),
+    )
+    assert entry.tracking is Tracking.INEXACT
+    assert entry.side_effects == ()
+    assert "gamma" not in entry.keys, "a key that did not respond is not the option's"
 
 
 # -- the cache: what it is keyed by, and what it refuses to believe -----------
@@ -588,17 +737,24 @@ def test_the_cache_round_trips_tuples_rather_than_lists(tmp_path: Path) -> None:
         entries={
             "extruder": MapEntry(
                 keys=("infill_extruder", "perimeter_extruder"),
-                side_effects=(),
+                side_effects=("solid_infill_extruder",),
                 tracking=Tracking.EXACT,
-            )
+                outcome=ProbeOutcome.MAPPED,
+            ),
+            "info": _unmapped(ProbeOutcome.NO_ARTIFACT),
         },
-        outcomes={"extruder": "mapped", "info": "no-artifact"},
         baseline_key_count=343,
         volatile_keys=(),
     )
     path = tmp_path / "m.json"
     _write_cache(path, result)
-    assert _read_cache(path) == {"extruder": ("infill_extruder", "perimeter_extruder")}
+    read = _read_cache(path)
+    assert read is not None
+    assert read["extruder"] == result.entries["extruder"], (
+        "tracking and side effects must survive the cache"
+    )
+    assert read["info"].outcome is ProbeOutcome.NO_ARTIFACT
+    assert not read["info"].conclusive
 
 
 def test_the_cache_records_why_an_option_is_not_in_the_map(tmp_path: Path) -> None:
@@ -613,28 +769,47 @@ def test_the_cache_records_why_an_option_is_not_in_the_map(tmp_path: Path) -> No
         Characterisation(
             "e",
             "1",
-            {"a": MapEntry(keys=("a",), side_effects=("z",), tracking=Tracking.EXACT)},
-            {"a": "mapped", "b": "no-key-moved"},
+            {
+                "a": MapEntry(
+                    keys=("a",),
+                    side_effects=("z",),
+                    tracking=Tracking.EXACT,
+                    outcome=ProbeOutcome.MAPPED,
+                ),
+                "b": _unmapped(ProbeOutcome.NO_KEY_MOVED),
+                "c": _unmapped(ProbeOutcome.TIMED_OUT),
+            },
             1,
             (),
         ),
     )
     document = json.loads(path.read_text(encoding="utf-8"))
-    assert document["outcomes"]["b"] == "no-key-moved"
+    assert document["entries"]["b"]["outcome"] == "no-key-moved"
+    assert document["entries"]["c"]["outcome"] == "timed-out"
     assert document["entries"]["a"]["side_effects"] == ["z"]
     assert document["entries"]["a"]["tracking"] == "exact"
+    assert document["inconclusive"] == 1
 
 
 @pytest.mark.parametrize(
     "content",
     [
         "not json at all",
-        '{"schema": 999, "entries": {"a": {"keys": ["b"]}}}',
-        '{"schema": 2, "entries": {}}',
-        '{"schema": 2, "entries": {"a": ["b"]}}',
-        '{"schema": 2, "entries": {"a": {"keys": "b"}}}',
-        '{"schema": 2}',
-        '{"schema": 2, "map": {"a": ["b"]}}',
+        # A document that is valid in every respect EXCEPT its schema, so that
+        # only the schema guard can reject it. The obvious fixture --
+        # `{"schema": 999, "entries": {"a": {"keys": ["b"]}}}` -- is malformed
+        # twice over and was rejected by the entry-shape check instead, which
+        # left the schema guard with no red state. Mutation-tested: removing the
+        # schema check now reddens this case and nothing else.
+        '{"schema": 999, "entries": {"a": {"keys": ["b"], "side_effects": [],'
+        ' "tracking": "exact", "outcome": "mapped"}}}',
+        '{"schema": 3, "entries": {}}',
+        '{"schema": 3, "entries": {"a": ["b"]}}',
+        '{"schema": 3, "entries": {"a": {"keys": "b"}}}',
+        '{"schema": 3, "entries": {"a": {"keys": [], "side_effects": [],'
+        ' "tracking": null, "outcome": "who-knows"}}}',
+        '{"schema": 3}',
+        '{"schema": 3, "map": {"a": ["b"]}}',
         "[]",
     ],
 )
@@ -664,10 +839,12 @@ def test_a_cached_map_is_returned_without_touching_the_engine(
             "2.9.6",
             {
                 "after-layer-gcode": MapEntry(
-                    keys=("layer_gcode",), side_effects=(), tracking=Tracking.EXACT
+                    keys=("layer_gcode",),
+                    side_effects=(),
+                    tracking=Tracking.EXACT,
+                    outcome=ProbeOutcome.MAPPED,
                 )
             },
-            {},
             1,
             (),
         ),
@@ -677,7 +854,9 @@ def test_a_cached_map_is_returned_without_touching_the_engine(
         raise AssertionError("a cache hit must not reach the engine")
 
     monkeypatch.setattr("slicelab.engine.characterise.characterise", refuse)
-    assert load_name_map(PRUSASLICER, "2.9.6") == {"after-layer-gcode": ("layer_gcode",)}
+    served = load_name_map(PRUSASLICER, "2.9.6")
+    assert served["after-layer-gcode"].keys == ("layer_gcode",)
+    assert served["after-layer-gcode"].tracking is Tracking.EXACT
 
 
 def test_a_build_that_will_not_state_its_version_is_refused(
@@ -743,6 +922,101 @@ def test_the_import_boundary_test_is_not_vacuous() -> None:
 
 
 # -- against a real engine -----------------------------------------------------
+
+
+#: What an engine config key looks like on both installed engines: lowercase,
+#: digits, and at least one underscore joining segments -- ``layer_gcode``,
+#: ``wall_loops``, ``spiral_vase``, ``sparse_infill_density``. Measured: no key on
+#: either engine has an uppercase letter, a dash, or a single segment.
+_KEY_SHAPED = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
+
+
+def _defined_names(tree: ast.AST) -> set[str]:
+    """Every name this module binds: assignments, fields, parameters, defs.
+
+    A literal that matches a name the module itself defines is that name being
+    spelled twice -- a dict key for a dataclass field, an enum value -- not an
+    engine's vocabulary arriving from outside.
+    """
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            out.add(node.id)
+        elif isinstance(node, ast.arg):
+            out.add(node.arg)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            out.add(node.name)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            out.add(node.target.id)
+        elif isinstance(node, ast.Attribute):
+            out.add(node.attr)
+    return out
+
+
+def key_shaped_strangers(source: str, filename: str = "<test>") -> list[str]:
+    """Config-key-shaped literals that this module does not itself define."""
+    tree = ast.parse(source, filename=filename)
+    defined = _defined_names(tree)
+    found = {
+        term
+        for term in undeclared_terms(source, filename)
+        if _KEY_SHAPED.match(term) and term not in defined
+    }
+    return sorted(found)
+
+
+def test_no_engine_shaped_key_reaches_the_engine_package() -> None:
+    """The boundary guard that survives a runner with no slicer.
+
+    ``test_no_live_engine_key_or_option_appears_outside_the_adapters`` below is
+    the stronger claim and it **skips** without an engine -- and ``ci.yml``
+    installs none, so on a pull request it checks nothing. ``engine.yml`` has the
+    slicers and runs on dispatch and a weekly cron. A guard that never runs on
+    the change that would break it is the shape this org exists to refuse, so
+    here is the part of it that needs no engine.
+
+    An engine config key is lowercase, digit-bearing and underscore-joined on
+    both installed engines. A literal of that shape in ``slicelab/engine/`` is
+    either a name the module already defines -- a dataclass field spelled twice
+    for a dict key, an enum value -- or it came from outside, and outside is
+    where the engines are.
+    """
+    package = PACKAGE / "engine"
+    offenders: list[str] = []
+    for path in sorted(package.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        offenders += [
+            f"{path.relative_to(PACKAGE)} names {term!r}"
+            for term in key_shaped_strangers(source, str(path))
+        ]
+    assert offenders == [], (
+        "a config-key-shaped literal reached slicelab/engine/ without being a "
+        f"name the module defines: {offenders}. If it is an engine's key it "
+        "belongs under slicelab/adapters/."
+    )
+
+
+def test_the_engine_shaped_guard_catches_a_real_key() -> None:
+    """Red-capability, against deliberately dirty source rather than the tree.
+
+    ``wall_loops`` is OrcaSlicer's and ``layer_gcode`` is PrusaSlicer's; both are
+    real keys this repository must never learn outside ``adapters/``.
+    """
+    dirty = 'def f(readback):\n    return readback["wall_loops"] or "layer_gcode" in readback\n'
+    assert key_shaped_strangers(dirty) == ["layer_gcode", "wall_loops"]
+
+
+def test_the_engine_shaped_guard_does_not_flag_our_own_field_names() -> None:
+    """A guard on the guard: it must not be red on every dataclass we write."""
+    ours = (
+        "from dataclasses import dataclass\n"
+        "@dataclass\n"
+        "class R:\n"
+        "    exit_status: int\n"
+        "def f(r):\n"
+        '    return {"exit_status": r.exit_status}\n'
+    )
+    assert key_shaped_strangers(ours) == []
 
 
 def _live_vocabulary(spec: EngineSpec, tmp_path: Path) -> tuple[tuple[str, ...], Mapping[str, str]]:
@@ -903,6 +1177,61 @@ def test_the_engine_separates_a_written_key_from_an_adjusted_one(
     assert "perimeters" in entry.side_effects
     assert "fill_density" in entry.side_effects
     assert not set(entry.keys) & set(entry.side_effects)
+
+
+def test_the_side_effect_separation_depends_on_the_sentinel_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The claim an earlier revision got wrong, pinned against the real engine.
+
+    That docstring said the separation was "structural, with no heuristic". It is
+    not: it holds only when some pair carries verbatim. Changing nothing but the
+    pair, on the same option and the same build:
+
+    * ``('1', '0')`` -- ``keys=('spiral_vase',)``, four constraints as side
+      effects, tracking exact.
+    * ``('true', '1')`` -- ``true`` resolves to ``0`` and neither value is
+      echoed, so **all five** keys land in ``keys``, tracking inexact, and
+      nothing is separated.
+
+    A dependent constraint does move differently under two different values.
+    What tells the populations apart is the verbatim echo, not the fact of
+    moving -- which is why an inexact entry is a weaker thing than a normalised
+    one and a readback has to be told.
+    """
+    from slicelab.engine.discover import ExitFidelity as Fidelity
+    from slicelab.engine.discover import discover
+
+    found = discover(PRUSASLICER)
+    if found.fidelity is not Fidelity.ESTABLISHED:
+        pytest.skip(f"prusaslicer: {found.reason}")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    probe = PRUSASLICER.option_probe
+    assert probe is not None
+
+    def entry_for(pair: tuple[str, str]) -> MapEntry:
+        spec = replace(
+            PRUSASLICER,
+            option_probe=replace(
+                probe,
+                sentinels=(pair,),
+                candidates=lambda listing, baseline: ("spiral-vase",),
+            ),
+        )
+        return characterise(spec, "under-test").entries["spiral-vase"]
+
+    carried = entry_for(("1", "0"))
+    assert carried.tracking is Tracking.EXACT
+    assert carried.keys == ("spiral_vase",)
+    assert "perimeters" in carried.side_effects
+
+    echoed_by_neither = entry_for(("true", "1"))
+    assert echoed_by_neither.tracking is Tracking.INEXACT
+    assert "perimeters" in echoed_by_neither.keys, (
+        "with no verbatim pair the constraint is not separable, and the entry "
+        "must not pretend otherwise"
+    )
+    assert echoed_by_neither.side_effects == ()
 
 
 def test_an_option_that_writes_no_configuration_is_not_a_mapping(

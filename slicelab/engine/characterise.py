@@ -76,7 +76,7 @@ A normal probe on 2.9.6 takes about 0.22 s, so this is generous by two orders of
 magnitude and still fails fast on the option that never returns at all.
 """
 
-SCHEMA = 2
+SCHEMA = 3
 """Bumped when the cache file's shape changes.
 
 A cache written by an older slicelab is *discarded*, not adapted. Reading an
@@ -159,42 +159,66 @@ class Tracking(StrEnum):
 
 @dataclass(frozen=True)
 class MapEntry:
-    """One option's keys, and the keys that merely moved when it was set."""
+    """What the probe established about one option. Every candidate gets one.
+
+    Including the ones it could not map, and that is the point. An option missing
+    from the mapping is indistinguishable from an option that was never probed,
+    and a readback that cannot tell those apart reports ``absent`` -- a claim
+    about the engine -- for a key it simply failed to measure. That is
+    `notes/critique.md` G2's defect coming back through the cache, so the outcome
+    travels with the entry rather than being left behind in the characterisation.
+    """
 
     keys: tuple[str, ...]
-    """What this option writes. The only keys a readback may compare against."""
+    """What this option writes. Empty unless :attr:`outcome` is ``MAPPED``.
+
+    The only keys a readback may compare a requested value against.
+    """
 
     side_effects: tuple[str, ...]
     """Keys that moved but did not respond to the option's own value.
 
-    These are the engine's **dependent constraints**, and separating them is what
-    the second sentinel buys. ``--spiral-vase=1`` moves five keys; only
-    ``spiral_vase`` takes ``1`` under ``=1`` and ``0`` under ``=0``, while
+    The engine's **dependent constraints**. ``--spiral-vase=1`` moves five keys;
+    only ``spiral_vase`` reads ``1`` under ``=1`` and ``0`` under ``=0``, while
     ``perimeters``, ``fill_density``, ``top_solid_layers`` and
     ``filament_retract_layer_change`` are the engine adjusting the print around
-    the request. `notes/critique.md` G4 is exactly the run where adjudicating the
-    authored value against those four turns a correct slice red. They are
-    recorded because they are true, and excluded from `keys` because they were
-    never requested.
+    the request. `notes/critique.md` G4 is the run where adjudicating the
+    authored value against those four turns a correct slice red. Recorded because
+    they are true, and excluded from `keys` because they were never requested.
     """
 
-    tracking: Tracking
+    tracking: Tracking | None
+    """How firmly the keys were tied to the value, or ``None`` when unmapped."""
+
+    outcome: ProbeOutcome
+    """What the probe established. ``MAPPED`` is one of seven answers, not the
+    only one that reaches a caller."""
+
+    @property
+    def conclusive(self) -> bool:
+        """Whether the probe established anything about this option at all.
+
+        ``MAPPED`` and ``NO_KEY_MOVED`` are findings: this option writes these
+        keys, or this option writes none. Everything else is a **could-not-tell**
+        -- the engine hung, wrote nothing, refused every value, or answered a
+        different question -- and a caller must not turn one of those into a
+        statement about whether an intent was honoured.
+        """
+        return self.outcome in (ProbeOutcome.MAPPED, ProbeOutcome.NO_KEY_MOVED)
 
 
 @dataclass(frozen=True)
 class Characterisation:
     """One engine build's option-to-key map, and what it could not map.
 
-    ``outcomes`` carries every candidate, including the ones that produced no
-    mapping. An option missing from ``entries`` is then a fact with a recorded
-    cause rather than an absence, which is what lets a caller refuse an unmapped
-    option at 64 instead of reporting it as ``absent``.
+    ``entries`` covers **every candidate probed**, not only the mapped ones, so
+    "this option writes no key" and "this option could not be measured" are
+    different values rather than the same absence.
     """
 
     engine: str
     version: str
     entries: dict[str, MapEntry]
-    outcomes: dict[str, str]
     baseline_key_count: int
     volatile_keys: tuple[str, ...]
     """Keys that differed between two identical baseline runs, and are excluded.
@@ -205,31 +229,56 @@ class Characterisation:
     """
 
     @property
+    def outcomes(self) -> dict[str, str]:
+        """Every candidate's outcome, for a report or a human reading the cache."""
+        return {option: entry.outcome.value for option, entry in self.entries.items()}
+
+    @property
     def name_map(self) -> dict[str, tuple[str, ...]]:
-        """What `load_name_map` hands back: option -> the keys it writes."""
-        return {option: entry.keys for option, entry in self.entries.items()}
+        """Option -> the keys it writes, for the mapped options only."""
+        return {option: entry.keys for option, entry in self.entries.items() if entry.keys}
+
+    @property
+    def inconclusive(self) -> tuple[str, ...]:
+        """Candidates the probe established nothing about.
+
+        Non-empty means this characterisation is **partial**, and the caller is
+        entitled to know before it trusts a green run built on it. A partial map
+        that cannot say it is partial is the thing this project exists to refuse.
+        """
+        return tuple(sorted(o for o, entry in self.entries.items() if not entry.conclusive))
 
 
-def load_name_map(spec: EngineSpec, version: str) -> Mapping[str, tuple[str, ...]]:
-    """Authored option name (no leading dashes) -> the config keys it writes.
+def load_name_map(spec: EngineSpec, version: str) -> Mapping[str, MapEntry]:
+    """Authored option name (no leading dashes) -> what the probe established.
 
     Cached under XDG per engine and per version; a miss builds the map by probing
     the installed engine, which costs a few hundred invocations once per build.
 
-    **The value is a tuple of keys, not one key, and that is not defensive
-    generality.** Measured on 2.9.6, one option really does write several:
-    ``--extruder`` writes ``infill_extruder``, ``perimeter_extruder`` and
-    ``solid_infill_extruder``; ``--solid-layers`` writes three. A ``str`` value
+    **The value is a `MapEntry`, not a bare key list**, and the extra fields are
+    not decoration. `entry.keys` is what a readback may compare against;
+    `entry.tracking` says how firmly those keys were tied to the value;
+    `entry.outcome` and `entry.conclusive` say whether the probe established
+    anything at all. Returning only the keys threw two of those away: 170 of
+    Orca's 545 entries are `INEXACT` and reached a caller indistinguishable from
+    exact ones, and an option the probe timed out on was indistinguishable from
+    an option that does not exist -- which makes the readback say `absent` about
+    a key it never measured. That is G2's defect returning through the cache.
+
+    **`keys` is a tuple, not one key, and that is not defensive generality.**
+    Measured on 2.9.6, four options write several: ``--extruder`` writes
+    ``infill_extruder``, ``perimeter_extruder`` and
+    ``solid_infill_extruder``. A single-key value
     would have to pick one of them, and a readback comparing only the one that
     was picked reports ``applied`` while two other keys went unchecked -- green
-    over an intent that was only partly honoured. Every option maps to a tuple,
-    including the 1-tuples, because a value whose type depends on how many
-    answers there happen to be is a second bug waiting for the caller.
+    over an intent that was only partly honoured. Every entry carries a tuple,
+    the 1-tuples included, because a value whose type depends on how many
+    answers there happen to be is a second defect handed to the caller.
 
-    An option **absent from the mapping** is one the probe could not map, and the
-    reason is in the cache alongside. It must never be compared against a key
-    derived from its own name -- that transform is what G2 reproduced a false
-    ``absent`` from.
+    An option **absent from the mapping** was never a candidate on this build.
+    An option present with ``conclusive`` false was a candidate the probe could
+    not settle. Neither may be compared against a key derived from its own name
+    -- that transform is what G2 reproduced a false ``absent`` from.
 
     **A dependent constraint is not a key, and the second sentinel is what says
     so.** ``--spiral-vase=1`` moves five keys on 2.9.6, and only ``spiral_vase``
@@ -239,17 +288,29 @@ def load_name_map(spec: EngineSpec, version: str) -> Mapping[str, tuple[str, ...
     request that never named them. Adjudicating an authored value against those
     four is `notes/critique.md` G4's false red -- a correct slice reported as a
     finding -- so they are recorded on the entry as ``side_effects`` and are not
-    in this mapping. The separation is structural, with no heuristic and no
-    threshold, and the whole of it is one extra invocation per candidate.
+    in this mapping. It costs one extra invocation per candidate.
 
     ``perimeters`` is why one sentinel could never do it: the constraint sets it
     to ``1``, which is exactly what was sent, so "did this key take my value" says
     yes about a key nobody asked for.
 
-    Entries also carry how firmly the tie was measured. ``Tracking.INEXACT`` means
-    the keys responded to both sentinels but carried neither verbatim, which is
-    value normalisation -- ``--fill-density=0.17`` resolves to ``17%`` -- and is
-    the readback diff's problem rather than the map's.
+    **The separation is contingent on the sentinel table, not structural**, and
+    an earlier draft of this docstring claimed otherwise. It holds only when some
+    pair in :attr:`OptionProbe.sentinels` is carried *verbatim* by the key the
+    option writes. Refuted by changing nothing but the pair:
+
+    ``--spiral-vase`` at ``('1', '0')`` gives ``keys=('spiral_vase',)`` with the
+    four constraints as side effects. At ``('true', '1')`` -- where ``true``
+    resolves to ``0`` and neither value is echoed -- it gives ``INEXACT`` with
+    **all five** keys and no side effects at all, because a dependent constraint
+    does move differently under two different values. What separates the two
+    populations is the verbatim echo, not the fact of moving.
+
+    So ``Tracking.INEXACT`` is not merely "the value was normalised". It also
+    means **the side-effect separation did not happen for this entry**, and a
+    readback must not treat an inexact entry's keys as though each one carries
+    the requested value. Normalisation is the readback diff's problem;
+    unseparated constraints are a reason to refuse.
     """
     if not version.strip():
         raise CharacterisationError(
@@ -262,7 +323,7 @@ def load_name_map(spec: EngineSpec, version: str) -> Mapping[str, tuple[str, ...
         return cached
     result = characterise(spec, version)
     _write_cache(cache_path_for(spec, version), result)
-    return result.name_map
+    return result.entries
 
 
 def cache_path_for(spec: EngineSpec, version: str) -> Path:
@@ -309,21 +370,17 @@ def characterise(
                 "and every key would read as unmapped"
             )
 
-        entries: dict[str, MapEntry] = {}
-        outcomes: dict[str, str] = {}
-        for option in options:
-            outcome, entry = _probe_one(
+        entries: dict[str, MapEntry] = {
+            option: _probe_one(
                 spec, found, probe, option, sidecar, baseline, volatile, timeout=timeout
             )
-            outcomes[option] = outcome.value
-            if entry is not None:
-                entries[option] = entry
+            for option in options
+        }
 
     return Characterisation(
         engine=spec.name,
         version=version,
         entries=entries,
-        outcomes=outcomes,
         baseline_key_count=len(baseline),
         volatile_keys=volatile,
     )
@@ -375,7 +432,7 @@ def _probe_one(
     volatile: tuple[str, ...],
     *,
     timeout: float,
-) -> tuple[ProbeOutcome, MapEntry | None]:
+) -> MapEntry:
     """Cascade sentinel **pairs** until one shows which key carries the value.
 
     Two sentinels, not one, and the second is what separates a key the option
@@ -420,14 +477,14 @@ def _probe_one(
             spec, found, probe, option, low, sidecar, baseline, timeout=timeout
         )
         if outcome is not None:
-            return outcome, None
+            return _unmapped(outcome)
         if first is None:
             continue
         outcome, second = _one_run(
             spec, found, probe, option, high, sidecar, baseline, timeout=timeout
         )
         if outcome is not None:
-            return outcome, None
+            return _unmapped(outcome)
         if second is None:
             continue
         accepted = True
@@ -442,21 +499,31 @@ def _probe_one(
         tracks = {key for key in responded if first.get(key) == low and second.get(key) == high}
 
         if tracks:
-            return ProbeOutcome.MAPPED, MapEntry(
+            return MapEntry(
                 keys=tuple(sorted(tracks)),
                 side_effects=tuple(sorted(moved - tracks)),
                 tracking=Tracking.EXACT,
+                outcome=ProbeOutcome.MAPPED,
             )
         if responded and inexact is None:
             inexact = MapEntry(
                 keys=tuple(sorted(responded)),
-                side_effects=tuple(sorted(moved - responded)),
+                # Empty, and not because there were none. An inexact pair did not
+                # separate the two populations, so anything here would be a guess
+                # about which of the responding keys was a constraint.
+                side_effects=(),
                 tracking=Tracking.INEXACT,
+                outcome=ProbeOutcome.MAPPED,
             )
 
     if inexact is not None:
-        return ProbeOutcome.MAPPED, inexact
-    return (ProbeOutcome.NO_KEY_MOVED if accepted else ProbeOutcome.REJECTED), None
+        return inexact
+    return _unmapped(ProbeOutcome.NO_KEY_MOVED if accepted else ProbeOutcome.REJECTED)
+
+
+def _unmapped(outcome: ProbeOutcome) -> MapEntry:
+    """An entry for an option with no keys, carrying why."""
+    return MapEntry(keys=(), side_effects=(), tracking=None, outcome=outcome)
 
 
 def _one_run(
@@ -479,8 +546,16 @@ def _one_run(
     it is a property of **one** dump: if this run's configuration is missing keys
     the baseline had, the engine answered a different question and the run is not
     a data point to be paired with anything.
+
+    **The sidecar is removed before the run and after every exit from it.** It is
+    one path reused by every probe, so a file left behind is read by the next
+    option as its own answer -- and the paths that leave one behind are exactly
+    the failures, where the engine wrote nothing this time and the previous
+    option's dump is still sitting there. A run of 295 timeouts is not
+    hypothetical; it happened on this host under load.
     """
     assert found.form is not None
+    _discard(sidecar)
     completed = run(
         argv_for(
             found.form,
@@ -489,22 +564,23 @@ def _one_run(
         ),
         timeout=timeout,
     )
-    if completed.timed_out:
-        return ProbeOutcome.TIMED_OUT, None
-    if completed.exit_status != 0:
-        said = (completed.stderr + completed.stdout).lower()
-        if probe.unknown_option and probe.unknown_option in said:
-            return ProbeOutcome.UNKNOWN_OPTION, None
+    try:
+        if completed.timed_out:
+            return ProbeOutcome.TIMED_OUT, None
+        if completed.exit_status != 0:
+            said = (completed.stderr + completed.stdout).lower()
+            if probe.unknown_option and probe.unknown_option in said:
+                return ProbeOutcome.UNKNOWN_OPTION, None
+            return None, None
+        text = _artifact_text(sidecar)
+        if text is None:
+            return ProbeOutcome.NO_ARTIFACT, None
+        parsed = probe.read_config(text)
+        if set(baseline) - set(parsed):
+            return ProbeOutcome.NAMESPACE_CHANGED, None
+        return None, parsed
+    finally:
         _discard(sidecar)
-        return None, None
-    text = _artifact_text(sidecar)
-    if text is None:
-        return ProbeOutcome.NO_ARTIFACT, None
-    parsed = probe.read_config(text)
-    _discard(sidecar)
-    if set(baseline) - set(parsed):
-        return ProbeOutcome.NAMESPACE_CHANGED, None
-    return None, parsed
 
 
 def _dump(
@@ -553,12 +629,14 @@ def _discard(sidecar: Path) -> None:
         sidecar.unlink()
 
 
-def _read_cache(path: Path) -> dict[str, tuple[str, ...]] | None:
+def _read_cache(path: Path) -> dict[str, MapEntry] | None:
     """A previously measured map, or ``None`` if there is not a usable one.
 
     Every failure to read is a miss rather than an error: a truncated or
     hand-edited cache is re-measured, because the engine is the authority and the
-    file is only a saved answer.
+    file is only a saved answer. An entry whose ``outcome`` this build does not
+    recognise fails the whole read for the same reason -- a value we cannot
+    interpret must not be silently downgraded to one we can.
     """
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -569,15 +647,42 @@ def _read_cache(path: Path) -> dict[str, tuple[str, ...]] | None:
     raw = document.get("entries")
     if not isinstance(raw, dict) or not raw:
         return None
-    out: dict[str, tuple[str, ...]] = {}
+    out: dict[str, MapEntry] = {}
     for option, entry in raw.items():
         if not isinstance(option, str) or not isinstance(entry, dict):
             return None
-        keys = entry.get("keys")
-        if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
+        parsed = _entry_from(entry)
+        if parsed is None:
             return None
-        out[option] = tuple(keys)
+        out[option] = parsed
     return out
+
+
+def _entry_from(entry: Mapping[str, object]) -> MapEntry | None:
+    """One cached entry, or ``None`` if it is not the shape this build writes."""
+    keys = entry.get("keys")
+    side = entry.get("side_effects")
+    if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+        return None
+    if not isinstance(side, list) or not all(isinstance(k, str) for k in side):
+        return None
+    raw_tracking = entry.get("tracking")
+    raw_outcome = entry.get("outcome")
+    if raw_tracking is not None and not isinstance(raw_tracking, str):
+        return None
+    if not isinstance(raw_outcome, str):
+        return None
+    try:
+        tracking = Tracking(raw_tracking) if raw_tracking is not None else None
+        outcome = ProbeOutcome(raw_outcome)
+    except ValueError:
+        return None
+    return MapEntry(
+        keys=tuple(keys),
+        side_effects=tuple(side),
+        tracking=tracking,
+        outcome=outcome,
+    )
 
 
 def _write_cache(path: Path, result: Characterisation) -> None:
@@ -596,11 +701,12 @@ def _write_cache(path: Path, result: Characterisation) -> None:
             option: {
                 "keys": list(entry.keys),
                 "side_effects": list(entry.side_effects),
-                "tracking": entry.tracking.value,
+                "tracking": entry.tracking.value if entry.tracking else None,
+                "outcome": entry.outcome.value,
             }
             for option, entry in sorted(result.entries.items())
         },
-        "outcomes": dict(sorted(result.outcomes.items())),
+        "inconclusive": len(result.inconclusive),
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
