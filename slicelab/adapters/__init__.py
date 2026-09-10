@@ -7,11 +7,11 @@ enforces it for the strings that matter.
 
 from __future__ import annotations
 
-from slicelab.adapters.base import EngineSpec
+from slicelab.adapters.base import EngineSpec, OptionProbe
 from slicelab.adapters.orcaslicer import SPEC as ORCASLICER
 from slicelab.adapters.prusaslicer import SPEC as PRUSASLICER
 
-__all__ = ["ORCASLICER", "PRUSASLICER", "EngineSpec", "REGISTRY", "spec_for"]
+__all__ = ["ORCASLICER", "PRUSASLICER", "EngineSpec", "OptionProbe", "REGISTRY", "spec_for"]
 
 REGISTRY: dict[str, EngineSpec] = {
     PRUSASLICER.name: PRUSASLICER,

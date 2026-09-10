@@ -12,8 +12,11 @@ the repository contains, not about what happens to be imported at runtime.
 from __future__ import annotations
 
 import ast
+import contextlib
 import os
+import signal
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -445,3 +448,200 @@ def test_a_host_with_no_home_directory_at_all_offers_nothing(
     completed = run([sys.executable, "-c", "print('alive')"])
     assert completed.exit_status == 0
     assert completed.stdout.strip() == "alive"
+
+
+#: A descendant that survives the group's SIGTERM. Without this the escalation to
+#: SIGKILL is never exercised: a plain `sleep` dies to SIGTERM, so a `_terminate_tree`
+#: that never escalates passes anyway. `flatpak run` is exactly this shape -- a
+#: launcher that exits politely while what it started does not.
+_STUBBORN = (
+    "import signal, sys, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "sys.stderr.write('ready\\n'); sys.stderr.flush()\n"
+    "time.sleep(120)\n"
+)
+
+
+def _tree_script(marker: Path, grandchild_source: str) -> str:
+    """A stand-in launcher: start one child, record its pid, then wait."""
+    return (
+        "import subprocess, sys, time\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {grandchild_source!r}])\n"
+        f"open({str(marker)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(120)\n"
+    )
+
+
+def _run_tree_and_collect(marker: Path, grandchild_source: str) -> tuple[float, int]:
+    """Time out a stand-in tree; return how long `run` took and the grandchild pid."""
+    started = time.monotonic()
+    completed = run([sys.executable, "-c", _tree_script(marker, grandchild_source)], timeout=5.0)
+    elapsed = time.monotonic() - started
+    assert completed.timed_out
+
+    # The stand-in and its grandchild both sleep 120 s. A `run` that takes
+    # anywhere near that long did not kill anything -- it waited. That is how the
+    # first version of this test passed against the broken code: the post-kill
+    # drain inherited the orphan's pipe and blocked until the orphan finished on
+    # its own, so the leak read as a slow success.
+    assert elapsed < 30.0, (
+        f"run() took {elapsed:.1f}s for a 5s timeout; it waited for the tree rather than killing it"
+    )
+    assert marker.exists(), "the stand-in never started a grandchild; nothing was tested"
+    return elapsed, int(marker.read_text(encoding="utf-8"))
+
+
+def _assert_dead(pid: int, why: str) -> None:
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return
+        time.sleep(0.1)
+    _reap(pid)
+    pytest.fail(f"pid {pid} outlived the timeout that killed its parent. {why}")
+
+
+def test_a_timeout_kills_the_whole_process_tree(tmp_path: Path) -> None:
+    """A timed-out launcher must not leave the process it started alive.
+
+    ``subprocess.run(timeout=...)`` kills only the direct child, and for every
+    engine here the direct child is a launcher: ``flatpak run`` spawns ``bwrap``
+    spawns the slicer. Measured on this host, repeated characterisation sweeps
+    left **75** orphaned engine processes alive, the oldest 8 h 17 m old, at a
+    fifteen-minute load average of 60 -- the timeout doing the exact opposite of
+    its job, turning one hang into several permanent ones per sweep.
+
+    A stand-in process tree is used rather than an engine, so this runs on every
+    runner including the ones with no slicer: the property is about ``run``, not
+    about any engine.
+    """
+    if os.name != "posix":
+        pytest.skip("process groups and killpg are POSIX; the Flatpak leak cannot arise here")
+
+    marker = tmp_path / "grandchild.pid"
+    _, grandchild = _run_tree_and_collect(marker, "import time; time.sleep(120)")
+    _assert_dead(
+        grandchild,
+        "A launcher's children are the engine; killing only the launcher orphans them forever.",
+    )
+
+
+def test_the_escalation_to_sigkill_actually_happens(tmp_path: Path) -> None:
+    """A descendant that ignores SIGTERM must still die.
+
+    The test above cannot catch this and neither could an earlier revision of the
+    code. Its grandchild is a plain ``sleep``, which dies to the group's SIGTERM,
+    so an escalation that never fires looks identical to one that does. And the
+    escalation *did* not fire: it was gated on ``proc.wait()`` over the **direct
+    child**, so a launcher exiting politely on SIGTERM returned the wait
+    instantly and SIGKILL was never sent -- the original defect, one level in,
+    and the exact shape ``flatpak run`` has.
+
+    So the grandchild here installs ``SIG_IGN`` for SIGTERM. Only the
+    unconditional SIGKILL after the grace period can end it.
+    """
+    if os.name != "posix":
+        pytest.skip("process groups and killpg are POSIX; the Flatpak leak cannot arise here")
+
+    marker = tmp_path / "stubborn.pid"
+    _, grandchild = _run_tree_and_collect(marker, _STUBBORN)
+    _assert_dead(
+        grandchild,
+        "It ignores SIGTERM, so the group SIGKILL after the grace period is the "
+        "only thing that can end it, and it never arrived.",
+    )
+
+
+#: A descendant that leaves the process group entirely, so no group signal reaches
+#: it, and which keeps the inherited stdout pipe open. This is the only shape that
+#: reaches the bounded-drain fallback: with the group kill working, SIGKILL closes
+#: the pipes and the drain simply succeeds.
+#:
+#: It writes its line **after** the parent's deadline has passed, so the line
+#: lands inside the grace window rather than before it. The parent cannot be the
+#: one to write it: the group SIGTERM kills the parent at the deadline, so
+#: anything it was going to say later is never said.
+_ESCAPEE = (
+    "import os, sys, time\n"
+    "os.setsid()\n"
+    # Past the 5 s deadline, inside the 5 s grace window that follows it.
+    "time.sleep(7)\n"
+    "sys.stdout.write('DURING-THE-GRACE-PERIOD\\n'); sys.stdout.flush()\n"
+    "time.sleep(120)\n"
+)
+
+
+def test_a_timed_out_run_reports_what_the_engine_managed_to_say(tmp_path: Path) -> None:
+    """A hung engine's one diagnostic must survive the kill that ends it.
+
+    The drain after the kill is bounded, because the captured pipes are inherited
+    by every descendant and an unbounded wait blocks on the very orphan being
+    killed. An earlier revision returned empty strings on that path with the
+    comment "say what we have -- nothing", and that was false: the first
+    ``TimeoutExpired`` carries everything read before the deadline. Measured -- it
+    held the child's stdout in full while ``run`` returned ``''``.
+
+    **Reaching that path needs a descendant that escapes the process group**, and
+    a first attempt at this test missed it for that reason: with the group kill
+    working, SIGKILL closes the pipes and the bounded drain succeeds, so the
+    fallback is never taken and the assertion passes either way. The grandchild
+    here calls ``setsid``, so no group signal reaches it and it holds the pipe
+    open past the grace period -- which is also a real scenario, since a
+    misbehaving launcher can do exactly this.
+
+    **Two lines, not one**, because a second revision of this fix still lost the
+    later one. Reading ``TimeoutExpired.stdout`` from the *first* deadline drops
+    everything that arrives while the tree is being killed -- which is exactly
+    when a process being torn down says what went wrong. CPython accumulates into
+    the same buffer across ``communicate`` calls, so the second exception carries
+    both and the first carries only the earlier line.
+    """
+    if os.name != "posix":
+        pytest.skip("the drain path is only reachable where the group kill is")
+
+    marker = tmp_path / "escapee.pid"
+    script = (
+        "import subprocess, sys, time\n"
+        "sys.stdout.write('BEFORE-THE-DEADLINE\\n'); sys.stdout.flush()\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {_ESCAPEE!r}])\n"
+        f"open({str(marker)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(120)\n"
+    )
+    try:
+        completed = run([sys.executable, "-c", script], timeout=5.0)
+    finally:
+        # This test deliberately creates a process `run` cannot reach. Not
+        # cleaning it up would leave the leak this file is about.
+        if marker.exists():
+            _reap(int(marker.read_text(encoding="utf-8")))
+
+    assert completed.timed_out
+    assert "BEFORE-THE-DEADLINE" in completed.stdout, (
+        "the engine said something before it hung, and the timeout path dropped it"
+    )
+    assert "DURING-THE-GRACE-PERIOD" in completed.stdout, (
+        "output that arrived while the tree was being killed was thrown away. "
+        "CPython accumulates across communicate() calls, so the SECOND exception "
+        "carries it and the first does not."
+    )
+
+
+def _alive(pid: int) -> bool:
+    """Whether a pid still names a running process.
+
+    A killed grandchild is reparented to init and reaped there, so this stops
+    being true shortly after the group signal lands rather than instantly.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - alive and owned by someone else
+        return True
+    return True
+
+
+def _reap(pid: int) -> None:  # pragma: no cover - only on the failure path
+    """Do not leave the very process this test is complaining about running."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.kill(pid, signal.SIGKILL)

@@ -899,3 +899,342 @@ fresh install, because discovery asks the engine to identify itself and that nee
 no configuration. `presets` reports 2 today. The implementation lands with #19;
 this entry exists so `resolve` does not invent a third answer for the same
 condition, which is what #19 was filed to prevent.
+
+
+## D30 — the option-to-key map is probed with two sentinels, cached per build, and its value is a tuple of keys
+
+`notes/critique.md` G2's actions 2 and 3, implemented. G2 called the name mapping
+"unstated and provably non-total" and reproduced a false `absent` from the only
+available rule; this entry records what replaced it and, more usefully, the four
+things measuring it established that reading could not.
+
+### Decided
+
+`load_name_map(spec, version) -> Mapping[str, tuple[str, ...]]`, built by setting
+each option to **two** distinct sentinels and observing which config key followed
+the value, cached under
+`$XDG_CACHE_HOME/slicelab/characterisation/<engine>/<version>/`. Engine **and**
+version, because the map is a per-build fact: options are renamed and keys are
+added between releases, and a map carried across that boundary is confidently
+wrong with nothing to report the gap. D11's half is unchanged — the cache is
+generated on the user's machine and slicelab ships none of it.
+
+The engine-neutral part — cascade, artifact gate, timeout, mode-switch rule,
+tracking, cache — is `slicelab/engine/characterise.py`. The four engine-shaped
+parts are `adapters.base.OptionProbe`: how to enumerate options, how to read a
+readback, this engine's sentinel spellings, and its wording for "no such option".
+
+**The value is `tuple[str, ...]`, uniformly, including 1-tuples.** Four options
+write more than one key, and `--extruder` writes three (`infill_extruder`,
+`perimeter_extruder`, `solid_infill_extruder`). A `str` value would have to pick
+one, and a readback comparing only the picked one reports `applied` while two
+keys went unchecked — green over a partly honoured intent, which is the worst
+outcome in this system. A value whose type depends on how many answers there
+happen to be is a second defect handed to the caller, so the 1-tuples stay
+tuples.
+
+### Two sentinels, because one cannot tell a write from a constraint
+
+Setting an option once says which keys **moved**. Setting it twice says which of
+them **followed the value**. A key tracks when it holds sentinel A after the run
+with A and sentinel B after the run with B; only a key the option writes can do
+that. Measured on 2.9.6:
+
+```
+--extruder      (=2 vs =3)   tracks infill_extruder, perimeter_extruder, solid_infill_extruder
+--solid-layers  (=2 vs =5)   tracks bottom_solid_layers, top_solid_layers
+                             side effect solid_layers      (0 under both)
+--spiral-vase   (=1 vs =0)   tracks spiral_vase
+                             side effects perimeters, fill_density, top_solid_layers,
+                                          filament_retract_layer_change
+```
+
+So `notes/critique.md` G4's dependent constraints are separated. `--extruder` is
+an aggregate and all three members are the request; `--spiral-vase` sets one key
+and the engine then adjusts four others, which were never requested and must
+never be adjudicated against the authored value. Those four are recorded on the
+entry as `side_effects`, because they are true, and kept out of `keys`, because
+comparing an authored value against them is G4's false red on a slice the engine
+performed exactly as designed.
+
+`perimeters` is why one sentinel could never have done it: the constraint sets it
+to `1`, which is precisely the value that was sent, so "did this key take my
+value" answers yes about a key nobody asked for.
+
+**The separation is contingent on the sentinel table, not structural.** A first
+draft of this entry said "structurally, with no heuristic and no threshold", and
+that is false. It holds only when some pair in `OptionProbe.sentinels` is carried
+*verbatim* by the key the option writes. Refuted by changing nothing but the
+pair, on the same option and the same build:
+
+```
+--spiral-vase ('1','0')     exact    keys=(spiral_vase,)
+                                     side_effects=(perimeters, fill_density,
+                                                   top_solid_layers,
+                                                   filament_retract_layer_change)
+--spiral-vase ('true','1')  inexact  keys=(filament_retract_layer_change,
+                                           fill_density, perimeters,
+                                           spiral_vase, top_solid_layers)
+                                     side_effects=()
+```
+
+`true` resolves to `0`, so neither value is echoed and every one of the five keys
+merely *responds*. A dependent constraint **does** move differently under two
+different values; what separates the populations is the verbatim echo, not the
+fact of moving. So `Tracking.INEXACT` carries a second meaning beyond "the value
+was normalised": **the separation did not happen for this entry**, its
+`side_effects` is empty because none could be established rather than because
+there were none, and a readback must not treat its keys as each carrying the
+requested value. Normalisation is the diff's problem; an unseparated constraint
+is a reason to refuse.
+
+**A one-run value filter was tried first and is refuted**, which is why the
+second run rather than a cleverer rule. Keeping only keys whose resolved value
+equalled the sentinel verbatim unmapped **89 of the then-330 mapped options**,
+because the engine normalises legitimately — `7` resolves to `7%`, `1` to
+`enabled`, a string to `0` on every numeric option — and it still kept
+`perimeters`. It cost 89 correct answers and did not buy the one thing it was
+for. Normalisation is now carried as `Tracking.INEXACT`: the keys responded to
+both sentinels but carried neither verbatim, so the tie is real and weaker, and
+value normalisation is the readback diff's problem rather than the map's.
+
+**The cost is stated rather than hidden.** One extra invocation per candidate,
+and the cascade no longer stops at the first non-empty answer — an inexact pair
+is remembered and a later pair of the right type may still track exactly, which
+is what `--fill-density` needs. Measured solo on a quiet host, PrusaSlicer went
+from **398 s to 1105 s**, about 2.8x rather than the 2x a per-candidate count
+suggests, and the confirmation pass below takes it to 1205 s. Once per build,
+cached.
+
+### Measured, 2026-09-10, on the two installed engines
+
+Every column below is a **solo run on a host with the process leak fixed**, load
+average under 3. The earlier revision of this table was measured on a machine
+this probe had itself degraded; see *Reproducibility* below.
+
+| | PrusaSlicer 2.9.6 | OrcaSlicer 2.4.2 |
+|---|---|---|
+| candidates probed | 416 | 616 |
+| baseline readback keys | 343 | 616 |
+| **mapped** | **342** | **545** |
+| of which tracking is exact | 336 | 374 |
+| of which tracking is inexact | 6 | 171 |
+| entries with >1 key | 4 | 4 |
+| entries carrying side effects | 3 | 0 |
+| moved no key | 29 | 8 |
+| every sentinel refused | 36 | 63 |
+| wrote no readback at exit 0 | 2 | 0 |
+| switched key namespace | 2 | 0 |
+| never returned | 5 | 0 |
+| disagreed on confirmation | 0 | — |
+| **inconclusive** | **45** | **63** |
+| wall clock | 1205 s | 1165 s |
+
+The PrusaSlicer column includes the confirmation pass described below: **101 s**
+of the 1205 s, re-probing 29 options, all 29 confirmed. The Orca column predates
+it and is 1165 s without.
+
+`inconclusive` is the count `MapEntry.conclusive` refuses: everything except
+`mapped` and `no-key-moved`. On PrusaSlicer all 45 are properties of the option
+rather than of the host — the 5 timeouts are `--gcodeviewer` and the four
+`--opengl-*` options, every one of which opens a window.
+
+Orca's 171 inexact entries are one cause, not a spread: its per-extruder keys are
+**JSON lists**, so `--activate-air-filtration=1` resolves to `["1"]` and responds
+to the value without carrying it. A container shape, not a value transform, and
+exactly the case `INEXACT` exists to carry rather than discard.
+
+`--after-layer-gcode -> layer_gcode` is the **only** single-key PrusaSlicer entry
+whose key is not its own dash-to-underscore form, and there are none on Orca.
+That does not make the transform nearly right: see the collision result below.
+
+### Four findings the probe produced that reading the engine did not
+
+**A mode switch is not a mapping, and it needs no threshold.** `--export-sla`
+swaps printer technology: it drops 334 of the 343 baseline keys and adds 143 of
+its own. Counting moved keys and rejecting "more than N" is a number someone has
+to keep true; *did any baseline key disappear* separates the two exactly, because
+a config option only ever changes a value or adds a key. `--bed-custom-texture`
+adds exactly one and drops none.
+
+**An engine that returns is not an engine that answered, and the probe is not
+exempt from D7.** `--post-process` and `--info` exit 0 having written no ini.
+Parsing the absent file yields `{}`, every baseline key then reads as moved, and
+one option is recorded as writing all 343.
+
+**Accepted-and-moved-nothing is not an answer either.** This probe shipped one
+measurement with the cascade stopping at the first accepted sentinel, and it was
+wrong in a way only a second run exposed. D5: PrusaSlicer's boolean options
+validate nothing and anything that is not literally `1` resolves to `0`, so
+`--spiral-vase=SLICELABPROBE` exits 0, resolves to the `0` already in the dump,
+and moves no key. That put **110 real options** — `--spiral-vase`,
+`--support-material`, `--thin-walls` among them — in a bucket meaning the exact
+opposite of the truth.
+
+**How a bare number is read is decided per option, and `--fill-density` reads it
+as a fraction.** `=40` and `=7` are refused at rc=1 with `Value out of range:
+fill_density` and **no ini written**, while `=0.4` resolves to `40%` and `=60%`
+to `60%`. Stated for that option and not as a rule about percent-typed options:
+`fill_angle` and `first_layer_speed` accept a bare `40` as `40`, while the
+extrusion-width family rejects it on a units check. Three
+behaviours across one nominal "type" is why D5 refuses to ship an option
+catalogue and why this map is probed.
+
+The relevance to the probe is narrow and it is benign only because D7's artifact
+gate is in place: the refused run writes nothing, so the cascade steps past a
+*rejection* rather than reading an empty answer as "this option moves no key".
+
+### The collision search G2 named as its own action
+
+G2: "a collision — an alias whose underscore form happens to be a different real
+key — would be a false `applied`, i.e. green on an unhonoured intent. I did not
+find such a collision, and I did not search exhaustively; that search is the
+action."
+
+Searched exhaustively over all 416 PrusaSlicer spellings and all 616 Orca
+candidates, aliases included — `--help-fff` is now read past the first name on a
+line, which is where D28's five alias-only spellings come from. The test is: for
+every candidate, is its dash-to-underscore form a real config key that the probe
+established the option does **not** write?
+
+**Result: no collision of the kind G2 feared exists on either engine.** Every
+case where the transform points at a real key the option does not write is an
+option that writes **no key at all** — 27 on PrusaSlicer, 71 on Orca — which the
+map already refuses by leaving those options out of it. (Both counts are against
+the default dump; a key absent from the defaults and created by the option, like
+`bed_custom_texture`, is not in that population.)
+
+What remains is narrower than "the transform is unsafe", and tracking shrank it:
+
+* **False `absent`** — 4 on PrusaSlicer. `--after-layer-gcode` and `--extruder`
+  write differently-named keys; `--solid-layers` and `--solid-min-thickness` now
+  join them because their self-named key turned out to be a side effect rather
+  than a write.
+* **Right key, incomplete check** — **1** on PrusaSlicer, down from 4, and 4 on
+  Orca. This is the false `applied` G2 was looking for, reached by a different
+  route than the one it proposed: the transform names one member of a genuine
+  aggregate and the rest go unchecked. Tracking is what makes the membership
+  measured rather than assumed, so the class is now only as large as the
+  aggregates really are.
+
+### The probe must not poison the host it measures on
+
+`launch.run` timed out with `subprocess.run(timeout=...)`, which kills the direct
+child. For every engine here the direct child is a **launcher**: `flatpak run`
+spawns `bwrap` spawns the slicer. Killing the launcher orphaned both, and an
+orphaned GUI process never exits.
+
+Measured on this host after repeated sweeps: **75 orphaned engine processes**
+alive, oldest 8 h 17 m, at a fifteen-minute load average of 60. The timeout
+existed so one hung option could not hang the machine, and without a group kill
+it converted one hang into five permanent ones per sweep, cumulatively.
+
+`_spawn` now gives the child its own session and signals the **group** on
+timeout: SIGTERM, a grace period, then SIGKILL. POSIX only, and named as a gap
+rather than papered over — `setsid` and `killpg` do not exist on Windows, where
+this degrades to the old single-process kill; the Flatpak launcher it is written
+for is POSIX-only, so the leak it fixes cannot arise there.
+
+**The post-kill drain is bounded, and finding out why is the more useful half.**
+The write ends of the captured pipes are inherited by every descendant, so an
+unbounded `communicate` waits for the last one to let go — which is exactly the
+orphan the kill just targeted. With the group kill disabled, the drain blocked
+for the orphan's full 120 s lifetime and then returned normally, so the leak
+surfaced as a **slow success**. The first version of the regression test passed
+against the broken code for that reason. It now bounds `run`'s wall clock as well
+as asserting the grandchild is dead, and it is red at 20 s with the group kill
+off.
+
+### Reproducibility, restated as what it is
+
+An earlier revision of this entry reported "2 of 416" from a pair of sweeps, one
+of which shared the host with another sweep. Re-measured at load 200 — the load
+this probe was itself creating — **308 of 416 outcomes disagree**.
+The figure was not wrong about the runs; it was measured on a machine the probe
+had degraded, and the entry did not say so.
+
+Re-measured on a host with the leak fixed, two full PrusaSlicer sweeps
+back to back, load average under 3:
+
+| | run A | run B |
+|---|---|---|
+| candidates | 416 | 416 |
+| mapped | 342 | 341 |
+| inconclusive | 45 | 45 |
+| entries differing | **1** | |
+
+The 45 inconclusive are the same 45 in both runs and every one of them is a real
+property of the option, not of the host: 5 timeouts (`--gcodeviewer` and the four
+`--opengl-*` options, all of which open a window), 36 that refused every
+sentinel, 2 that wrote no ini (`--info`, `--post-process`), and 2 that switched
+namespace (`--export-sla` and its alias `--sla`).
+
+The one that moved is `--enable-dynamic-overhang-speeds`: `mapped` in A,
+`no-key-moved` in B, and `mapped` 3/3 when probed alone. **Its direction is the
+uncomfortable part.** `no-key-moved` is a *finding* — `MapEntry.conclusive` is
+true for it — so that residue is not caught by the could-not-tell channel. A
+transient engine failure on the one pair that discriminates leaves only
+inert-looking evidence, and inert is indistinguishable from genuinely inert.
+
+### So the inert set, and only the inert set, is confirmed
+
+A first draft of this entry refused to retry anything, on the argument that a
+retry suppresses a real refusal. **That argument is right about `rejected` and
+wrong as a generalisation**, and leaving it to cover the whole probe was letting
+one true sentence do work it could not.
+
+A confirmation pass over `NO_KEY_MOVED` touches no refusal at all. It re-probes
+the 29 of 416 options that appeared to write nothing, and a disagreement demotes
+the option to `UNSTABLE`, which is **not** conclusive. Promoting the more
+interesting answer would be picking a winner between two runs that disagreed.
+`REJECTED` and `TIMED_OUT` are excluded deliberately and for different reasons:
+re-probing a refusal hides a genuine "no" behind a lucky second run, and
+re-probing a hang is what poisons the host in the first place. Both are already
+could-not-tells, so a retry buys nothing there and costs the property.
+
+Cost measured, not estimated: **101 s of a 1205 s sweep**, 29 options re-probed,
+all 29 confirming. The sweep without it was 1105 s.
+
+What is claimed is therefore narrow: **keys are stable, presence is
+load-dependent, the load-dependence was largely self-inflicted, and the one
+negative finding a caller may act on is now established twice.**
+
+### One unattributed test failure, recorded as unattributed
+
+`test_the_engine_writes_a_key_the_options_name_does_not_predict` failed once
+across four full suite runs on the fixed host and passes in isolation. Two full
+sweeps either side of it were clean, so the transient is rare rather than
+routine.
+
+**Which** transient it was is not established: the run captured no output, and a
+single failure with nothing recorded does not identify a cause. It is written
+down as unattributed rather than filed under the load-sensitivity above, because
+attributing it to the nearest known story is the substitution this project is
+named after. The action if it recurs is to capture the engine's streams at the
+point of failure, not to reason about it further from here.
+
+### A partial map must be able to say so
+
+`load_name_map` returned `{option: keys}`, which threw away everything the probe
+knew about the options it could *not* map. An option that timed out was simply
+missing — indistinguishable from an option that does not exist — so a readback
+would report `absent`, a claim about the engine, for a key it never measured.
+That is G2's own defect returning through the cache, and a degraded map is cached
+under engine+version and served from then on.
+
+So the value is a `MapEntry` carrying `keys`, `side_effects`, `tracking` and
+`outcome`, for **every candidate probed**. `MapEntry.conclusive` is true only for
+`MAPPED` and `NO_KEY_MOVED` — this option writes these keys, or this option
+writes none. Everything else is a could-not-tell that a caller must refuse rather
+than convert into a verdict. `Characterisation.inconclusive` names them, and the
+cache records the count, so a partial map says it is partial instead of looking
+complete.
+
+This also fixes the quieter half of the same defect: 170 of Orca's 545 entries
+are `INEXACT`, and under the old return type they reached the consumer
+indistinguishable from exact ones.
+
+*Supersedes:* if `side_effects` turns out to be something a readback should
+adjudicate rather than merely record, that is a change to `readback.py` and to
+D27, not to this map — the map states which keys followed the value, and that is
+the thing that was measured.

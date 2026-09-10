@@ -173,7 +173,15 @@ past-tense verb leading a non-zero run reads green to a human skimming CI logs.
 - **Map option names to config keys by probing, never by string transform.**
   411 CLI options, 343 config keys, 70 options with no matching key.
   `--after-layer-gcode` writes `layer_gcode`, so dash-to-underscore reports a
-  false `absent` on a perfect run. See G2 in `notes/critique.md`.
+  false `absent` on a perfect run. See G2 in `notes/critique.md`. The map is
+  built by `slicelab/engine/characterise.py` and cached per engine and per
+  version under XDG (D30). Each option is probed with **two** sentinels, because
+  one cannot tell a key the option writes from a key the engine adjusted:
+  `--spiral-vase=1` moves five keys and only `spiral_vase` follows the value.
+  Values are **tuples**, because four options write more than one key and picking
+  one of them is a false `applied` waiting to happen. G2's collision search is
+  done and found none of the kind it feared, which is not the same as the
+  transform being safe — D30 says what remains.
 - **Do not reimplement the engine's arithmetic.** The premise is that the engine
   knows what the slice is and we do not.
 - **Do not write a test that reads a doc, reads the code, and diffs them**, and
