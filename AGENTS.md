@@ -79,10 +79,12 @@ reproduction in `notes/evidence.md`.
    out-of-bounds object gives exit 0, no G-code, and a complete ini anyway [V4].
    A run that did not write the file must never report as one that did.
 3. **The core vocabulary is EMPTY** (D2). Authored keys are the engine's own
-   native names under an engine-namespaced table. `CORE_KEYS == frozenset()`,
-   asserted by a test. A key enters only through D3's recorded admission
-   procedure. A vocabulary written from one engine *is* the PrusaSlicer-shaped
-   abstraction this project exists to avoid.
+   native names under an engine-namespaced table. A key enters only through D3's
+   recorded admission procedure. A vocabulary written from one engine *is* the
+   PrusaSlicer-shaped abstraction this project exists to avoid.
+   `CORE_KEYS == frozenset()` is **not yet asserted by a test** — there is no
+   `CORE_KEYS` until the intent parser lands (#5). This sentence claimed the
+   assertion existed before the thing it asserts did.
 4. **Never adjudicate on an engine's exit code without probing it first** (D17,
    D18). `--query-printer-models` returns exit 1 with 6550 bytes of valid JSON —
    the same code it returns for "not found" [V5]. And the Flatpak entrypoint
@@ -142,8 +144,16 @@ past-tense verb leading a non-zero run reads green to a human skimming CI logs.
 ## Constraints
 
 - **`readback.py` knows no engine's option names.** Engine-specific logic lives
-  under `adapters/<engine>/`. A structural test confirms it — scoped to the FFF
-  config-key namespace, not to every string constant.
+  under `adapters/<engine>/`. Two structural tests confirm it, and they make
+  different claims: `test_boundaries.py` confines engine **identifiers** — the six
+  executable names and Flatpak application ids computed from `REGISTRY` —
+  and `test_names_confined.py` confines the **config-key namespace**, by requiring
+  every non-prose literal in a core module to be a term slicelab declared (D26).
+  Until 2026-09-09 only the first existed while this sentence described the
+  second. Measured: with `_orca_wall_count()` returning `"wall_loops" in readback`
+  added to `slicelab/status.py`, the suite is **85 passed** and `just check` is
+  clean; with `test_names_confined.py` present the same tree is **1 failed, 91
+  passed**, naming the module and the term.
 - **The `sliced` outcome must be unreachable with an empty subject set.** With
   zero requested keys, "every requested key was applied" is vacuously true, and
   a base-only `slice.toml` is the first file anyone writes. See G1 in

@@ -34,7 +34,10 @@ splits into two per-engine tools sharing only the lock schema and the status enu
 ## D2 — The core normalized vocabulary is EMPTY in v0.1.0
 
 Authored keys are the engine's own native names under an engine-namespaced table.
-`test_vocabulary_empty.py` asserts `CORE_KEYS == frozenset()`.
+`test_vocabulary_empty.py` will assert `CORE_KEYS == frozenset()`. **Neither
+exists yet**; both land with the intent parser (#5). This sentence was written
+in the present tense before the thing it describes, which is the status-claim
+defect org contract 2.5 names -- recorded here rather than quietly reworded.
 
 135 of PrusaSlicer's 343 config keys share a *name* with an Orca key, and at least
 five of the first dozen adjudicated are traps: `gcode_label_objects` is an enum in
@@ -52,7 +55,7 @@ A vocabulary written from one engine **is** the PrusaSlicer-shaped abstraction.
 A candidate core key must be measured on every installed engine: slice the same
 part, vary the key, show the toolpath effect moves in the same direction and the
 same order of magnitude, and commit the measurement table as the decision's
-evidence. `len(vocab.CORE_KEYS)` is asserted against a committed constant so
+evidence. `len(vocab.CORE_KEYS)` is to be asserted against a committed constant so
 growth is visible in review.
 
 It is deliberately **not** a CI test: it needs every engine installed and would be
@@ -600,3 +603,88 @@ released — the tool disagreeing with its own package, silently, which is the
 whole failure this project is named around. `pyproject.toml` now declares
 `dynamic = ["version"]` and hatchling reads it from the package. Structural, so
 no test is needed: the drift is not possible rather than merely detected.
+
+## D26 — The core's vocabulary boundary is a whitelist of slicelab's own terms
+
+`notes/refuted.md`'s "Fatal flaws (judge panel)" section asked for a **stoplist**
+scoped to the FFF config-key namespace — the ~411 `--help-fff` option names — and
+said the stoplist itself must be a numbered decision rather than a quietly growing
+allowlist. This is that decision, and it inverts the construction.
+
+### Why not the stoplist as specified
+
+A committed 411-name `--help-fff` list is literally the **default key set** D11
+names as XDG-cache material, harvested wholesale from help text D11 shows to be
+copied expression rather than fact. The line D11 draws is bulk corpus versus
+citation: naming `wall_loops` and `perimeters` in a test, as this decision's own
+red-state guard does, cites two facts; committing all 411 ships the corpus. The alternatives were both
+worse than the problem: read the stoplist from D11's XDG cache and the test skips
+on every machine without an engine — a skipped test is not a passing test, and
+this is the one test D1's supersede clause is adjudicated by. Hand-author the 411
+names and D11 is broken outright, for a list that goes stale on the next engine
+release.
+
+There is also a coverage argument the stoplist loses. A blacklist only refuses the
+names someone thought to list; OrcaSlicer's `wall_loops`, a future engine's
+vocabulary, and any key added by an upstream release all pass it.
+
+### Decided
+
+Invert it. A string literal in a core module is either **prose** — it contains
+whitespace — or it is a term named in `DECLARED_VOCABULARY` in
+`tests/test_names_confined.py`. Everything else fails.
+
+That works because of an asymmetry in the two vocabularies, which is measured
+rather than assumed. Across both installed engines — PrusaSlicer 2.9.6's 343
+`--save` config keys and 411 `--help-fff` options, and OrcaSlicer 2.4.2's 616
+`--export-settings` keys — **not one key or option contains whitespace**, and not
+one collides with a term in `DECLARED_VOCABULARY`, even as a substring. So the
+prose rule separates the two vocabularies cleanly on today's engines. (Regenerate
+with `--save`, `--help-fff` and `--export-settings`; the corpora themselves are
+D11 XDG-cache material and are not committed.)
+
+**What it refuses, stated exactly.** Every engine key that appears in a scanned
+module as a string literal, a bytes literal, a class-body assignment target, or an
+annotated field name. That covers the idioms a readback actually uses — including
+`StrEnum` with `auto()`, where `WALL_LOOPS = auto()` carries the value
+`"wall_loops"` with no such literal in the file.
+
+**What it does not refuse**, and this is a real limit rather than a hedge: a key
+that reaches a core module by `import` from a module that is neither core nor an
+adapter, and a key assembled at run time from fragments. The first is worth
+closing if `engine/` or `cli.py` ever grows a key constant; the second is
+contrived enough that catching it would cost more than it buys.
+
+**Adding an entry to `DECLARED_VOCABULARY` is this decision being amended**, and it
+happens in a diff where someone can object. An engine's key name can never be
+added; that is the whole content of the rule.
+
+### What this is scoped to, and what it is not
+
+`test_boundaries.py::test_engine_names_appear_only_in_adapters` confines engine
+**identifiers** — the six executable names and Flatpak application ids computed
+from `REGISTRY`. It does not look at config keys, and `AGENTS.md` claimed it did
+for as long as the sentence existed. Both tests are kept; they make different
+claims.
+
+`cli.py` is deliberately **not** scanned, and that is a judgement rather than an
+oversight. It adjudicates by the docstring's own criterion, but scanning it flags
+nine terms — `--datadir`, `--version`, `VERB`, `__main__`, `presets`, `slicelab`,
+`verb`, `version`, `which` — every one argparse plumbing and none engine-derived.
+Admitting them is the dumping ground this decision's supersede clause warns about.
+`test_every_module_that_exists_and_should_be_core_is_scanned` keeps the exclusion
+honest by refusing any module that is neither scanned nor listed.
+
+### Red-capability
+
+The red state of this test cannot be observed by breaking the source tree the way
+§2.4 usually asks, because the property under test is that the tree is *clean*. So
+the checker is exercised directly against deliberately dirty source in
+`test_the_checker_catches_an_engine_key`, and against an error message in
+`test_prose_is_not_flagged` so the rule is not merely red on everything.
+
+*Supersedes:* if the prose rule proves too coarse — a core module needing an
+unspaced literal that is genuinely not vocabulary, often enough that
+`DECLARED_VOCABULARY` becomes a dumping ground rather than a reviewed list — then
+narrow the scan to comparison, containment and subscript operands and record that
+here. The list growing without objection is the signal, not the list being long.
