@@ -77,6 +77,15 @@ DECLARED_VOCABULARY = frozenset(
         "requested",
         "sidecar",
         "paths",
+        # The adjudicated result: one verdict per authored override, and the keys
+        # it was compared against. Slicelab's own report vocabulary, not an
+        # engine's -- the engine's key names travel in the VALUES of `compared`,
+        # which is data, and never as literals here.
+        "verdicts",
+        "option",
+        "status",
+        "compared",
+        "observed",
         "overrides",
         "source",
         # Report/lock structural field names slicelab owns.
