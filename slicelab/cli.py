@@ -15,11 +15,16 @@ from pathlib import Path
 
 from slicelab import __version__
 from slicelab.adapters import REGISTRY, spec_for
+from slicelab.engine.characterise import CharacterisationError
 from slicelab.engine.discover import discover
 from slicelab.engine.identity import identify
 from slicelab.engine.launch import run
+from slicelab.intent import IntentError
+from slicelab.preflight import PreflightError
 from slicelab.presets import adjudicate
+from slicelab.redact import RedactionError
 from slicelab.report import render
+from slicelab.resolve import ResolveError, resolve
 from slicelab.status import EXIT_USAGE, Outcome, exit_code_for
 
 __all__ = ["main"]
@@ -63,6 +68,17 @@ def _parser() -> argparse.ArgumentParser:
         "--datadir",
         help="engine configuration directory to query instead of the default",
     )
+
+    resolve_verb = verbs.add_parser(
+        "resolve",
+        help="ask the engine what it would resolve this intent to, and diff that against it",
+    )
+    resolve_verb.add_argument("intent", type=Path, help="path to a slice.toml")
+    resolve_verb.add_argument(
+        "--readback",
+        type=Path,
+        help="where to write the engine's configuration dump (default: alongside the intent)",
+    )
     return parser
 
 
@@ -95,6 +111,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.verb == "presets":
         return _presets(args.engine, args.datadir)
+
+    if args.verb == "resolve":
+        return _resolve(args.intent, args.readback)
 
     # Valid arguments naming no verb. A usage error, not an environment fault
     # and not a verdict: slicelab was asked nothing it knows how to do.
@@ -241,3 +260,45 @@ def _presets(engine: str, datadir: str | None) -> int:
     json.dump({query.root_key: verdict.entries}, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
+
+
+def _resolve(intent_path: Path, readback: Path | None) -> int:
+    """Ask the engine what it would resolve, and adjudicate the answer.
+
+    The exit codes are the whole point, so they are listed rather than inferred:
+
+    * **0** `sliced` -- every authored override came back as written.
+    * **1** `refused` -- slicelab established the intent cannot be honoured. The
+      intent file was not understood, or slicelab declined to compose the argv
+      (D15), or the engine denies an option exists.
+    * **2** `incomplete` -- slicelab ran and cannot stand behind the answer. An
+      override came back changed with no cause established (D27), or a key could
+      not be adjudicated.
+    * **3** `empty` -- the run verified nothing because nothing was requested. The
+      configuration was still dumped and kept (D24).
+    * **4** `error` -- an environment fault. Not a verdict on the intent.
+
+    **The first run against a build is slow**, because the option-to-key map is
+    measured by probing and there is no derivable shortcut (`notes/critique.md` G2,
+    D30). It is cached per engine and version afterwards.
+    """
+    destination = readback or intent_path.with_suffix(".readback.ini")
+    try:
+        resolved = resolve(intent_path, destination)
+    except (IntentError, PreflightError) as refusal:
+        print(render(Outcome.REFUSED, str(refusal)), file=sys.stderr)
+        return exit_code_for(Outcome.REFUSED)
+    except (ResolveError, RedactionError, CharacterisationError) as fault:
+        print(render(Outcome.ERROR, str(fault)), file=sys.stderr)
+        return exit_code_for(Outcome.ERROR)
+
+    outcome = resolved.outcome
+    detail = [f"{v.option}: {v.status.value} -- {v.reason}" for v in resolved.adjudication.verdicts]
+    detail.append(f"readback written to {resolved.sidecar}")
+    if resolved.readback.keys:
+        detail.append(f"redacted {', '.join(resolved.readback.keys)}")
+
+    summary = f"{resolved.adjudication.keys_checked} override(s) checked"
+    stream = sys.stdout if outcome is Outcome.SLICED else sys.stderr
+    print(render(outcome, summary, detail), file=stream)
+    return exit_code_for(outcome)

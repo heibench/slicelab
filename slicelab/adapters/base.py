@@ -120,6 +120,27 @@ class EngineSpec:
     flatpak_app_id: str | None
     macos_exec: tuple[str, ...] = ()
     preset_query: PresetQuery | None = None
+    secret_keys: tuple[str, ...] | None = None
+    """Keys this engine's readback carries in cleartext that must never be written out.
+
+    `None` means **unmeasured**, and writing a sidecar is refused rather than
+    risking a credential reaching a file someone commits. Not caution for its own
+    sake: PrusaSlicer's `--save` emits `printhost_apikey` and `print_host` in
+    cleartext, and the G-code footer — the same configuration by another route —
+    strips exactly those. So one artifact of this engine is safe to keep and
+    another is not, and which is which was measured rather than assumed.
+
+    They appear only under a preset triple. A bare `--save` emits none of them, so
+    a guard written against the default dump would have found nothing and reported
+    the file clean.
+
+    **This is secret hygiene and nothing else.** The frozen dossier refuted the
+    licensing rationale explicitly and flags it as a trap not to reintroduce: the
+    committed G-code already carries the same vendor payload, so withholding the
+    sidecar removes no bytes from anyone's repository. Diff noise, lock size and
+    credentials are the reasons that survived.
+    """
+
     readback_flag: str | None = None
     """The option that makes this engine dump its resolved configuration, or `None`.
 

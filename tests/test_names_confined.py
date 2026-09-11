@@ -37,6 +37,7 @@ CORE_MODULE_NAMES = (
     "preflight.py",
     "readback.py",
     "redact.py",
+    "resolve.py",
     "vocab.py",
 )
 
@@ -86,6 +87,15 @@ DECLARED_VOCABULARY = frozenset(
         "status",
         "compared",
         "observed",
+        "adjudication",
+        "text",
+        # D4's word for the engine's own configuration dump, and the mechanism
+        # named after it. slicelab's term, not any engine's.
+        "readback",
+        # The marker a removed credential leaves. Deliberately not empty, because
+        # empty is a value the engine also writes -- a reader must be able to tell
+        # "slicelab took this" from "the engine wrote nothing here".
+        "<redacted>",
         "overrides",
         "source",
         # Report/lock structural field names slicelab owns.

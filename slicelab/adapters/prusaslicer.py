@@ -108,6 +108,10 @@ SPEC = EngineSpec(
     # stderr -- the same code it returns for "that printer was not found"
     # (notes/evidence.md V5). slicelab adjudicates the artifact, never this
     # exit code (D17).
+    # Measured 2026-09-10 against a preset triple: these three are in --save's
+    # 376-key output in cleartext and stripped from the G-code footer. A bare
+    # --save emits none of them.
+    secret_keys=("print_host", "printhost_apikey", "printhost_cafile"),
     readback_flag="--save",
     # Measured 2026-09-10 across seven boolean options. `1` and `0` are the only two
     # spellings that mean the same thing everywhere: =1 resolved true and =0 resolved
