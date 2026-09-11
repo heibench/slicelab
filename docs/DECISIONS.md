@@ -220,33 +220,51 @@ XDG cache and gitignored: the default key set, the nondeterministic-setting list
 the preset catalogue, the option-to-key map (D5, [G2]).
 
 `test_no_engine_data.py` pins this, and it is worth saying **what** it pins,
-because for a while the sentence above claimed more than the file delivered. Two
-rules, answering different questions:
+because the sentence above once claimed more than the file delivered. Three rules,
+each answering a different question:
 
 - **By format** — nothing headed for the sdist may carry a suffix an engine writes
-  and slicelab authors none of. That catches an engine's *output* landing in the
-  tree, which is how a `result.json` once arrived.
-- **By content** — nothing headed for the sdist may carry a *corpus* of
-  engine-shaped key names, whatever container it is in. That catches an engine's
-  *vocabulary*, which the format rule cannot see.
+  and slicelab authors none of. Catches an engine's *output* landing in the tree,
+  which is how a `result.json` once arrived.
+- **By content** — no file's whole content may parse as a **characterisation
+  document**: a JSON object carrying `schema`, `engine`, `version` and `entries`.
+  The container is irrelevant, which is the point — `keys.txt`, `keys.csv` and an
+  extension-free file all pass the format rule and carry the map identically.
+- **By location** — `cache_path_for` must resolve outside the repository, so the
+  accident has no ordinary route in rather than only being detected once made.
 
-The second exists because the first was doing the whole job on its own and could
-not. Measured 2026-09-10: the probed option map, committed as
-`slicelab/option_key_map.py` with the engine's real 343 config keys in it, **passes**
-the format rule and **fails** the content rule. `.txt`, `.csv` and an extension-free
-file evade the format rule identically.
+### Why a shape and not a count
 
-The threshold is 40 distinct snake_case string literals. It is not tuned: the
-densest file this project writes has **8** — `tests/test_names_confined.py`, naming
-slicelab's own outcome words — and the smallest corpus D11 forbids is PrusaSlicer's
-**343** keys. Anything between those is arbitrary only in the sense that the middle
-of a chasm is.
+A first attempt counted snake_case literals and flagged a file over a threshold.
+It was wrong in three ways, and they are worth recording because the shape of the
+error recurs:
 
-Tests that consume a generated corpus **skip loudly** when it is absent, never
-pass vacuously.
+- **The threshold ratcheted against our own growth.** The densest file slicelab
+  writes went from 8 literals to 22 in a single merge. A rule whose ceiling must
+  rise as the project becomes more expressive is one that will be raised until it
+  catches nothing.
+- **It counted the wrong thing.** Measured: the 70 PrusaSlicer options with no
+  matching config key score **0** in their natural dashed form, because the pattern
+  required a leading letter — so the partial corpus offered as the threshold's
+  justification evaded at every threshold.
+- **It could not fail.** Raising the constant to 10000 left every test green,
+  because the only red-capable test sized its own fixture from the constant.
 
-*Cost:* first use of an uncharacterised build takes a few extra engine
-invocations.
+The shape rule needs no threshold: a characterisation document either parses as one
+or does not.
+
+### What it does not catch, stated rather than implied
+
+A map deliberately re-encoded as a Python literal, a base64 blob or a pickle.
+That bound is pinned by a test, so nobody closes it by accident — an earlier
+revision that also walked Python dict literals went red on
+`slicelab/engine/characterise.py`, the module that *writes* the document, and on
+the guard's own fixture. A dict with those keys is how you construct a map, not how
+you ship one.
+
+The accident this guards against is committing a **generated file**, and
+`characterise` writes JSON. Re-encoding it is a deliberate act, and no content rule
+survives a determined author.
 
 ## D12 — slicelab core is Apache-2.0, argued from the binding, not from a stale org default
 

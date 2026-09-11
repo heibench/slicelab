@@ -19,15 +19,16 @@ have reported green on the exact state that produced the incident.
 
 from __future__ import annotations
 
-import ast
 import json
-import re
 import shutil
 import subprocess
-import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
+
+from slicelab.adapters import PRUSASLICER
+from slicelab.engine.characterise import cache_path_for
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -131,130 +132,167 @@ def test_nothing_an_engine_wrote_is_headed_for_the_sdist() -> None:
     )
 
 
-#: Above what slicelab writes, far below any engine's vocabulary.
+#: The fields that identify a characterisation document and nothing else.
 #:
-#: The smallest corpus D11 forbids is PrusaSlicer's 343 config keys; OrcaSlicer's
-#: dump is 616 and the probed option map 342. What this project itself authors is
-#: two orders of magnitude below that, so any threshold in the gap is arbitrary
-#: only in the sense that the middle of a chasm is.
-#:
-#: The lower bound is deliberately NOT written down here. It moved from 8 to 22 the
-#: first time a substantial module landed, which is what a count in prose beside a
-#: growing tree does. ``test_the_threshold_keeps_headroom_over_what_we_write``
-#: measures it instead, and fails when the gap closes rather than when a comment
-#: goes stale -- as it did on its first run, which is why this is 60 and not the 40
-#: originally guessed. 60 also catches a *partial* corpus: the 70 options with no
-#: matching config key would ship under a threshold of 100.
-CORPUS_THRESHOLD = 60
-
-_KEYISH = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
+#: Not a word list to grep for -- ``tests/test_characterise.py`` names every one of
+#: these and must stay green. The rule below requires them to be **the keys of an
+#: actual mapping**, which only the document itself satisfies.
+_MAP_SIGNATURE = frozenset({"schema", "engine", "version", "entries"})
 
 
-def _snake_case_literals(path: Path) -> set[str]:
-    """Distinct snake_case string literals in a file, whatever its extension.
+def _is_characterisation(document: object) -> bool:
+    """Whether a parsed object is a characterisation map.
 
-    Read as source where it parses as Python, and as text otherwise, because the
-    point is to catch a corpus regardless of the container someone chose for it.
+    The map is what D11 most specifically forbids shipping: an engine's option
+    vocabulary, measured on someone's machine, written into XDG cache and
+    gitignored. `cache_path_for` puts it outside the repository, and this is the
+    check that the arrangement held.
+    """
+    return isinstance(document, dict) and set(document) >= _MAP_SIGNATURE
+
+
+def _carries_a_map(path: Path) -> bool:
+    """Whether a file's WHOLE CONTENT is a characterisation document.
+
+    Whole-file, deliberately, and an earlier revision that also walked Python dict
+    literals shows why: it flagged `slicelab/engine/characterise.py` -- the module
+    that *writes* the document -- and this file's own fixture. A dict with those
+    keys is how you construct a map, not how you ship one, so matching on the
+    literal makes the rule red on every file that knows the shape.
+
+    The container does not matter and the extension does not matter: the map is
+    JSON, so `keys.txt`, `keys.csv` and an extension-free file all carry it
+    identically, and all three pass the suffix rule.
+
+    **A map deliberately re-encoded as a Python literal evades this**, and that is
+    a stated bound rather than an oversight. The accident being guarded against is
+    committing a generated file; `characterise` writes JSON to the XDG cache, so
+    JSON is the form an accident takes. Re-encoding it is a deliberate act, and no
+    content rule survives a determined author -- a base64 blob evades everything.
     """
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return set()
-    if path.suffix == ".py":
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
-            return set()
-        return {
-            node.value
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and _KEYISH.match(node.value)
-        }
+        return False
+    try:
+        return _is_characterisation(json.loads(text))
+    except (json.JSONDecodeError, RecursionError):
+        return False
+
+
+def _maps_among(candidates: Iterable[str], root: Path) -> list[str]:
+    """The judging half, separated from the scanning half so it can be tested.
+
+    A previous revision asserted only over the real tree, which is supposed to be
+    clean -- so the production rule had no red state and a threshold raised to
+    10000 left every test green. Splitting the judge out is what makes the rule
+    itself checkable.
+    """
+    return sorted(c for c in candidates if (p := root / c).is_file() and _carries_a_map(p))
+
+
+def test_no_characterisation_map_is_headed_for_the_sdist() -> None:
+    """D11 by content. The format rule matches on extension and cannot see this.
+
+    The map committed as ``option_key_map.py``, ``.txt``, ``.csv`` or with no
+    extension passes the suffix rule -- measured, it does -- so the thing D11 names
+    most specifically was the one thing that rule could not catch.
+    """
+    strays = _maps_among(_sdist_candidates(), _ROOT)
+    assert not strays, (
+        "these files carry a characterisation map and would ship in the sdist, "
+        f"which D11 forbids: {strays}. It belongs in the XDG cache, gitignored."
+    )
+
+
+def _real_document() -> dict[str, object]:
+    """The document `_write_cache` writes, in miniature but in its real shape."""
     return {
-        m.group(1) for m in re.finditer(r'"([a-z][a-z0-9_]+)"', text) if _KEYISH.match(m.group(1))
+        "schema": 3,
+        "engine": "prusaslicer",
+        "version": "2.9.6",
+        "baseline_key_count": 343,
+        "volatile_keys": [],
+        "entries": {
+            "perimeters": {
+                "keys": ["perimeters"],
+                "side_effects": [],
+                "tracking": "exact",
+                "outcome": "mapped",
+            }
+        },
+        "inconclusive": 0,
     }
 
 
-def test_no_corpus_of_engine_key_names_is_headed_for_the_sdist() -> None:
-    """D11 by content, because the suffix rule alone does not pin what D11 claims.
+@pytest.mark.parametrize(
+    "name",
+    ["option-key-map.json", "keys.txt", "keys.csv", "option-key-map", "map.cache"],
+)
+def test_the_scan_reddens_on_a_planted_map_in_any_container(tmp_path: Path, name: str) -> None:
+    """Red-capability of the production rule, through the same judge it uses.
 
-    ``test_nothing_an_engine_wrote_is_headed_for_the_sdist`` matches on extension,
-    so the characterisation map -- 342 option names and the config keys they write
-    -- ships green as ``option_key_map.py``, ``.txt``, ``.csv``, or with no
-    extension at all. D11 says it is "pinned by ``test_no_engine_data.py``"; until
-    this test existed, that claim was larger than the file delivered.
-
-    The two rules answer different questions and both are kept: the suffix rule
-    catches an engine's *output format* landing in the tree (how ``result.json``
-    arrived), and this one catches an engine's *vocabulary* landing in any format.
+    The containers are the ones the suffix rule misses. Only the first has an
+    extension an engine writes; the rest are why a content rule had to exist.
     """
-    dense = {}
-    for candidate in _sdist_candidates():
-        path = _ROOT / candidate
-        if not path.is_file():
-            continue
-        found = _snake_case_literals(path)
-        if len(found) > CORPUS_THRESHOLD:
-            dense[candidate] = len(found)
-    assert not dense, (
-        "these files carry a corpus of engine-shaped key names and would ship in "
-        f"the sdist, which D11 forbids: {dense}. Generate it into the XDG cache "
-        "instead, and gitignore it."
-    )
+    (tmp_path / name).write_text(json.dumps(_real_document()), encoding="utf-8")
+    assert _maps_among([name], tmp_path) == [name]
 
 
-def test_the_corpus_rule_catches_a_map_in_any_container() -> None:
-    """Red-capability, proven against the containers the suffix rule misses.
+def test_the_scan_reddens_on_a_map_planted_in_the_real_tree() -> None:
+    """End to end, through `_sdist_candidates` rather than a fixture list.
 
-    Org contract 2.4: a check whose red state you have not observed is not a check.
-    This one's red state cannot be reached by breaking the tree, because the
-    property under test is that the tree is clean -- so the detector is run against
-    a corpus directly, in each format someone might reach for.
+    A red-capable judge does not prove the scan reaches the file. An
+    untracked-but-unignored file is exactly what `--others` is for, and this is the
+    only test that exercises that path against a real violation.
     """
-    corpus = [f"config_key_{n}" for n in range(CORPUS_THRESHOLD + 10)]
-    written = {
-        "map.py": "KEYS = " + repr(corpus),
-        "map.txt": "\n".join(f'"{k}"' for k in corpus),
-        "map.csv": ",".join(f'"{k}"' for k in corpus),
-        "option-key-map": json.dumps({k: [k] for k in corpus}),
-    }
+    planted = _ROOT / "slicelab" / "option-key-map.json"
+    assert not planted.exists(), "the fixture path is already taken"
+    planted.write_text(json.dumps(_real_document()), encoding="utf-8")
+    try:
+        assert "slicelab/option-key-map.json" in _maps_among(_sdist_candidates(), _ROOT)
+    finally:
+        planted.unlink()
+
+
+def test_a_map_re_encoded_as_python_is_a_stated_bound_not_a_silent_one() -> None:
+    """The limit, pinned so nobody closes it by reintroducing the false positives.
+
+    Walking Python dict literals for the signature was tried and reverted: it made
+    the rule red on `characterise.py`, the module that writes the document, and on
+    this file's own fixture. Both are code that knows the shape rather than data
+    that is one.
+    """
+    import tempfile
+
     with tempfile.TemporaryDirectory() as scratch:
-        for name, body in written.items():
-            path = Path(scratch) / name
-            path.write_text(body, encoding="utf-8")
-            found = _snake_case_literals(path)
-            assert len(found) > CORPUS_THRESHOLD, f"{name} evaded the corpus rule"
+        path = Path(scratch) / "option_key_map.py"
+        path.write_text("MAP = " + repr(_real_document()), encoding="utf-8")
+        assert not _carries_a_map(path)
 
 
-def test_the_corpus_rule_is_not_red_on_what_slicelab_writes() -> None:
-    """A guard on the guard: a rule red on our own source would be deleted, not fixed."""
-    ours = _ROOT / "slicelab" / "status.py"
-    assert ours.is_file()
-    assert len(_snake_case_literals(ours)) <= CORPUS_THRESHOLD
+def test_the_detector_is_not_red_on_the_tests_that_name_its_fields() -> None:
+    """A guard on the guard, and the reason this is a shape rule not a word list.
 
-
-def test_the_threshold_keeps_headroom_over_what_we_write() -> None:
-    """The rule is only useful while our densest file is far below the line.
-
-    Measured rather than asserted, because the number moves: it was 8 when this
-    test was written and 22 one merge later. If slicelab ever legitimately authors
-    a file near the threshold, this fails and the rule needs rethinking -- which is
-    the honest failure, rather than a comment quietly describing a tree that has
-    moved on.
+    ``tests/test_characterise.py`` names ``schema``, ``entries``,
+    ``baseline_key_count`` and ``volatile_keys`` throughout, because it tests the
+    thing that writes them. A rule that grepped for those words would be red on
+    the suite that proves the map works, and would have been deleted rather than
+    fixed.
     """
-    densest = max(
-        (
-            (len(_snake_case_literals(_ROOT / c)), c)
-            for c in _sdist_candidates()
-            if (_ROOT / c).is_file()
-        ),
-        default=(0, "<none>"),
-    )
-    count, where = densest
-    assert count * 2 <= CORPUS_THRESHOLD, (
-        f"{where} carries {count} snake_case literals against a threshold of "
-        f"{CORPUS_THRESHOLD}. The rule separates 'what we author' from 'a corpus' "
-        "only while there is room between them."
-    )
+    named = _ROOT / "tests" / "test_characterise.py"
+    assert named.is_file()
+    assert not _carries_a_map(named)
+    assert _maps_among(_sdist_candidates(), _ROOT) == []
+
+
+def test_the_map_is_written_outside_the_repository() -> None:
+    """The structural half: the accident this guards against should not be possible.
+
+    A content rule catches a map that reached the tree. This checks it has no
+    ordinary route in -- `cache_path_for` resolves under XDG, and nothing under
+    the repository root.
+    """
+    destination = cache_path_for(PRUSASLICER, "2.9.6").resolve()
+    assert _ROOT.resolve() not in destination.parents
+    assert "slicelab" in destination.parts
