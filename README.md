@@ -5,7 +5,7 @@ small configuration delta, slice with a real engine, and get back G-code plus a
 lock file recording exactly what that engine resolved — or a non-zero exit
 saying why slicelab will not stand behind the result.
 
-> **Status: pre-alpha. Two verbs work: `slicelab which` and `slicelab presets`.**
+> **Status: pre-alpha. Three verbs work: `slicelab which`, `slicelab presets` and `slicelab resolve`.**
 > `which` finds an installed slicer and establishes whether its exit status can be
 > believed; `presets` enumerates its printer presets. Nothing slices yet — the `slice.toml` example below is
 > what the tool is *for*, not what it currently does. See

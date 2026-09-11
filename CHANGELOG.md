@@ -7,6 +7,24 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `slicelab resolve` — reads a `slice.toml`, asks the engine what it would resolve
+  it to, and diffs that against what was asked. No artifact is produced, so a run
+  is a fraction of a second. Exits `0` sliced, `1` refused, `2` incomplete, `3`
+  empty, `4` error.
+- The option-to-key map, measured by probing each option with two sentinels. There
+  is no derivable rule: `--after-layer-gcode` writes `layer_gcode`, and a
+  dash-to-underscore transform reports a correct run as incomplete.
+- The engine's configuration dump is kept beside the report, byte for byte, with
+  credential-bearing keys replaced and named.
+
+### Fixed
+
+- The `secret_keys`, `bool_words` and `readback_flag` an engine needs are declared
+  per adapter rather than assumed. An engine that has not declared one is refused
+  rather than guessed for.
+
 ## [0.0.1] — 2026-09-06
 
 The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).

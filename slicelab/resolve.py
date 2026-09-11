@@ -23,6 +23,7 @@ The phases, and why each is separate:
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,10 +83,30 @@ def resolve(intent_path: Path, sidecar: Path) -> Resolved:
     name_map = _name_map(spec, found)
     plan = plan_resolve(intent, spec, sidecar)
 
+    # Discard any previous run's dump BEFORE launching. Without this the artifact
+    # gate cannot tell "the engine wrote this" from "the engine wrote nothing and
+    # last time's file is still here" -- and the default sidecar path is derived
+    # from the intent path, so re-running one slice.toml in one directory, the
+    # ordinary workflow, is exactly what arms it. Measured: an intent naming a
+    # printer that does not exist makes the engine exit 1 saying so and write
+    # nothing, and slicelab reported `sliced` at exit 0 against the previous run's
+    # configuration, timestamp and all. `characterise._discard` has done this since
+    # the probe existed -- "so the next probe cannot read the last one's" -- and the
+    # omission here is the whole of the defect.
+    with contextlib.suppress(OSError):
+        plan.sidecar.unlink()
+
     completed = run(argv_for(found.form, plan.argv, plan.paths))
     text = _artifact(completed, plan.sidecar, spec, intent)
     readback = redact(text, spec.secret_keys)
-    plan.sidecar.write_text(readback.text, encoding="utf-8")
+    try:
+        plan.sidecar.write_text(readback.text, encoding="utf-8")
+    except OSError as exc:
+        # Could not write the evidence. That establishes nothing about the intent,
+        # so it is an environment fault -- an uncaught traceback here exited 1,
+        # which is `refused`, and put `Traceback` where D14 requires the outcome
+        # word.
+        raise ResolveError(f"cannot write the readback to {plan.sidecar}: {exc}") from exc
 
     return Resolved(
         adjudication=diff(plan.requested, _parse(text), name_map),
@@ -142,6 +163,15 @@ def _artifact(completed, sidecar: Path, spec: EngineSpec, intent: Intent) -> str
         raise ResolveError(
             f"{spec.name} exited {completed.exit_status} and wrote no configuration. "
             "An exit status is not evidence a file exists"
+        )
+    if completed.exit_status != 0:
+        # The file exists AND the engine failed. Belt to the unlink's braces: a
+        # dump written by a run that then failed is not evidence of what that run
+        # resolved, and reading it anyway is how the stale-artifact defect returns
+        # by a different route.
+        raise ResolveError(
+            f"{spec.name} exited {completed.exit_status} having written a "
+            f"configuration: {completed.stderr.strip()[:200] or 'nothing on stderr'}"
         )
     return sidecar.read_text(encoding="utf-8", errors="replace")
 

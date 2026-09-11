@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from slicelab.intent import Intent, IntentError, read_intent
+from slicelab.intent import Intent, IntentError, IntentUnreadable, read_intent
 
 VALID = """
 [prusaslicer.base]
@@ -179,9 +179,31 @@ def test_invalid_toml_is_refused_with_the_parser_s_own_words(tmp_path: Path) -> 
         read_intent(write(tmp_path, "[prusaslicer.base\n"))
 
 
-def test_a_missing_file_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(IntentError, match="cannot read"):
+def test_a_file_that_cannot_be_read_is_not_a_verdict(tmp_path: Path) -> None:
+    """An environment fault, not a refusal (org 2.2).
+
+    `refused` asserts slicelab established the intent was not honoured. A missing
+    file, a directory where a file was named, a permission denied -- none of those
+    are a statement about the request. Folding them into `IntentError` produced
+    `refused: cannot read slice.toml: Permission denied` at exit 1.
+    """
+    with pytest.raises(IntentUnreadable, match="cannot read"):
         read_intent(tmp_path / "nope.toml")
+
+    directory = tmp_path / "adir"
+    directory.mkdir()
+    with pytest.raises(IntentUnreadable):
+        read_intent(directory)
+
+
+def test_an_unreadable_file_is_not_an_intent_error(tmp_path: Path) -> None:
+    """The split has to be visible to a caller, or it is a rename.
+
+    `cli` maps `IntentError` to `refused` and `IntentUnreadable` to `error`, so a
+    subclass relationship here would quietly put every unreadable file back on the
+    verdict channel.
+    """
+    assert not issubclass(IntentUnreadable, IntentError)
 
 
 def test_the_parser_does_not_execute_anything(tmp_path: Path) -> None:

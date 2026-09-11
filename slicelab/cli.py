@@ -19,7 +19,7 @@ from slicelab.engine.characterise import CharacterisationError
 from slicelab.engine.discover import discover
 from slicelab.engine.identity import identify
 from slicelab.engine.launch import run
-from slicelab.intent import IntentError
+from slicelab.intent import IntentError, IntentUnreadable
 from slicelab.preflight import PreflightError
 from slicelab.presets import adjudicate
 from slicelab.redact import RedactionError
@@ -288,7 +288,7 @@ def _resolve(intent_path: Path, readback: Path | None) -> int:
     except (IntentError, PreflightError) as refusal:
         print(render(Outcome.REFUSED, str(refusal)), file=sys.stderr)
         return exit_code_for(Outcome.REFUSED)
-    except (ResolveError, RedactionError, CharacterisationError) as fault:
+    except (ResolveError, RedactionError, CharacterisationError, IntentUnreadable) as fault:
         print(render(Outcome.ERROR, str(fault)), file=sys.stderr)
         return exit_code_for(Outcome.ERROR)
 

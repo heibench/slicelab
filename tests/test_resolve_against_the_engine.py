@@ -182,9 +182,15 @@ def test_the_readback_is_written_and_its_credentials_are_not(seeded, tmp_path: P
     """The sidecar is the engine's own bytes, minus a named list.
 
     Measured: a preset triple makes `--save` emit `print_host`,
-    `printhost_apikey` and `printhost_cafile` in cleartext. A bare `--save` emits
-    none of them, so a guard written against the default dump would have found
-    nothing and reported the file clean.
+    `printhost_apikey` and `printhost_cafile`; a bare `--save` emits none of them,
+    so a guard written against the default dump would have found nothing and
+    reported the file clean.
+
+    **What is measured here is that the keys appear, not that they held a value.**
+    On an unconfigured host all three are empty, so this test passes over a dump
+    containing no credential -- it establishes that the redaction reaches the right
+    lines, and `tests/test_redact.py` is where a value is shown not to survive.
+    Saying so because "emits them in cleartext" claims a measurement nobody made.
     """
     intent = tmp_path / "slice.toml"
     intent.write_text(TRIPLE + "\n[prusaslicer.set]\nperimeters = 4\n", encoding="utf-8")
@@ -303,3 +309,47 @@ def test_resolve_matches_slice_config(seeded, tmp_path: Path) -> None:
     resolved = dict(line.split(" = ", 1) for line in left if " = " in line)
     assert resolved["spiral_vase"] == "1"
     assert resolved["perimeters"] == "1", "spiral vase did not constrain perimeters"
+
+
+def test_a_previous_run_s_dump_is_never_adjudicated_as_this_run_s(seeded, tmp_path: Path) -> None:
+    """The founding defect, inside the verb written to refuse it.
+
+    `resolve` did not clear the sidecar before launching, and the artifact gate
+    asks only whether a non-empty file exists. So a run whose engine rejected every
+    preset, wrote nothing, and said so on stderr was adjudicated against the
+    PREVIOUS run's configuration -- reported `sliced` at exit 0, and the sidecar
+    kept as evidence was the earlier dump, carrying the earlier timestamp.
+
+    The default sidecar path is derived from the intent path, so re-running one
+    `slice.toml` in one directory -- the ordinary workflow -- is exactly what armed
+    it. `characterise._discard` has done this since the probe existed: "so the next
+    probe cannot read the last one's".
+    """
+    intent = tmp_path / "slice.toml"
+    sidecar = tmp_path / "slice.readback.ini"
+
+    intent.write_text(TRIPLE + "\n[prusaslicer.set]\nperimeters = 4\n", encoding="utf-8")
+    first = _run(seeded, intent)
+    assert first.returncode == 0, first.stderr
+    assert sidecar.is_file()
+    sidecar.write_text(
+        sidecar.read_text(encoding="utf-8") + "slicelab_stale_marker = FROM-RUN-ONE\n",
+        encoding="utf-8",
+    )
+
+    # An intent the engine will reject outright: it writes no configuration at all.
+    intent.write_text(
+        "[prusaslicer.base]\n"
+        'printer-profile = "No Such Printer 9000"\n'
+        'print-profile = "0.20mm QUALITY @MK3"\n'
+        'material-profile = "Prusament PLA"\n'
+        "\n[prusaslicer.set]\nperimeters = 4\n",
+        encoding="utf-8",
+    )
+    second = _run(seeded, intent)
+
+    assert second.returncode == 4, f"rc={second.returncode}\n{second.stdout}{second.stderr}"
+    assert "sliced" not in second.stdout
+    assert not sidecar.exists() or "FROM-RUN-ONE" not in sidecar.read_text(encoding="utf-8"), (
+        "the previous run's dump survived and would be served as this run's evidence"
+    )

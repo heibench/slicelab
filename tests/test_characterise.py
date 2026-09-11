@@ -889,7 +889,7 @@ def test_the_cache_round_trips_tuples_rather_than_lists(tmp_path: Path) -> None:
     )
     path = tmp_path / "m.json"
     _write_cache(path, result)
-    read = _read_cache(path)
+    read = _read_cache(path, "e", "1")
     assert read is not None
     assert read["extruder"] == result.entries["extruder"], (
         "tracking and side effects must survive the cache"
@@ -962,11 +962,11 @@ def test_a_cache_that_is_not_the_shape_we_wrote_is_a_miss(tmp_path: Path, conten
     """
     path = tmp_path / "m.json"
     path.write_text(content, encoding="utf-8")
-    assert _read_cache(path) is None
+    assert _read_cache(path, "e", "1") is None
 
 
 def test_a_missing_cache_is_a_miss(tmp_path: Path) -> None:
-    assert _read_cache(tmp_path / "nothing.json") is None
+    assert _read_cache(tmp_path / "nothing.json", "e", "1") is None
 
 
 def test_a_cached_map_is_returned_without_touching_the_engine(
@@ -1492,3 +1492,26 @@ def test_the_environment_the_cache_lands_in_is_part_of_the_test(
     monkeypatch.delenv("XDG_CACHE_HOME")
     assert os.environ.get("XDG_CACHE_HOME") is None
     assert Path.home() in cache_path_for(PRUSASLICER, "2.9.6").parents
+
+
+def test_a_cache_that_describes_a_different_build_is_a_miss(tmp_path: Path) -> None:
+    """The path is keyed by engine and version; the CONTENT was never checked.
+
+    A file sitting at the right path is not evidence it was measured there. A
+    hand-edited cache claiming a different engine and version was served verbatim
+    and produced a green run against keys the engine never writes -- while
+    `_read_cache`'s own docstring said a hand-edited cache is re-measured.
+    """
+    result = Characterisation(
+        engine="e",
+        version="1",
+        entries={"perimeters": MapEntry(("perimeters",), (), Tracking.EXACT, ProbeOutcome.MAPPED)},
+        baseline_key_count=343,
+        volatile_keys=(),
+    )
+    path = tmp_path / "m.json"
+    _write_cache(path, result)
+
+    assert _read_cache(path, "e", "1") is not None
+    assert _read_cache(path, "some-other-engine", "1") is None
+    assert _read_cache(path, "e", "99.99.99-never-existed") is None

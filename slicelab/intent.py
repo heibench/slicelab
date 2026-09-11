@@ -22,7 +22,7 @@ from typing import TypeAlias
 
 from slicelab.vocab import BASE_TABLE, ENGINE_TABLES, SET_TABLE
 
-__all__ = ["Intent", "IntentError", "IntentValue", "read_intent"]
+__all__ = ["Intent", "IntentError", "IntentUnreadable", "IntentValue", "read_intent"]
 
 IntentValue: TypeAlias = str | int | float | bool
 """What an authored override may be.
@@ -33,6 +33,18 @@ fact about that engine and lives in its adapter: PrusaSlicer 2.9.6 accepts
 giving the author the opposite of what they wrote. A parser that flattened `true` to
 `"true"` would hand the adapter a decision it could no longer see.
 """
+
+
+class IntentUnreadable(Exception):
+    """The intent file could not be read at all. An environment fault, not a verdict.
+
+    Deliberately NOT an `IntentError`. A missing file, a directory where a file was
+    named, a permission denied -- none of these establish anything about the
+    request, and org contract 2.2 is explicit that they must not reach a caller
+    wearing the same code as one that does. Folding them into `IntentError` made
+    `refused: cannot read slice.toml: Permission denied` at exit 1, which asserts
+    slicelab looked at an intent and found it wanting.
+    """
 
 
 class IntentError(Exception):
@@ -91,7 +103,7 @@ def read_intent(path: Path) -> Intent:
         with path.open("rb") as handle:
             raw = tomllib.load(handle)
     except OSError as exc:
-        raise IntentError(f"cannot read {path}: {exc}") from exc
+        raise IntentUnreadable(f"cannot read {path}: {exc}") from exc
     except UnicodeDecodeError as exc:
         raise IntentError(f"{path} is not UTF-8: {exc}") from exc
     except tomllib.TOMLDecodeError as exc:

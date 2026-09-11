@@ -20,11 +20,13 @@ Everything else — the lock file, the multi-engine story, a native backend —
 is downstream of that one move. If the readback diff is ever weakened, delete
 the project rather than ship it.
 
-**Status: pre-alpha. Two verbs work: `slicelab which` and `slicelab presets`.**
+**Status: pre-alpha. Three verbs work: `slicelab which`, `slicelab presets` and `slicelab resolve`.**
 `which` discovers an installed engine, probes whether that engine's exit status
 can be believed, and reports its identity. `presets` enumerates an engine's
-printer presets, adjudicated on the JSON rather than the exit code. Nothing
-slices, reads a `slice.toml`, or writes a lock.
+printer presets, adjudicated on the JSON rather than the exit code. `resolve` reads
+a `slice.toml`, asks the engine what it would resolve it to, and diffs that
+against what was asked -- the mechanism, without producing an artifact.
+Nothing slices or writes a lock.
 
 Treat this section as code: the moment another verb works, this paragraph is
 false and the change that made it work is not finished until it is corrected
