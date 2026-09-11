@@ -233,6 +233,16 @@ each answering a different question:
 - **By location** — `cache_path_for` must resolve outside the repository, so the
   accident has no ordinary route in rather than only being detected once made.
 
+Each of the three is pinned by its own red-capability test. The format rule was not,
+for one round: it was marked unchanged while the content rule was being given a
+judge/scan split, and emptying its vocabulary left every test green. Fixing one rule
+is not a reason to stop looking at its sibling.
+
+**Tests that consume a generated corpus skip loudly when it is absent, and never
+pass vacuously.** That sentence was dropped in an earlier rewrite of this entry and
+is restored here: it is the other half of generating rather than shipping, and
+without it a machine with no engine reports a green it did not earn.
+
 ### Why a shape and not a count
 
 A first attempt counted snake_case literals and flagged a file over a threshold.
@@ -244,9 +254,17 @@ error recurs:
   rise as the project becomes more expressive is one that will be raised until it
   catches nothing.
 - **It counted the wrong thing.** Measured: the 70 PrusaSlicer options with no
-  matching config key score **0** in their natural dashed form, because the pattern
-  required a leading letter — so the partial corpus offered as the threshold's
-  justification evaded at every threshold.
+  matching config key score **0** in their natural dashed form, so the partial
+  corpus offered as the threshold's justification evaded at every threshold.
+
+  A first version of this entry gave the wrong reason for that — "the pattern
+  required a leading letter". **All 70 begin with a lowercase letter.** Re-measured:
+  52 carry a hyphen the extractor's character class could not match, and the other
+  18 are single words (`center`, `cut`, `datadir`, `extruder`, `info`, `load`, …)
+  with no underscore group for the pattern to find. Underscored, those same 52 do
+  match. Recorded rather than reworded, because a true figure carrying a false
+  reason is the defect this section exists to describe, committed inside the
+  description.
 - **It could not fail.** Raising the constant to 10000 left every test green,
   because the only red-capable test sized its own fixture from the constant.
 
@@ -261,6 +279,14 @@ revision that also walked Python dict literals went red on
 `slicelab/engine/characterise.py`, the module that *writes* the document, and on
 the guard's own fixture. A dict with those keys is how you construct a map, not how
 you ship one.
+
+**That is a choice, not an impossibility**, and the difference matters to whoever
+reads this next. Requiring `entries` to be a dict literal of two or more items
+clears both false positives — `_write_cache` builds `entries` as a comprehension
+rather than a literal, and the fixture has one entry — while still catching a real
+map written as `MAP = {...}`. It is not taken because it is fragile in exactly the
+way this decision distrusts: it starts failing the moment the guard's own fixture
+grows a second entry, and the accident being guarded against produces JSON anyway.
 
 The accident this guards against is committing a **generated file**, and
 `characterise` writes JSON. Re-encoding it is a deliberate act, and no content rule

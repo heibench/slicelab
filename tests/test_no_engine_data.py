@@ -122,10 +122,20 @@ def test_git_reports_a_file_list_at_all() -> None:
     assert "pyproject.toml" in candidates
 
 
+def _engine_written_among(candidates: Iterable[str]) -> list[str]:
+    """The judging half of the format rule, separated so it can be tested.
+
+    The content rule was given this split after a review found its production
+    assertion had no red state -- it runs over a tree that is supposed to be clean.
+    The format rule was marked unchanged in that round and inherited the identical
+    defect: emptying `ENGINE_WRITTEN_SUFFIXES` left every test green, and that is
+    the rule which catches the incident D11 is actually written about.
+    """
+    return sorted(c for c in candidates if Path(c).suffix.lower() in ENGINE_WRITTEN_SUFFIXES)
+
+
 def test_nothing_an_engine_wrote_is_headed_for_the_sdist() -> None:
-    strays = sorted(
-        p for p in _sdist_candidates() if Path(p).suffix.lower() in ENGINE_WRITTEN_SUFFIXES
-    )
+    strays = _engine_written_among(_sdist_candidates())
     assert not strays, (
         "these files would ship in the sdist, in formats an engine writes and "
         f"slicelab does not author, which D11 forbids: {strays}"
@@ -171,7 +181,10 @@ def _carries_a_map(path: Path) -> bool:
     content rule survives a determined author -- a base64 blob evades everything.
     """
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig, because a BOM is the one evasion ordinary tooling produces
+        # without being asked -- a Windows editor or a PowerShell redirection adds
+        # one. It is a strict superset of utf-8 for files that do not have one.
+        text = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
         return False
     try:
@@ -248,11 +261,11 @@ def test_the_scan_reddens_on_a_map_planted_in_the_real_tree() -> None:
     """
     planted = _ROOT / "slicelab" / "option-key-map.json"
     assert not planted.exists(), "the fixture path is already taken"
-    planted.write_text(json.dumps(_real_document()), encoding="utf-8")
     try:
+        planted.write_text(json.dumps(_real_document()), encoding="utf-8")
         assert "slicelab/option-key-map.json" in _maps_among(_sdist_candidates(), _ROOT)
     finally:
-        planted.unlink()
+        planted.unlink(missing_ok=True)
 
 
 def test_a_map_re_encoded_as_python_is_a_stated_bound_not_a_silent_one() -> None:
@@ -296,3 +309,39 @@ def test_the_map_is_written_outside_the_repository() -> None:
     destination = cache_path_for(PRUSASLICER, "2.9.6").resolve()
     assert _ROOT.resolve() not in destination.parents
     assert "slicelab" in destination.parts
+
+
+@pytest.mark.parametrize("name", ["result.json", "00000.log", "part.gcode", "out.bgcode"])
+def test_the_format_rule_reddens_on_an_engine_written_file(name: str) -> None:
+    """Red-capability of the rule that catches the incident D11 exists for.
+
+    `result.json` is not hypothetical: it is how engine output reached this
+    repository once already, and `00000.log` is the litter D20 and V13 are written
+    about. Without this, emptying `ENGINE_WRITTEN_SUFFIXES` left the whole suite
+    green -- a rule with no red state, guarding the original defect.
+    """
+    assert _engine_written_among([name]) == [name]
+
+
+def test_the_format_rule_is_quiet_on_what_slicelab_authors() -> None:
+    """A guard on the guard: a rule red on our own tree would be deleted, not fixed."""
+    assert _engine_written_among(["pyproject.toml", "README.md", "slicelab/cli.py"]) == []
+
+
+def test_the_format_vocabulary_is_not_empty() -> None:
+    """An empty set makes every file pass, which reads exactly like a clean tree."""
+    assert ENGINE_WRITTEN_SUFFIXES
+    assert ".json" in ENGINE_WRITTEN_SUFFIXES
+    assert ".gcode" in ENGINE_WRITTEN_SUFFIXES
+
+
+def test_the_signature_is_not_empty() -> None:
+    """`set(document) >= frozenset()` is True for every dict.
+
+    So emptying `_MAP_SIGNATURE` degrades the detector to "any JSON object" and
+    survives, because no tracked file is one. The direction is benign -- it
+    over-broadens rather than opening a hole -- but an unpinned constant that reads
+    as a tightening is worth refusing.
+    """
+    assert _MAP_SIGNATURE
+    assert not _is_characterisation({"unrelated": 1})
