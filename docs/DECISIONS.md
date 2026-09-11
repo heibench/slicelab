@@ -1296,7 +1296,7 @@ than convert into a verdict. `Characterisation.inconclusive` names them, and the
 cache records the count, so a partial map says it is partial instead of looking
 complete.
 
-This also fixes the quieter half of the same defect: 170 of Orca's 545 entries
+This also fixes the quieter half of the same defect: 171 of Orca's 546 entries
 are `INEXACT`, and under the old return type they reached the consumer
 indistinguishable from exact ones.
 

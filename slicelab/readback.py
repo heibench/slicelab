@@ -24,6 +24,19 @@ What this module will not do, in order of how much it would cost:
 * **Never compare against a key it was not told to compare against.** Where an
   option writes several keys, all of them are checked; where the engine merely
   adjusted something nearby, none of them are.
+
+An `INEXACT` entry is refused in **both** directions, and the reason usually given
+for that -- the value may be wrapped, as Orca's JSON-list keys are -- is the weaker
+half. (How many entries that is on a given engine is in D30's measured table, not
+repeated here: a count in prose beside the thing it counts is a claim that rots,
+and this one already had two different values in two files.)
+
+The half that decides it is `characterise.py`'s: an inexact entry is one where
+**the side-effect separation did not happen**, so its `keys` may contain the
+engine's dependent constraints rather than the option's own. `--spiral-vase` probed
+at the sentinels `('true', '1')` yields `INEXACT` carrying all five keys and zero
+side effects. Adjudicating that would resurrect G4's false red against keys nobody
+requested, which is a stronger objection than a wrapped value.
 """
 
 from __future__ import annotations
@@ -156,20 +169,41 @@ def _adjudicate(
             "it was honoured",
         )
 
-    if entry.tracking is Tracking.INEXACT:
-        # The keys merely moved between two sentinels; none carried either value
-        # verbatim. So how the authored value lands in the key is unknown, and
-        # both answers would be invented: equality would be a green we cannot
-        # support, inequality a finding against a key that may never have been
-        # meant to hold the value. Orca's JSON-list keys are 170 of these.
+    if entry.tracking is not Tracking.EXACT or not entry.keys:
+        # A WHITELIST, and the distinction is the whole finding. An earlier revision
+        # asked `is Tracking.INEXACT` -- adjudicate everything except one named
+        # failure -- while the module's stated principle is the opposite: adjudicate
+        # only what was measured exactly. Two live routes to a false `applied` came
+        # through that inversion, both via the cache loader, which `_read_cache`
+        # itself anticipates ("a truncated or hand-edited cache"):
+        #
+        #   MAPPED with keys=()      -> `missing` and `differing` are both empty
+        #                               comprehensions over an empty tuple, so both
+        #                               guards pass and the verdict is `applied`
+        #                               over ZERO compared keys, reason and all.
+        #                               That is G1's vacuous green one level down,
+        #                               inside the module written to refuse it.
+        #   MAPPED with tracking=None -> never EXACT, never INEXACT, so it fell
+        #                               through to the strict-equality path reserved
+        #                               for a measurement nobody made.
+        #
+        # This is also D26's lesson for the third time in this project: a rule that
+        # names what it refuses is only as complete as the list, and a rule that
+        # names what it permits is complete by construction.
+        if not entry.keys:
+            return verdict(
+                KeyStatus.UNVALIDATED,
+                "the probe recorded no keys for this option, so there is nothing a "
+                "comparison could look at",
+            )
         return verdict(
             KeyStatus.UNVALIDATED,
             "the probe could not tie this option's value to its keys verbatim, so the "
             "comparison would not mean what it appears to",
-            entry.keys,
         )
 
     missing = [key for key in entry.keys if key not in resolved]
+    differing = [key for key in entry.keys if key in resolved and resolved[key] != value]
     if missing:
         # Absence is not evidence: the readback's key SET is value-dependent --
         # `bed_custom_texture` is in no default dump and appears the moment it is
@@ -177,11 +211,11 @@ def _adjudicate(
         return verdict(
             KeyStatus.ABSENT,
             f"{', '.join(missing)} did not appear in the readback, and a key set that "
-            "varies with its values cannot make absence mean anything",
+            "varies with its values cannot make absence mean anything"
+            + (f"; separately, {', '.join(differing)} came back different" if differing else ""),
             entry.keys,
         )
 
-    differing = [key for key in entry.keys if resolved[key] != value]
     if differing:
         # Requested is not resolved, and the cause is unknown (D27). Not `refused`:
         # slicelab cannot tell the engine ignoring a request from the engine

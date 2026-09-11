@@ -216,3 +216,67 @@ def test_verdicts_are_ordered_deterministically() -> None:
     second = diff({"a-opt": "1", "b-opt": "1", "c-opt": "1"}, resolved, m)
     assert [v.option for v in first.verdicts] == ["a-opt", "b-opt", "c-opt"]
     assert [v.option for v in first.verdicts] == [v.option for v in second.verdicts]
+
+
+def test_a_mapped_entry_with_no_keys_is_never_green() -> None:
+    """The false `applied` that reached this module through its own cache loader.
+
+    With `keys=()`, `missing` and `differing` are both empty comprehensions over an
+    empty tuple, so both guards pass and the verdict was `applied` over **zero**
+    compared keys -- printing "every key this option writes came back '4'", which is
+    vacuously true of nothing. That is G1's defect one level down, inside the module
+    whose `keys_checked` docstring names that exact shape as the thing it refuses.
+
+    `_probe_one` cannot build this; `_read_cache` can, and its own docstring
+    anticipates a truncated or hand-edited cache.
+    """
+    entry = MapEntry(keys=(), side_effects=(), tracking=Tracking.EXACT, outcome=ProbeOutcome.MAPPED)
+    r = diff({"perimeters": "4"}, {"perimeters": "1"}, {"perimeters": entry})
+    assert r.verdicts[0].status is KeyStatus.UNVALIDATED
+    assert r.verdicts[0].status is not KeyStatus.APPLIED
+    assert r.outcome is not Outcome.SLICED
+
+
+def test_an_entry_whose_tracking_was_never_established_is_never_green() -> None:
+    """The second route in, and the same bug: a blacklist instead of a whitelist.
+
+    `tracking=None` is neither EXACT nor INEXACT, so a test written as "refuse
+    INEXACT" let it through to the strict-equality path reserved for a measurement
+    nobody made -- and agreeing values then read as `applied`.
+    """
+    entry = MapEntry(
+        keys=("perimeters",), side_effects=(), tracking=None, outcome=ProbeOutcome.MAPPED
+    )
+    agreeing = diff({"perimeters": "4"}, {"perimeters": "4"}, {"perimeters": entry})
+    assert agreeing.verdicts[0].status is KeyStatus.UNVALIDATED
+    assert agreeing.outcome is not Outcome.SLICED
+
+
+def test_only_an_exact_entry_is_ever_adjudicated() -> None:
+    """The rule stated positively, so a new tracking value cannot slip through.
+
+    A blacklist is only as complete as its list; this is complete by construction.
+    D26 records the same lesson for the boundary guard, and it is the third time in
+    this project that naming what is refused turned out to name too little.
+    """
+    for tracking in (None, Tracking.INEXACT):
+        entry = MapEntry(
+            keys=("perimeters",), side_effects=(), tracking=tracking, outcome=ProbeOutcome.MAPPED
+        )
+        r = diff({"perimeters": "4"}, {"perimeters": "4"}, {"perimeters": entry})
+        assert r.verdicts[0].status is KeyStatus.UNVALIDATED, tracking
+
+
+def test_an_absence_does_not_hide_an_established_disagreement() -> None:
+    """One key missing and two actively wrong: slicelab DID establish a disagreement.
+
+    Reporting only the absence points an investigator at the key nothing is known
+    about, which is what G2's "record what was compared" action exists to prevent.
+    """
+    entry = mapped("infill_extruder", "perimeter_extruder", "solid_infill_extruder")
+    resolved = {"infill_extruder": "9", "perimeter_extruder": "9"}
+    r = diff({"extruder": "2"}, resolved, {"extruder": entry})
+    reason = r.verdicts[0].reason
+    assert r.verdicts[0].status is KeyStatus.ABSENT
+    assert "solid_infill_extruder" in reason
+    assert "infill_extruder" in reason and "came back different" in reason

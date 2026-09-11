@@ -134,7 +134,26 @@ class KeyStatus(StrEnum):
     vocabulary is empty (D2), because there is nothing to decline."""
 
     UNVALIDATED = "unvalidated"
-    """A passthrough key that did not surface in the readback."""
+    """slicelab could not adjudicate this key, and the cause is in ``reason``.
+
+    **Eight distinct causes arrive here**, which is more than one word should
+    carry and is recorded rather than glossed:
+
+    * the characterisation never probed this option;
+    * the probe timed out, was refused every sentinel, wrote no artifact, came back
+      unstable, or switched the engine's key namespace -- five could-not-tells;
+    * the option writes no configuration key at all, so there is nothing to compare;
+    * the probe could not tie the option's value to its keys verbatim, so its keys
+      may hold the engine's dependent constraints rather than the option's own.
+
+    Collapsing several silences into one word is the shape this project refuses, and
+    it reached the status vocabulary. A consumer that must tell them apart branches
+    on the report's `reason` today; splitting this member is a vocabulary change and
+    wants a decision, not a quiet edit.
+
+    Note what is NOT here: a key the engine says does not exist is ``UNSUPPORTED``
+    and forces ``refused``, because the engine answered.
+    """
 
 
 def forced_outcome_for(status: KeyStatus) -> Outcome | None:
