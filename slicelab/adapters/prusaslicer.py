@@ -128,8 +128,17 @@ SPEC = EngineSpec(
     # contain the others -- a default preset sets no digest credentials, so nothing
     # was there to find. `readback.py` states the hazard ("the readback's key SET is
     # value-dependent"); the credential measurement was the thing it happened to.
-    # `test_credentials_are_enumerated_not_sampled` is the guard that a future build
-    # adding a thirteenth name cannot pass silently.
+    # `test_credentials_are_enumerated_not_sampled` keeps this honest, and its
+    # population comes from the BUILD rather than from a list anyone maintains: it
+    # reads credential-shaped names out of the binary's string table (118 on 2.9.6),
+    # sets each to a marker, and then rules on every credential-shaped key in the
+    # resulting dump. A hand-written tuple was the first attempt and it was the same
+    # sampling error one level up -- a name nobody listed is never set, never
+    # appears, and no check downstream can see it.
+    #
+    # The remaining limit, stated rather than implied: a credential whose NAME reads
+    # like nothing in `CREDENTIAL_NAME_WORDS`. `--help-fff` cannot close it either --
+    # 411 options and not one of these names among them.
     secret_keys=(
         "print_host",
         "printhost_apikey",

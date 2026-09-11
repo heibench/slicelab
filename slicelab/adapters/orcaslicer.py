@@ -15,7 +15,8 @@ def _options_from_settings_keys(listing: str, baseline: Mapping[str, str]) -> tu
     ``--help`` describes about fifty driver options and not one config option.
     But its help also states "setting values from the command line (highest
     priority)", and that is measured true -- ``--wall-loops=3`` exits 0, writes a
-    616-key settings dump, and ``wall_loops`` is the single key that moved.
+    settings dump -- 616 keys with no profile loaded, which is the configuration the
+    probe baselines against -- and ``wall_loops`` is the single key that moved.
 
     So the candidates come from the dump's own keys instead, dashed. **That
     transform is a guess about what to try, never a claim about what it writes.**
@@ -96,8 +97,10 @@ SPEC = EngineSpec(
     # V11's measurement, wired. The ini-versus-JSON split is the fact that makes
     # the readback seam real rather than a PrusaSlicer trick (base.py), and it
     # cannot be exercised while the flag that produces the JSON is unset.
-    # Measured 2026-09-10 on 2.4.2: rc=0, a 616-key dump, and the requested key
-    # is the only one that moved.
+    # Measured 2026-09-10 on 2.4.2: rc=0, a 616-key dump with no profile loaded,
+    # and the requested key is the only one that moved. Under a profile the dump is
+    # larger and the count varies by profile -- 626 for V11's Creality triple, 639
+    # for an Artillery one -- so the figure is stated with what it counts.
     readback_flag="--export-settings",
     option_probe=PROBE,
 )

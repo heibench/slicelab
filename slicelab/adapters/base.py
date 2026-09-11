@@ -145,10 +145,19 @@ class EngineSpec:
     """The option that makes this engine dump its resolved configuration, or `None`.
 
     PrusaSlicer writes an ini with `--save`; OrcaSlicer writes JSON with
-    `--export-settings` [V11]. Two engines, two mechanisms -- a 376-key ini and a
-    626-key JSON -- answering one question, which is the fact that makes the readback
-    seam real rather than a PrusaSlicer trick. The core asks for *a* readback and
-    never for `--save`, or D1's supersede clause is decided by default.
+    `--export-settings` [V11]. Two engines, two mechanisms answering one question,
+    which is the fact that makes the readback seam real rather than a PrusaSlicer
+    trick.
+
+    Both dumps' key counts are profile-dependent and neither number means anything
+    unqualified: PrusaSlicer is 343 keys bare and 376 under a stock preset triple;
+    Orca is 616 bare, 626 under V11's Creality triple and 639 under an Artillery
+    one. Two of those figures previously sat in two files as though they were one
+    fact about the engine, which is the rot `readback.py` warns about -- a count in
+    prose beside the thing it counts is a claim that has to be maintained by hand.
+
+    The core asks for *a* readback and never for `--save`, or D1's supersede clause
+    is decided by default.
 
     `None` means the emission form is unmeasured for this engine, and planning
     refuses rather than composing an argv nobody has run.

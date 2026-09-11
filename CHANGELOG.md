@@ -30,10 +30,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - The `secret_keys`, `bool_words` and `readback_flag` an engine needs are declared
   per adapter rather than assumed. An engine that has not declared one is refused
   rather than guessed for.
-- PrusaSlicer's credential keys were measured by enumerating the family rather than
-  reading a stock dump, which named three of six. A stock preset sets no digest
-  credentials, so `printhost_password`, `printhost_port` and `printhost_user` were
-  not present to be found and reached the readback in cleartext.
+- PrusaSlicer's credential keys were measured by enumerating them from the build
+  rather than reading a stock dump, which named three of six. A stock preset sets no
+  digest credentials, so `printhost_password`, `printhost_port` and `printhost_user`
+  were not present to be found and reached the readback in cleartext.
+- The readback is renamed into place rather than written over. `write_text`
+  truncates at open, so a failure part-way through — a full disk, a quota, an I/O
+  error — left a half-written file where the previous readback had been while the
+  run reported that nothing was established.
+- `slicelab resolve .` exited `1` with a traceback. Deriving the default readback
+  path raises on a path with an empty name, and it happened outside the handlers, so
+  a path that was never opened was reported as an intent found wanting.
 - An engine that ran, declined the request and wrote no configuration now exits `2`
   `incomplete` carrying the engine's own diagnosis, not `4` `error`. Nothing in the
   environment is faulty when the engine starts, reads the request and says no.

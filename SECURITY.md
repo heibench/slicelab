@@ -110,19 +110,26 @@ directory, left a 180-byte `result.json` behind at exit 0 — and this section
 said the tool wrote nothing. An identical file reached this repository that way
 and was committed for five commits before anyone noticed.
 
-Neither verb yet reads a `slice.toml`, slices a model, or writes a lock.
+`resolve` reads a `slice.toml` and writes a readback; `which` and `presets` read
+no file you name. None of the three slices a model or writes a lock.
 
-The inputs they accept are their own `argv` — including a `--datadir` path,
-which is resolved to an absolute path and handed to the engine, never
-interpreted by slicelab — and whatever the engines print. Engine output is
-decoded with `errors="replace"` and is never evaluated: it is matched against a
-version pattern, or parsed as JSON and checked for shape, and printed.
+**Inputs.** Their own `argv` — including a `--datadir` path, which is resolved to
+an absolute path and handed to the engine, never interpreted by slicelab — plus,
+for `resolve`, the `slice.toml` you name, and whatever the engines print. The
+intent file is parsed as TOML and every key in it is checked against the engine's
+own option names; an unrecognised one is refused, never passed through. Engine
+output is decoded with `errors="replace"` and is never evaluated: it is matched
+against a version pattern, parsed as JSON or as `key = value` lines and checked
+for shape, and printed.
 
 **Processes they will start.** `which` invokes discovered engines with `--help`
 and with one flag they are expected to reject. `presets` invokes them with the
-adapter's enumeration flag. On a host where an untrusted binary is earlier on
-`PATH` than the real slicer, that binary is what gets executed — ordinary `PATH`
-semantics, but worth stating for a tool whose job is finding executables.
+adapter's enumeration flag. `resolve` invokes the engine once per run to ask for
+its configuration — and, the **first** time it meets a given build, several
+hundred more times to measure the option-to-key map, which is then cached per
+engine and version. On a host where an untrusted binary is earlier on `PATH` than
+the real slicer, that binary is what gets executed — ordinary `PATH` semantics,
+but worth stating for a tool whose job is finding executables.
 
 This section is a status claim and part of the gate (org AGENTS.md 2.5). It has
 been rewritten every time one of its own sentences turned out to be false: when
@@ -131,7 +138,9 @@ measurement showed the "writes nothing" sentence had been false since `which`
 shipped; when the fix for *that* relocated the problem rather than removing it;
 when review found further routes back into it; and when the correction for
 **those** was found to have left the same claim standing twenty lines further
-down.
+down. And again when a correction fixed this section’s header, left its body
+describing two verbs, and was caught by the same review that had just flagged
+that habit.
 
 There is deliberately no count here any more. This paragraph carried one, and it
 kept being the false sentence — including in the commit written to fix a stale

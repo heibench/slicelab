@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -23,12 +24,18 @@ from pathlib import Path
 
 import pytest
 
+try:  # POSIX only. Importing it unguarded reddened the Windows leg at collection,
+    import resource  # which is the leg that exists to catch exactly that.
+except ImportError:  # pragma: no cover - Windows
+    resource = None  # type: ignore[assignment]
+
 from slicelab.adapters import EngineSpec
 from slicelab.engine.characterise import SCHEMA, _baseline, _probe_one, cache_path_for
-from slicelab.engine.discover import argv_for, discover
+from slicelab.engine.discover import LaunchKind, argv_for, discover
 from slicelab.engine.identity import identify
 from slicelab.engine.launch import run
-from slicelab.redact import REDACTED
+from slicelab.redact import REDACTED, Redacted
+from slicelab.resolve import ResolveError, _promote
 from tests.conftest import skip_or_fail
 
 PRESETS = {
@@ -121,37 +128,98 @@ def seeded(usable_engines: list[EngineSpec], tmp_path_factory: pytest.TempPathFa
     return env, spec, found
 
 
-#: Every `print_host*` / `printhost_*` name PrusaSlicer 2.9.6's binary carries.
-#:
-#: The probe list, not the answer. Each is SET to a marker so the dump contains
-#: what this build can emit rather than what a stock preset happens to set -- a
-#: default triple sets no digest credentials, so `printhost_password` and
-#: `printhost_user` are simply absent from it, which is how the adapter came to
-#: declare three of six. A guard reading a default dump reproduces that defect
-#: exactly; the first revision of this one did, and the mutation sweep caught it.
-CREDENTIAL_CANDIDATES = (
-    "print_host",
-    "print_host_webui",
-    "printhost_apikey",
-    "printhost_authorization_type",
-    "printhost_cafile",
-    "printhost_group",
-    "printhost_password",
-    "printhost_path",
-    "printhost_port",
-    "printhost_ssl_ignore_revoke",
-    "printhost_storage",
-    "printhost_user",
+#: Substrings that make a key name worth ruling on. Deliberately broader than any
+#: one engine's family, because the point is to catch a name nobody listed.
+CREDENTIAL_NAME_WORDS = (
+    "host",
+    "apikey",
+    "api_key",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "credential",
+    "cafile",
+    "_user",
+    "auth",
 )
+
+#: Keys whose NAMES match the pattern above and which are not credentials, each
+#: with the reason. An entry here is a claim that someone looked; a key reaching
+#: neither this nor `secret_keys` reddens the test rather than passing quietly.
+NAMED_LIKE_A_CREDENTIAL_BUT_IS_NOT = {
+    # The print-host PROTOCOL, an enum. Set to a marker via --load it comes back
+    # `prusalink` at rc=0 with nothing on stderr, so it cannot carry an author's
+    # value. It names which protocol the host speaks and nothing about which host.
+    #
+    # This key is why the name scan exists: it was in no hand-written list, and the
+    # first run of the scan found it.
+    "host_type",
+    # Coerced to the fixed word `key` whatever it is set to. An enum naming the
+    # authorization scheme, not a credential under it.
+    "printhost_authorization_type",
+    # Coerced to `0`. A boolean.
+    "printhost_ssl_ignore_revoke",
+}
 
 MARKER = "SLICELABMEASURE"
 
 
-def _dump_with_credentials_set(spec: EngineSpec, found) -> tuple[dict[str, str], str]:
-    """The engine's dump with every candidate credential key set to a marker.
+def _engine_binary(spec: EngineSpec, found) -> Path | None:
+    """The engine executable on this host, or `None` if it cannot be located.
 
-    Returns (dump, marker). `tempfile` rather than `tmp_path`, so this can be called
-    from a module-scoped context.
+    Needed because the credential family cannot be read out of any dump: the keys
+    that matter are precisely the ones an unconfigured engine does not emit. The
+    build's own string table is the only enumeration of them available, and
+    `--help-fff` is not it -- 411 options, none of these names.
+    """
+    assert found.form is not None
+    if found.form.kind is LaunchKind.PATH:
+        return Path(found.form.argv_prefix[0])
+    if spec.flatpak_app_id is None:
+        return None
+    located = run(["flatpak", "info", "--show-location", spec.flatpak_app_id], timeout=60.0)
+    if located.exit_status != 0:
+        return None
+    binary = Path(located.stdout.strip()) / "files" / "bin" / spec.posix_exec
+    return binary if binary.is_file() else None
+
+
+def _candidates_from_the_build(binary: Path) -> tuple[str, ...]:
+    """Config-key-shaped names in the binary whose spelling reads like a credential.
+
+    A CANDIDATE list, not an answer -- the same distinction `OptionProbe.candidates`
+    draws. It decides what gets SET; what gets ruled on is every credential-shaped
+    key in the resulting dump, which is a different and larger population. Over-
+    producing costs one ignored line in a `--load`ed ini, because the engine drops
+    keys it does not know (V2, asserted as this test's control).
+
+    The two populations are separate because this scan under-produces in a way worth
+    naming: `re.findall` takes maximal runs, so a name that also appears inside a
+    longer identifier is swallowed. `print_host` is exactly that -- present in the
+    binary as its own NUL-terminated string, and absent from this function's output
+    because `print_host_queue_dialog_width` and friends consume it. Ruling on the
+    dump rather than on this list is what keeps the most important key of the family
+    in scope.
+    """
+    blob = binary.read_bytes()
+    shaped = set(re.findall(rb"[a-z][a-z0-9_]{3,48}", blob))
+    return tuple(
+        sorted(
+            name
+            for name in (raw.decode("ascii") for raw in shaped)
+            if any(word in name for word in CREDENTIAL_NAME_WORDS)
+        )
+    )
+
+
+def _dump_with_credentials_set(
+    spec: EngineSpec, found, candidates: tuple[str, ...]
+) -> tuple[dict[str, str], str]:
+    """The engine's dump with every candidate set to a marker. Returns (dump, marker).
+
+    `tempfile` rather than `tmp_path`, so this can be called from a module-scoped
+    context.
     """
     assert found.form is not None
     with tempfile.TemporaryDirectory() as scratch:
@@ -162,9 +230,8 @@ def _dump_with_credentials_set(spec: EngineSpec, found) -> tuple[dict[str, str],
         # hook through is worse off than one with an awkward fixture.
         separator = " = "
         loaded.write_text(
-            "".join(
-                f"{key}{separator}{MARKER}-{i}\n" for i, key in enumerate(CREDENTIAL_CANDIDATES)
-            ),
+            "".join(f"{key}{separator}{MARKER}-{i}\n" for i, key in enumerate(candidates))
+            + f"slicelab_not_a_real_key{separator}{MARKER}-CONTROL\n",
             encoding="utf-8",
         )
         out = Path(scratch) / "dump.ini"
@@ -516,27 +583,61 @@ def test_the_engine_s_dump_never_lands_in_the_author_s_directory(seeded, tmp_pat
 
 
 def test_credentials_are_enumerated_not_sampled(seeded) -> None:
-    """Every key of this build's credential family is declared secret, or reviewed.
+    """Every credential-shaped key THIS BUILD carries is declared secret, or reviewed.
 
     `secret_keys` names what to remove, so it is only as complete as the day it was
-    measured -- the project's whitelist-over-blacklist rule, inverted. The whitelist
-    available here is over the EXCEPTIONS: a key that survives the marker is a
-    credential and must be declared; one that coerces to a fixed value carries
-    nothing an author set and is named below as reviewed. A key in neither list
-    reddens this.
+    measured -- the project's whitelist-over-blacklist rule, inverted. Making that
+    honest needs the candidate population to come from the build rather than from a
+    list someone maintains:
 
-    The control is the marker itself. A key that does not come back carrying it was
-    not actually set, so "it is not a credential" would be a conclusion about the
-    fixture rather than about the engine.
+    **The population is the binary's own string table**, filtered to names that read
+    like a credential. A hand-written tuple was the first attempt and it reproduced
+    the defect one level up -- a name nobody listed is never set, never appears in
+    any dump, and no downstream check can see it. Removing `printhost_password` from
+    both that tuple and `secret_keys` left this test green, which is exactly the
+    thirteenth-name case it claimed to catch.
+
+    **Each candidate is SET**, because the keys that matter are the ones an
+    unconfigured engine does not emit. A stock preset sets no digest credentials, so
+    a check reading a stock dump finds three of six and looks complete -- which is
+    how the adapter came to declare three.
+
+    Then: a key that comes back carrying the marker holds an author's value and must
+    be declared. A key that comes back coerced holds nothing authored and must be
+    named in `NAMED_LIKE_A_CREDENTIAL_BUT_IS_NOT` with the measurement.
+
+    The control is the fabricated key. The engine drops keys it does not know (V2),
+    so if `slicelab_not_a_real_key` survived, "it came back" would mean "`--load`
+    echoed it" and every conclusion here would be about the fixture.
     """
     spec, found = seeded[1], seeded[2]
-    #: Emitted, but the engine coerces them: measured 2026-09-11, `key` and `0`
-    #: whatever they are set to. Neither can carry an author's credential.
-    reviewed_not_credentials = {"printhost_authorization_type", "printhost_ssl_ignore_revoke"}
+    binary = _engine_binary(spec, found)
+    if binary is None:
+        skip_or_fail(f"could not locate the {spec.name} binary, so its namespace cannot be read")
 
-    dump, marker = _dump_with_credentials_set(spec, found)
-    emitted = sorted(key for key in dump if key in CREDENTIAL_CANDIDATES)
-    assert emitted, "no candidate key was emitted at all, so this test proved nothing"
+    candidates = _candidates_from_the_build(binary)
+    assert len(candidates) > 5, (
+        f"only {len(candidates)} credential-shaped names in {binary}; the scan found "
+        "almost nothing, which is a broken scan rather than a clean engine"
+    )
+
+    dump, marker = _dump_with_credentials_set(spec, found, candidates)
+    declared = set(spec.secret_keys or ())
+
+    assert "slicelab_not_a_real_key" not in dump, (
+        "a fabricated key survived into the dump, so `--load` is echoing rather than "
+        "the engine accepting -- nothing below would be a fact about the engine"
+    )
+
+    # The population to rule on is the DUMP's credential-shaped keys, not the
+    # candidate list. The list only decides what was set; a key the engine emits
+    # whose name reads like a credential has to be decided about however it got there.
+    emitted = sorted(key for key in dump if any(word in key for word in CREDENTIAL_NAME_WORDS))
+    assert emitted, "no credential-shaped key was emitted at all, so this proved nothing"
+    assert "print_host" in emitted, (
+        "print_host is not in the population being ruled on, and it is the key this "
+        "whole mechanism exists for -- the scan or the dump parse has regressed"
+    )
 
     carries_a_value = [key for key in emitted if marker in dump[key]]
     assert carries_a_value, (
@@ -544,21 +645,132 @@ def test_credentials_are_enumerated_not_sampled(seeded) -> None:
         "reached the engine and every conclusion below would be about the fixture"
     )
 
-    undeclared = [key for key in carries_a_value if key not in (spec.secret_keys or ())]
+    undeclared = sorted(key for key in carries_a_value if key not in declared)
     assert undeclared == [], (
         f"{spec.name} emits {undeclared} carrying the value that was set, and the "
         "adapter does not redact them. They reach the file the author commits."
     )
 
-    unreviewed = [
+    unreviewed = sorted(
         key
         for key in emitted
         if key not in carries_a_value
-        and key not in (spec.secret_keys or ())
-        and key not in reviewed_not_credentials
-    ]
-    assert unreviewed == [], (
-        f"{spec.name} emits {unreviewed}, which no one has decided about. Set each "
-        "to a marker and check whether the value survives: if it does, it is a "
-        "credential; if it coerces, add it to reviewed_not_credentials saying so."
+        and key not in declared
+        and key not in NAMED_LIKE_A_CREDENTIAL_BUT_IS_NOT
     )
+    assert unreviewed == [], (
+        f"{spec.name} emits {unreviewed}, which no one has decided about. Each is a "
+        "credential-shaped name this build carries that came back coerced. Confirm "
+        "that, then add it to NAMED_LIKE_A_CREDENTIAL_BUT_IS_NOT with the measurement."
+    )
+
+
+def test_resolve_hands_the_engine_a_staged_path_that_does_not_outlive_the_call(
+    seeded, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D31's property, pinned where it can actually be broken.
+
+    Asserting the directory listing afterwards does not establish this: the final
+    state is identical whether the engine wrote the destination and slicelab
+    overwrote it, or the engine wrote a staging path and slicelab promoted. That is
+    the PRE-D31 behaviour, and the test named for the property passed under a
+    mutation reinstating it.
+
+    What has to hold is that `resolve` gives `plan_resolve` two *different* paths,
+    that the engine's is somewhere slicelab owns, and that it is gone afterwards.
+    All three are observable only from inside the call, so this one runs in-process
+    against the real engine rather than through the console script.
+    """
+    from slicelab import resolve as resolve_module
+
+    monkeypatch.setenv("XDG_CACHE_HOME", seeded[0]["XDG_CACHE_HOME"])
+    seen: list[tuple[Path, Path]] = []
+    real = resolve_module.plan_resolve
+
+    def capture(intent, spec, destination, staged):
+        seen.append((destination, staged))
+        return real(intent, spec, destination, staged)
+
+    monkeypatch.setattr(resolve_module, "plan_resolve", capture)
+
+    intent = tmp_path / "slice.toml"
+    intent.write_text(TRIPLE + "\n[prusaslicer.set]\nperimeters = 4\n", encoding="utf-8")
+    destination = tmp_path / "out.ini"
+    resolve_module.resolve(intent, destination)
+
+    assert len(seen) == 1
+    asked_for, given_to_engine = seen[0]
+    assert given_to_engine != asked_for, (
+        "the engine was told to write the author's own path, so its unredacted dump "
+        "lands there and every failure before the redacted overwrite leaves it"
+    )
+    assert destination not in given_to_engine.parents
+    assert not given_to_engine.exists(), "the engine's unredacted dump outlived the call"
+    assert not given_to_engine.parent.exists(), "the staging directory outlived the call"
+    assert destination.is_file()
+
+
+def test_a_failed_promote_leaves_the_previous_readback_byte_for_byte(tmp_path: Path) -> None:
+    """The destination holds the old bytes or the new ones, never a mixture.
+
+    `write_text` truncates at open, so a failure part-way through -- a full disk, a
+    quota, an I/O error -- left a half-written file where the author's committed
+    evidence had been, while the run reported exit 4 and "nothing was established".
+    Reproduced below with a write limit rather than argued from the code.
+    """
+    if resource is None or not hasattr(resource, "RLIMIT_FSIZE"):  # pragma: no cover - Windows
+        pytest.skip("no RLIMIT_FSIZE on this platform, so a mid-write failure cannot be staged")
+
+    destination = tmp_path / "slice.readback.ini"
+    previous = "PREVIOUS-RUN-READBACK-LINE\n" * 40
+    destination.write_text(previous, encoding="utf-8")
+    before = destination.read_bytes()
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (8192, hard))
+    try:
+        with pytest.raises(ResolveError, match="cannot write the readback"):
+            _promote(Redacted(text="NEW-REDACTED-READBACK\n" * 2000, keys=()), destination)
+    finally:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+
+    assert destination.read_bytes() == before, "a failed promote destroyed the previous readback"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["slice.readback.ini"], (
+        "the partial file was left beside the destination"
+    )
+
+
+def test_a_destination_that_is_not_a_regular_file_is_never_replaced(tmp_path: Path) -> None:
+    """A rename replaces; `write_text` did not.
+
+    `--readback /dev/null` used to discard the bytes harmlessly. Renaming onto it
+    would substitute a regular file for the device node — only for a caller who can
+    write `/dev`, and only for a path they named, but a fix must not make an edge
+    case worse than it found it. A fifo stands in for the device node here so the
+    test needs no privilege.
+    """
+    if not hasattr(os, "mkfifo"):  # pragma: no cover - Windows
+        pytest.skip("no mkfifo on this platform")
+    destination = tmp_path / "readback.ini"
+    os.mkfifo(destination)
+
+    with pytest.raises(ResolveError, match="not a regular file"):
+        _promote(Redacted(text="anything\n", keys=()), destination)
+
+    assert destination.is_fifo(), "the promote replaced a device-like destination"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["readback.ini"]
+
+
+def test_a_directory_where_the_readback_goes_is_refused_not_replaced(tmp_path: Path) -> None:
+    """A directory reaches the same guard as a fifo, and nothing is left beside it.
+
+    Portable, unlike the two above: no resource limits and no mkfifo.
+    """
+    destination = tmp_path / "readback.ini"
+    destination.mkdir()
+
+    with pytest.raises(ResolveError, match="not a regular file"):
+        _promote(Redacted(text="anything\n", keys=()), destination)
+
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == ["readback.ini"]
+    assert destination.is_dir()

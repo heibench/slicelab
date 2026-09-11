@@ -1332,8 +1332,13 @@ which closed the stale read by destroying the author's evidence, and D7 says
 non-destructive for a reason.
 
 **So:** the engine is told to write inside a temporary directory `resolve` creates
-and destroys; slicelab redacts what it finds there and writes the redacted copy to
-the destination. `Plan.paths` grants the staged path and **not** the destination, so
+and destroys; slicelab redacts what it finds there, writes the redacted copy beside
+the destination, and renames it into place. The rename matters as much as the
+staging: `write_text` truncates at open, so a failure part-way through left the
+author holding a half-written file where their previous readback had been, while
+the run reported exit 4 and "nothing was established". `os.replace` is atomic on
+POSIX and on Windows, and the temporary lives in the destination's own directory
+because a cross-filesystem rename is not. `Plan.paths` grants the staged path and **not** the destination, so
 a sandboxed engine cannot reach the author's file even if it tried. This is D7's
 mechanism — "slices into a scratch directory and promotes to the destination" —
 applied to the readback, and it closes the stale read structurally: the staged path

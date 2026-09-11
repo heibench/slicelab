@@ -86,6 +86,11 @@ DECLARED_VOCABULARY = frozenset(
         "staged",
         "destination",
         "slicelab-readback-",
+        # The suffix on the half-written readback, between the write and the rename
+        # (D31). Spelled with the tool's own name rather than a bare `.part`, because
+        # `part` is a substring of OrcaSlicer's `part_cooling_fan_min_pwm` and a
+        # reader hitting this list should not have to work out which it is.
+        ".slicelab-partial",
         # POSIX stream names. `_diagnosis` labels which stream the engine spoke on,
         # because "it said nothing on either stream" and "slicelab dropped it" have
         # to be tellable apart. Neither is a config key on either engine.

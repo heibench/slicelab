@@ -81,6 +81,33 @@ def test_a_missing_intent_file_is_an_environment_fault(tmp_path: Path) -> None:
     assert "Traceback" not in done.stderr
 
 
+@pytest.mark.parametrize("argument", [".", "/", "", ".."])
+def test_a_path_that_is_not_a_file_is_an_environment_fault(argument: str) -> None:
+    """4, and no traceback, for every shape of "that is not an intent file".
+
+    `Path(".").with_suffix(...)` raises `ValueError` -- an empty name -- and the
+    call that derives the default readback path sat one line ABOVE the handlers, so
+    `slicelab resolve .` was an uncaught traceback at exit 1. Exit 1 is `refused`,
+    asserting slicelab read an intent and found it wanting, over a path it never
+    opened.
+
+    `..` is in the list because it takes a different route (`with_suffix` succeeds,
+    the open fails with `IsADirectoryError`) and reached 4 correctly all along. The
+    point of parametrizing is that a consumer cannot tell these apart and neither
+    should the exit code.
+    """
+    done = subprocess.run(
+        [sys.executable, "-m", "slicelab", "resolve", argument],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 4, f"rc={done.returncode}\n{done.stdout}{done.stderr}"
+    assert done.stderr.startswith("error"), done.stderr
+    assert "Traceback" not in done.stderr
+    assert "refused" not in done.stderr
+
+
 def test_an_unknown_engine_table_is_a_verdict(tmp_path: Path) -> None:
     """1. slicelab read the intent and established it cannot be honoured."""
     intent = tmp_path / "slice.toml"

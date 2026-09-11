@@ -38,12 +38,14 @@ class Plan:
     staged: Path
     """Where the ENGINE writes its dump. A path slicelab owns and destroys (D7, D31).
 
-    Never the author's path. The engine's dump is unredacted -- on PrusaSlicer 2.9.6
-    a preset triple emits `print_host`, `printhost_apikey`, `printhost_password`,
-    `printhost_port` and `printhost_user` in cleartext -- so writing it where the
-    author keeps their `slice.toml` puts those bytes in the directory the README's
-    git model says you commit, and leaves them there on every failure between the
-    engine's write and slicelab's redacted overwrite.
+    Never the author's path. The engine's dump is unredacted, and which credential
+    keys it carries depends on what was loaded: a stock triple on 2.9.6 emits
+    `print_host`, `printhost_apikey` and `printhost_cafile`, and setting any of the
+    digest keys adds `printhost_password`, `printhost_port` and `printhost_user`.
+    Writing that where the author keeps their `slice.toml` puts those bytes in the
+    directory the README's git model says you commit, and leaves them there on every
+    failure between the engine's write and slicelab's redacted overwrite. The full
+    measurement is on `PRUSASLICER.secret_keys`.
     """
 
     destination: Path

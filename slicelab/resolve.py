@@ -24,15 +24,20 @@ The phases, and why each is separate:
 **The engine never writes the author's file.** It writes into a staging directory
 slicelab owns and destroys, and slicelab promotes a redacted copy afterwards (D31,
 and D7's mechanism applied to the readback). The dump is unredacted at the moment
-the engine writes it -- measured on 2.9.6, a preset triple emits `print_host`,
-`printhost_apikey`, `printhost_password`, `printhost_port` and `printhost_user` in
-cleartext -- so pointing `--save` at the destination and overwriting it a moment
-later leaves those bytes on disk on every path that fails in between, in the
-directory the README's git model says you commit.
+the engine writes it: on 2.9.6 a stock preset triple emits `print_host`,
+`printhost_apikey` and `printhost_cafile` -- empty under stock presets, and
+carrying whatever a configured physical printer sets -- and `printhost_password`,
+`printhost_port` and `printhost_user` join them as soon as anything sets those.
+Which keys appear depends on what was loaded, so the list is a statement about this
+build's namespace rather than about every run. Pointing `--save` at the destination
+and overwriting it a moment later leaves those bytes on disk on every path that
+fails in between, in the directory the README's git model says you commit.
 """
 
 from __future__ import annotations
 
+import contextlib
+import os
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -109,9 +114,11 @@ def resolve(intent_path: Path, sidecar: Path) -> Resolved:
 
     name_map = _name_map(spec, found)
 
-    # The staging directory is slicelab's, and it is removed however this function
-    # leaves -- return, refusal or traceback. The engine's dump exists only inside
-    # it, so there is no path on which unredacted bytes outlive the call.
+    # The staging directory is slicelab's, and it is removed on every path this
+    # function can leave by -- return, refusal or traceback. Not on SIGKILL, which
+    # nothing can clean up after; what survives then is an unredacted dump inside a
+    # mode-0700 temporary directory, which is a much smaller exposure than the
+    # author's git tree and is the reason the destination is not the staging path.
     with tempfile.TemporaryDirectory(prefix="slicelab-readback-") as staging:
         plan = plan_resolve(intent, spec, sidecar, Path(staging) / "readback")
         completed = run(argv_for(found.form, plan.argv, plan.paths))
@@ -133,17 +140,56 @@ def _promote(readback: Redacted, destination: Path) -> None:
     engine-written dump; withholding it would leave the author with a verdict and
     nothing to check it against.
 
-    Nothing is deleted first. The destination is written, or it is left as it was and
-    the caller is told why -- there is no window in which the author's previous
-    readback is gone and the new one has not arrived.
+    **Written beside, then renamed.** `write_text` opens for writing, which truncates
+    at open, so a failure part-way through -- ENOSPC, EDQUOT, EIO, a signal -- left
+    the author holding a half-written file where their previous readback had been,
+    while slicelab reported exit 4 and "nothing was established". Reproduced with a
+    write limit: a 1191-byte readback became 8192 bytes of the new one and the old
+    content was gone. An earlier revision of this docstring asserted there was no
+    such window; there was, and D7 says stage-then-promote for exactly this reason.
+
+    `os.replace` is atomic on POSIX and on Windows, so the destination holds the old
+    bytes or the new ones and never a mixture. The temporary lives in the
+    destination's OWN directory, because a rename across filesystems is not atomic
+    and the staging directory is often on a different one.
     """
+    # A rename REPLACES what is there, which `write_text` did not: writing to
+    # `/dev/null` discarded the bytes harmlessly, whereas renaming onto it would
+    # substitute a regular file for the device node. Only reachable for a caller who
+    # can write the containing directory -- root, in a container -- and only for a
+    # destination they named explicitly, but the old behaviour was harmless and the
+    # new one is not, so the promote declines anything that is not a regular file.
+    if destination.exists() and not destination.is_file():
+        raise ResolveError(
+            f"{destination} is not a regular file, and promoting the readback would replace it"
+        )
+
     try:
-        destination.write_text(readback.text, encoding="utf-8")
+        handle = tempfile.NamedTemporaryFile(  # noqa: SIM115 - closed in the finally below
+            mode="w",
+            encoding="utf-8",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".slicelab-partial",
+            delete=False,
+        )
     except OSError as exc:
         # Could not write the evidence. That establishes nothing about the intent,
         # so it is an environment fault -- an uncaught traceback here exited 1,
         # which is `refused`, and put `Traceback` where D14 requires the outcome
         # word.
+        raise ResolveError(f"cannot write the readback to {destination}: {exc}") from exc
+
+    beside = Path(handle.name)
+    try:
+        with handle:
+            handle.write(readback.text)
+        os.replace(beside, destination)
+    except OSError as exc:
+        # Whatever failed, the partial file does not survive. `delete=False` is what
+        # lets the rename happen at all, and it also means nothing else removes this.
+        with contextlib.suppress(OSError):
+            beside.unlink()
         raise ResolveError(f"cannot write the readback to {destination}: {exc}") from exc
 
 

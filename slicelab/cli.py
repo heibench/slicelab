@@ -296,7 +296,22 @@ def _resolve(intent_path: Path, readback: Path | None) -> int:
     measured by probing and there is no derivable shortcut (`notes/critique.md` G2,
     D30). It is cached per engine and version afterwards.
     """
-    destination = readback or intent_path.with_suffix(".readback.ini")
+    try:
+        # Inside the `try`, and the reason is the bug this replaced. `with_suffix`
+        # raises ValueError on a path with an empty name -- `.`, `/`, `""` are all
+        # of them -- and it sat one line ABOVE the handlers, so `slicelab resolve .`
+        # was an uncaught traceback at exit 1. That is `refused`, asserting slicelab
+        # read an intent and found it wanting, over a path it never opened. An
+        # unrouted exception still exits, which is what makes the wrong one invisible
+        # to any test that checks only "it failed".
+        destination = readback or intent_path.with_suffix(".readback.ini")
+    except ValueError as bad_path:
+        print(
+            render(Outcome.ERROR, f"{intent_path} is not a file slicelab can read: {bad_path}"),
+            file=sys.stderr,
+        )
+        return exit_code_for(Outcome.ERROR)
+
     try:
         resolved = resolve(intent_path, destination)
     except (IntentError, PreflightError, PlanError) as refusal:
