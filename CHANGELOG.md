@@ -38,12 +38,22 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   truncates at open, so a failure part-way through — a full disk, a quota, an I/O
   error — left a half-written file where the previous readback had been while the
   run reported that nothing was established.
+- `slicelab presets --datadir '~someone/cfg'` exited `1` with a traceback when the
+  named user's home could not be determined, which is ordinary on hosts where
+  accounts are not local. Now `4`, with the reason.
 - `slicelab resolve .` exited `1` with a traceback. Deriving the default readback
   path raises on a path with an empty name, and it happened outside the handlers, so
   a path that was never opened was reported as an intent found wanting.
 - An engine that ran, declined the request and wrote no configuration now exits `2`
   `incomplete` carrying the engine's own diagnosis, not `4` `error`. Nothing in the
   environment is faulty when the engine starts, reads the request and says no.
+
+### Changed
+
+- `--readback` pointing at something that exists and is not a regular file — a
+  device node, a fifo, a directory — is now refused with exit `4`. The readback is
+  renamed into place, and a rename would replace such a destination rather than
+  write through it.
 
 ## [0.0.1] — 2026-09-06
 

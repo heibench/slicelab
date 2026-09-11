@@ -81,8 +81,11 @@ DECLARED_VOCABULARY = frozenset(
         # Where a readback lives while it is being made safe, and where it ends up
         # (D7, D31). slicelab's own file plumbing, and checked against both engines'
         # real key universes before being declared: zero matches for either name in
-        # PrusaSlicer 2.9.6's 381-key dump or OrcaSlicer 2.4.2's 639-key dump, with
-        # `layer_height` as the control that the comparison finds anything at all.
+        # PrusaSlicer 2.9.6's dump or OrcaSlicer 2.4.2's, with `layer_height` as the
+        # control that the comparison finds anything at all. Both dumps were taken
+        # under a preset triple -- the counts are profile-dependent (PrusaSlicer 343
+        # bare, 376 stock triple, 381 with the credential family loaded; Orca 616
+        # bare, 626 Creality, 639 Artillery) so no single number describes either.
         "staged",
         "destination",
         "slicelab-readback-",

@@ -138,7 +138,10 @@ SPEC = EngineSpec(
     #
     # The remaining limit, stated rather than implied: a credential whose NAME reads
     # like nothing in `CREDENTIAL_NAME_WORDS`. `--help-fff` cannot close it either --
-    # 411 options and not one of these names among them.
+    # 416 option spellings and not one of these names among them. (416, not the 411
+    # this module's own docstring names: 411 is the leading-position scan, which
+    # misses aliases. `_options_from_help_fff` returns 416 and that is the set that
+    # was checked.)
     secret_keys=(
         "print_host",
         "printhost_apikey",

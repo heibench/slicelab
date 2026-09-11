@@ -249,7 +249,19 @@ def _presets(engine: str, datadir: str | None) -> int:
         # Absolute, always. `run` gives the engine a scratch working directory
         # rather than the user's, so a relative --datadir would otherwise
         # resolve somewhere neither of them meant.
-        resolved = str(Path(datadir).expanduser().resolve()) if datadir else datadir
+        try:
+            resolved = str(Path(datadir).expanduser().resolve()) if datadir else datadir
+        except (RuntimeError, ValueError) as bad_path:
+            # `expanduser` raises RuntimeError for a `~user` whose home it cannot
+            # determine, which bash leaves literal when the user is not local (LDAP
+            # and NFS hosts) -- so `--datadir ~jsmith/cfg` reached here as an uncaught
+            # traceback at exit 1. Exit 1 is `refused`, asserting slicelab looked at
+            # the request and found it wanting, over a directory it never opened.
+            print(
+                render(Outcome.ERROR, f"cannot resolve --datadir {datadir!r}: {bad_path}"),
+                file=sys.stderr,
+            )
+            return exit_code_for(Outcome.ERROR)
         argv += ["--datadir", resolved]
     completed = run(argv)
 

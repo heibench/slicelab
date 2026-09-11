@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import stat
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -152,13 +153,31 @@ def _promote(readback: Redacted, destination: Path) -> None:
     bytes or the new ones and never a mixture. The temporary lives in the
     destination's OWN directory, because a rename across filesystems is not atomic
     and the staging directory is often on a different one.
+
+    Two things a rename does that writing in place did not, both handled here rather
+    than left to be discovered:
+
+    * **It replaces.** Writing to `/dev/null` discarded the bytes; renaming onto it
+      would substitute a regular file for the device node. So a destination that
+      exists and is not a regular file is refused above.
+    * **It substitutes a new inode**, which takes the temporary's mode -- 0600 from
+      `NamedTemporaryFile` -- where an in-place write kept whatever the file had.
+      Measured: a destination at 0644 came back 0600. `_mode_for` puts that back.
+      The remaining difference is that a hard link to the destination keeps the old
+      content instead of following, which is inherent to renaming and is noted rather
+      than fixed: the alternative is writing in place, which is the defect above.
     """
     # A rename REPLACES what is there, which `write_text` did not: writing to
     # `/dev/null` discarded the bytes harmlessly, whereas renaming onto it would
     # substitute a regular file for the device node. Only reachable for a caller who
     # can write the containing directory -- root, in a container -- and only for a
     # destination they named explicitly, but the old behaviour was harmless and the
-    # new one is not, so the promote declines anything that is not a regular file.
+    # new one is not.
+    #
+    # `exists()`/`is_file()` FOLLOW symlinks, so this declines a link to a device and
+    # allows a link to a regular file, whose target is then replaced rather than the
+    # link. That is the behaviour wanted, and it is also moot through the product:
+    # `plan_resolve` resolves the destination, so what arrives here is never a link.
     if destination.exists() and not destination.is_file():
         raise ResolveError(
             f"{destination} is not a regular file, and promoting the readback would replace it"
@@ -184,6 +203,7 @@ def _promote(readback: Redacted, destination: Path) -> None:
     try:
         with handle:
             handle.write(readback.text)
+        os.chmod(beside, _mode_for(destination))
         os.replace(beside, destination)
     except OSError as exc:
         # Whatever failed, the partial file does not survive. `delete=False` is what
@@ -191,6 +211,24 @@ def _promote(readback: Redacted, destination: Path) -> None:
         with contextlib.suppress(OSError):
             beside.unlink()
         raise ResolveError(f"cannot write the readback to {destination}: {exc}") from exc
+
+
+def _mode_for(destination: Path) -> int:
+    """The mode the promoted readback should end up with.
+
+    The destination's own, when it has one, so a file the author has already chmod'd
+    keeps what they set. Otherwise the mode an ordinary create would produce, because
+    `NamedTemporaryFile`'s 0600 is a silent change to a file the README says you
+    commit -- nobody asked for it, and a fix should not alter what it was not fixing.
+
+    Reading the umask means setting it and putting it back; there is no query. Safe
+    here because nothing in slicelab changes it concurrently.
+    """
+    with contextlib.suppress(OSError):
+        return stat.S_IMODE(destination.stat().st_mode)
+    mask = os.umask(0)
+    os.umask(mask)
+    return 0o666 & ~mask
 
 
 def _name_map(spec: EngineSpec, found: Discovery) -> Mapping[str, MapEntry]:
@@ -312,6 +350,12 @@ def _parse(text: str) -> Mapping[str, str]:
     A redacted value is `<redacted>`, and diffing against that would report a
     credential the author set as coerced -- slicelab's own removal surfacing as a
     finding about the engine.
+
+    Untested, and said so rather than left looking covered: the harm needs an
+    authored override on a key that is also redacted, and 2.9.6 has no
+    credential-bearing CLI option at all -- 416 spellings, none of them. The day an
+    engine grows one, this line is what stops the report blaming the engine for
+    slicelab's own removal.
     """
     resolved: dict[str, str] = {}
     for line in text.splitlines():

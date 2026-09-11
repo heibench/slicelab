@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -171,7 +172,7 @@ def _engine_binary(spec: EngineSpec, found) -> Path | None:
     Needed because the credential family cannot be read out of any dump: the keys
     that matter are precisely the ones an unconfigured engine does not emit. The
     build's own string table is the only enumeration of them available, and
-    `--help-fff` is not it -- 411 options, none of these names.
+    `--help-fff` is not it -- 416 option spellings, none of these names.
     """
     assert found.form is not None
     if found.form.kind is LaunchKind.PATH:
@@ -759,6 +760,34 @@ def test_a_destination_that_is_not_a_regular_file_is_never_replaced(tmp_path: Pa
 
     assert destination.is_fifo(), "the promote replaced a device-like destination"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["readback.ini"]
+
+
+def test_the_promoted_readback_keeps_the_mode_it_would_have_had(tmp_path: Path) -> None:
+    """A rename substitutes a new inode, which takes the temporary's 0600.
+
+    Writing in place kept whatever the file had. Nobody asked for the change, the
+    file is one the README says you commit, and a fix should not alter what it was
+    not fixing. An existing destination keeps its own mode; a new one gets what an
+    ordinary create would give.
+    """
+    if os.name == "nt":  # pragma: no cover - Windows has no POSIX mode bits
+        pytest.skip("no POSIX mode bits on this platform")
+
+    existing = tmp_path / "existing.ini"
+    existing.write_text("old\n", encoding="utf-8")
+    os.chmod(existing, 0o640)
+    _promote(Redacted(text="new\n", keys=()), existing)
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o640, (
+        "the promote changed a mode the author had set"
+    )
+
+    control = tmp_path / "control.ini"
+    control.write_text("what an ordinary create gives\n", encoding="utf-8")
+    fresh = tmp_path / "fresh.ini"
+    _promote(Redacted(text="new\n", keys=()), fresh)
+    assert stat.S_IMODE(fresh.stat().st_mode) == stat.S_IMODE(control.stat().st_mode), (
+        "a newly promoted readback does not have the mode an ordinary write produces"
+    )
 
 
 def test_a_directory_where_the_readback_goes_is_refused_not_replaced(tmp_path: Path) -> None:

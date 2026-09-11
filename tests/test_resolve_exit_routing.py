@@ -175,3 +175,35 @@ def test_an_engine_that_answered_with_nothing_to_adjudicate_is_incomplete(
     code = cli.main(["resolve", "slice.toml"])
     assert code == 2
     assert capsys.readouterr().err.startswith("incomplete")
+
+
+def test_a_datadir_whose_home_cannot_be_determined_is_an_environment_fault() -> None:
+    """4, not a traceback at 1 -- the same defect as `resolve .`, in the verb next door.
+
+    `Path.expanduser()` raises `RuntimeError` for a `~user` whose home directory it
+    cannot determine, and bash leaves `~jsmith/...` literal when `jsmith` is not a
+    local user, which is ordinary on LDAP and NFS hosts. Nothing caught it, so the
+    exit was CPython's 1 for an uncaught exception -- `refused`, over a directory
+    slicelab never opened.
+
+    Pre-existing, released in 0.0.1, and fixed here because this PR is what added the
+    routing module and the rule it enforces.
+    """
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "slicelab",
+            "presets",
+            "prusaslicer",
+            "--datadir",
+            "~nosuchuser99/x",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 4, f"rc={done.returncode}\n{done.stdout}{done.stderr}"
+    assert done.stderr.startswith("error"), done.stderr
+    assert "Traceback" not in done.stderr
+    assert "refused" not in done.stderr

@@ -78,7 +78,8 @@ recorded as `applied` / `coerced` / `absent`.
 Evidence: [V1] coercion at rc=0 with 0 B stderr; [V2] silent key drop at rc=0 with
 0 B stderr; [V3] `--config-compatibility=disable` does not catch V2;
 [V11]–[V12] the same diff works on OrcaSlicer through a completely different
-mechanism (a 626-key JSON export rather than a 376-key ini).
+mechanism (a JSON export rather than an ini; 626 keys against 376 for the profile
+triples V11 measured, both counts being profile-dependent).
 
 `--config-compatibility=disable` is still passed to PrusaSlicer and recorded,
 explicitly as belt-and-braces: it converts an unknown *value* into exit 1, is
