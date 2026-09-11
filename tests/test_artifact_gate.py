@@ -120,6 +120,7 @@ def test_a_run_that_reached_no_verdict_promotes_nothing(
     nothing about what the code does.
     """
     from slicelab import resolve as resolve_module
+    from slicelab.engine.discover import Discovery, ExitFidelity, LaunchForm, LaunchKind
 
     destination = tmp_path / "slice.readback.ini"
     previous = "PREVIOUS-RUN-READBACK\n"
@@ -136,13 +137,28 @@ def test_a_run_that_reached_no_verdict_promotes_nothing(
     def adjudication_that_raises(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("the adjudication could not be completed")
 
+    # Discovery is stubbed as well as the engine call. Without it this test needed a
+    # real PrusaSlicer on the host -- it passed here and reddened every CI leg, which
+    # is the "the environment a test runs in is part of the test" rule collecting on
+    # a test whose subject is the order of two function calls.
+    found = Discovery(
+        engine="prusaslicer",
+        form=LaunchForm(
+            kind=LaunchKind.PATH,
+            argv_prefix=["prusa-slicer"],
+            description="a stub, for an ordering test",
+        ),
+        fidelity=ExitFidelity.ESTABLISHED,
+        reason="stubbed for an ordering test",
+    )
+    monkeypatch.setattr(resolve_module, "discover", lambda _spec: found)
+    monkeypatch.setattr(resolve_module, "_name_map", lambda _spec, _found: {})
     monkeypatch.setattr(resolve_module, "run", engine_wrote_a_dump)
     monkeypatch.setattr(resolve_module, "argv_for", lambda _form, argv, _paths: argv)
     monkeypatch.setattr(resolve_module, "diff", adjudication_that_raises)
 
     intent = tmp_path / "slice.toml"
     intent.write_text(TRIPLE, encoding="utf-8")
-    monkeypatch.setattr(resolve_module, "_name_map", lambda _spec, _found: {})
 
     with pytest.raises(RuntimeError, match="could not be completed"):
         resolve_module.resolve(intent, destination)
