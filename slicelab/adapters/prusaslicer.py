@@ -108,10 +108,36 @@ SPEC = EngineSpec(
     # stderr -- the same code it returns for "that printer was not found"
     # (notes/evidence.md V5). slicelab adjudicates the artifact, never this
     # exit code (D17).
-    # Measured 2026-09-10 against a preset triple: these three are in --save's
-    # 376-key output in cleartext and stripped from the G-code footer. A bare
-    # --save emits none of them.
-    secret_keys=("print_host", "printhost_apikey", "printhost_cafile"),
+    # Measured 2026-09-11 by ENUMERATING the family rather than sampling a default
+    # dump, which is how the first three came to be the only three. The binary
+    # carries twelve `print_host*` / `printhost_*` names; each was set to a marker
+    # via `--load`, alongside a preset triple and `--save`, and the dump inspected:
+    #
+    #   emitted, carrying the value that was set  -> a credential, listed here
+    #     print_host  printhost_apikey  printhost_cafile
+    #     printhost_password  printhost_port  printhost_user
+    #   emitted, coerced to a fixed value         -> carries nothing authored
+    #     printhost_authorization_type (-> 'key')  printhost_ssl_ignore_revoke (-> '0')
+    #   not emitted at all
+    #     print_host_webui  printhost_group  printhost_path  printhost_storage
+    #
+    # Control, in the same run: a fabricated key was dropped from the dump [V2], so
+    # "emitted" means a real key of the saved namespace and not an echo of --load.
+    #
+    # The first three were measured against a dump that structurally could not
+    # contain the others -- a default preset sets no digest credentials, so nothing
+    # was there to find. `readback.py` states the hazard ("the readback's key SET is
+    # value-dependent"); the credential measurement was the thing it happened to.
+    # `test_credentials_are_enumerated_not_sampled` is the guard that a future build
+    # adding a thirteenth name cannot pass silently.
+    secret_keys=(
+        "print_host",
+        "printhost_apikey",
+        "printhost_cafile",
+        "printhost_password",
+        "printhost_port",
+        "printhost_user",
+    ),
     readback_flag="--save",
     # Measured 2026-09-10 across seven boolean options. `1` and `0` are the only two
     # spellings that mean the same thing everywhere: =1 resolved true and =0 resolved

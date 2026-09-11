@@ -1,8 +1,14 @@
 """The command line, and the only place a process exit code is chosen.
 
-Two verbs exist: ``which`` and ``presets``. This module is the single point at
-which slicelab's vocabulary becomes a process status, so there is one place to
-be wrong rather than seven.
+Three verbs exist: ``which``, ``presets`` and ``resolve``. This module is the
+single point at which slicelab's vocabulary becomes a process status, so there
+is one place to be wrong rather than seven.
+
+That sentence is a status claim and org contract 2.5 makes it part of the gate:
+the moment a fourth verb works, it is false, and the change that made it work is
+not finished until this paragraph and :data:`_DESCRIPTION` are corrected. Note
+:data:`_DESCRIPTION` is the text ``--help`` prints, so a stale copy there is a
+false claim in a shipped artifact rather than in a comment.
 """
 
 from __future__ import annotations
@@ -20,11 +26,12 @@ from slicelab.engine.discover import discover
 from slicelab.engine.identity import identify
 from slicelab.engine.launch import run
 from slicelab.intent import IntentError, IntentUnreadable
+from slicelab.plan import PlanError
 from slicelab.preflight import PreflightError
 from slicelab.presets import adjudicate
 from slicelab.redact import RedactionError
 from slicelab.report import render
-from slicelab.resolve import ResolveError, resolve
+from slicelab.resolve import ResolveError, ResolveIncomplete, resolve
 from slicelab.status import EXIT_USAGE, Outcome, exit_code_for
 
 __all__ = ["main"]
@@ -34,8 +41,12 @@ Drive a Slic3r-descended slicer and record exactly what it resolved.
 
 `which` reports which engine build slicelab would talk to, how it would launch
 it, and whether that engine's exit status can be believed. `presets` enumerates
-an engine's printer presets. Nothing slices yet. See docs/DECISIONS.md and the
-issue tracker.
+an engine's printer presets. `resolve` reads a slice.toml, asks the engine what
+it would resolve that to, and diffs the answer against what was asked.
+
+Nothing slices yet: `resolve` produces no G-code. It keeps the engine's own
+configuration dump beside your intent, with credential-bearing keys removed and
+named. See docs/DECISIONS.md and the issue tracker.
 """
 
 
@@ -270,10 +281,13 @@ def _resolve(intent_path: Path, readback: Path | None) -> int:
     * **0** `sliced` -- every authored override came back as written.
     * **1** `refused` -- slicelab established the intent cannot be honoured. The
       intent file was not understood, or slicelab declined to compose the argv
-      (D15), or the engine denies an option exists.
+      (D15). Reached before the engine runs, or from an option the probed map
+      already records as one this build denies.
     * **2** `incomplete` -- slicelab ran and cannot stand behind the answer. An
-      override came back changed with no cause established (D27), or a key could
-      not be adjudicated.
+      override came back changed with no cause established (D27), a key could not
+      be adjudicated, or the engine ran and left no configuration to adjudicate at
+      all -- an unknown option, a preset name that does not exist. That last case
+      carries the engine's own diagnosis, because it names the cause every time.
     * **3** `empty` -- the run verified nothing because nothing was requested. The
       configuration was still dumped and kept (D24).
     * **4** `error` -- an environment fault. Not a verdict on the intent.
@@ -285,9 +299,16 @@ def _resolve(intent_path: Path, readback: Path | None) -> int:
     destination = readback or intent_path.with_suffix(".readback.ini")
     try:
         resolved = resolve(intent_path, destination)
-    except (IntentError, PreflightError) as refusal:
+    except (IntentError, PreflightError, PlanError) as refusal:
         print(render(Outcome.REFUSED, str(refusal)), file=sys.stderr)
         return exit_code_for(Outcome.REFUSED)
+    except ResolveIncomplete as unfinished:
+        # The engine ran and answered; slicelab has nothing to adjudicate. Not 4:
+        # claiming an environment fault here asserts something about the machine
+        # nobody measured. Not 1: the exit status alone cannot separate a bad
+        # request from a broken install ([V5], [V10]).
+        print(render(Outcome.INCOMPLETE, str(unfinished)), file=sys.stderr)
+        return exit_code_for(Outcome.INCOMPLETE)
     except (ResolveError, RedactionError, CharacterisationError, IntentUnreadable) as fault:
         print(render(Outcome.ERROR, str(fault)), file=sys.stderr)
         return exit_code_for(Outcome.ERROR)

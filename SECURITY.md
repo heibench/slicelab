@@ -3,7 +3,8 @@
 ## Supported versions
 
 Only the latest release is supported. That is `0.0.1`, which claims the name and
-implements two verbs; nothing before it was published.
+implements `which` and `presets`; nothing before it was published. `resolve` is on
+`main` and unreleased.
 
 ## Reporting a vulnerability
 
@@ -17,15 +18,42 @@ package and of the slicer involved.
 
 ## Current attack surface
 
-**Two verbs are implemented: `slicelab which` and `slicelab presets`.** Together
-they:
+**Three verbs are implemented: `slicelab which`, `slicelab presets` and
+`slicelab resolve`.** Together they:
 
 - spawn slicer processes, always as an **argv list, never through a shell**, and
   always with `stdin` connected to `/dev/null`
 - read files: candidate executables (to digest them), Flatpak deployment
   directories, and — for `presets` — whatever profile bundle the engine reads
   under the `--datadir` you name
-- perform **no network access** and read **no configuration file of their own**
+- perform **no network access**. `which` and `presets` read no configuration file
+  of their own; `resolve` reads the `slice.toml` you name and nothing else
+
+**`resolve` and credentials.** `resolve` asks the engine to dump its resolved
+configuration and keeps that dump beside your intent, because it is the evidence
+the run happened as described. On PrusaSlicer 2.9.6 that dump carries
+`print_host`, `printhost_apikey`, `printhost_cafile`, `printhost_password`,
+`printhost_port` and `printhost_user` **in cleartext** whenever a loaded preset
+sets them. So:
+
+- the engine writes into a temporary directory slicelab creates and destroys, and
+  is never granted the path you named. The file you keep is written only by
+  slicelab, only after those keys have been replaced with `<redacted>`, and only
+  for a run that produced a configuration to redact
+- what was removed is listed in the report by name. The file is the engine's
+  output minus a named list, which is a statable thing; "complete" would be false
+- an engine whose credential-bearing keys have **not been measured** is refused
+  rather than guessed for. Writing the dump would be the one mistake here that
+  puts a secret in a file someone commits, so the unmeasured case declines
+- the keys were established by enumerating the family and setting each to a
+  marker, not by reading a stock dump. A stock preset sets no digest credentials,
+  so a measurement taken against one finds three of the six and looks complete
+
+**Values you write in `[set]` reach the engine as command-line arguments**, and a
+process's argv is readable by other users on the same machine. On 2.9.6 no
+credential-bearing option exists — there is no `--printhost-apikey` — so nothing
+authorable through `[set]` is a secret today. If a future engine adds one, this is
+the boundary that changes.
 
 **What gets written, and where.** slicelab writes scratch directories under
 `~/.cache/slicelab/engine-cwd`, or under `$XDG_CACHE_HOME` when that is set to

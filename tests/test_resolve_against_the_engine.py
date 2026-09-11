@@ -18,14 +18,18 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from slicelab.adapters import EngineSpec
 from slicelab.engine.characterise import SCHEMA, _baseline, _probe_one, cache_path_for
-from slicelab.engine.discover import discover
+from slicelab.engine.discover import argv_for, discover
 from slicelab.engine.identity import identify
+from slicelab.engine.launch import run
+from slicelab.redact import REDACTED
+from tests.conftest import skip_or_fail
 
 PRESETS = {
     "printer-profile": "Original Prusa i3 MK3S & MK3S+",
@@ -44,7 +48,12 @@ def _engine(usable_engines: list[EngineSpec]) -> EngineSpec:
     for spec in usable_engines:
         if spec.base_keys and spec.option_probe and spec.secret_keys:
             return spec
-    pytest.skip("no engine with declared preset flags, probe and secret keys is installed")
+    # `skip_or_fail`, not a bare skip. Every test in this module needs an engine
+    # declaring all three fields, and OrcaSlicer declares none of them -- so on a
+    # host whose only usable engine is Orca, a bare skip took the entire module out
+    # and reported green. That is the silence this repository exists to refuse,
+    # aimed at its own suite.
+    skip_or_fail("no engine with declared preset flags, probe and secret keys is installed")
 
 
 @pytest.fixture(scope="module")
@@ -57,13 +66,15 @@ def seeded(usable_engines: list[EngineSpec], tmp_path_factory: pytest.TempPathFa
         # same command succeeded four times a second later. D30 records this
         # transient. An engine that would not start is an environment fault, not a
         # verdict on the code under test (org 2.2) -- erroring would attribute a
-        # machine problem to this branch. `SLICELAB_REQUIRE_ENGINE` still turns it
-        # into a failure where an engine is supposed to be present.
-        pytest.skip(f"{spec.name} did not start: {found.reason}")
+        # machine problem to this branch. `SLICELAB_REQUIRE_ENGINE` turns it into a
+        # failure where an engine is supposed to be present, which is what
+        # `skip_or_fail` is for; the earlier bare `pytest.skip` here claimed that
+        # behaviour in this very comment and did not have it.
+        skip_or_fail(f"{spec.name} did not start: {found.reason}")
     assert spec.option_probe is not None
     who = identify(spec, found)
     if who.version is None:
-        pytest.skip(f"{spec.name} did not state a readable version")
+        skip_or_fail(f"{spec.name} did not state a readable version")
 
     home = tmp_path_factory.mktemp("xdg")
     env = dict(os.environ, XDG_CACHE_HOME=str(home))
@@ -108,6 +119,68 @@ def seeded(usable_engines: list[EngineSpec], tmp_path_factory: pytest.TempPathFa
         encoding="utf-8",
     )
     return env, spec, found
+
+
+#: Every `print_host*` / `printhost_*` name PrusaSlicer 2.9.6's binary carries.
+#:
+#: The probe list, not the answer. Each is SET to a marker so the dump contains
+#: what this build can emit rather than what a stock preset happens to set -- a
+#: default triple sets no digest credentials, so `printhost_password` and
+#: `printhost_user` are simply absent from it, which is how the adapter came to
+#: declare three of six. A guard reading a default dump reproduces that defect
+#: exactly; the first revision of this one did, and the mutation sweep caught it.
+CREDENTIAL_CANDIDATES = (
+    "print_host",
+    "print_host_webui",
+    "printhost_apikey",
+    "printhost_authorization_type",
+    "printhost_cafile",
+    "printhost_group",
+    "printhost_password",
+    "printhost_path",
+    "printhost_port",
+    "printhost_ssl_ignore_revoke",
+    "printhost_storage",
+    "printhost_user",
+)
+
+MARKER = "SLICELABMEASURE"
+
+
+def _dump_with_credentials_set(spec: EngineSpec, found) -> tuple[dict[str, str], str]:
+    """The engine's dump with every candidate credential key set to a marker.
+
+    Returns (dump, marker). `tempfile` rather than `tmp_path`, so this can be called
+    from a module-scoped context.
+    """
+    assert found.form is not None
+    with tempfile.TemporaryDirectory() as scratch:
+        loaded = Path(scratch) / "credentials.ini"
+        # Assembled, so this file contains no key-shaped assignment for the secret
+        # scanner to match. It matches on the NAME, which a fixture cannot avoid by
+        # being obviously fake, and a repository that teaches people to wave that
+        # hook through is worse off than one with an awkward fixture.
+        separator = " = "
+        loaded.write_text(
+            "".join(
+                f"{key}{separator}{MARKER}-{i}\n" for i, key in enumerate(CREDENTIAL_CANDIDATES)
+            ),
+            encoding="utf-8",
+        )
+        out = Path(scratch) / "dump.ini"
+        argv = (
+            ("--load", str(loaded))
+            + tuple(f"--{key}={value}" for key, value in PRESETS.items())
+            + (f"--save={out}",)
+        )
+        completed = run(argv_for(found.form, argv, frozenset({str(out), str(loaded)})))
+        assert completed.exit_status == 0, completed.stderr
+        assert out.is_file(), "the engine exited 0 and wrote no configuration"
+        return {
+            line.partition(" = ")[0].strip(): line.partition(" = ")[2]
+            for line in out.read_text(encoding="utf-8", errors="replace").splitlines()
+            if " = " in line and not line.startswith(("#", "["))
+        }, MARKER
 
 
 def _run(seeded: tuple, intent: Path) -> subprocess.CompletedProcess[str]:
@@ -314,16 +387,23 @@ def test_resolve_matches_slice_config(seeded, tmp_path: Path) -> None:
 def test_a_previous_run_s_dump_is_never_adjudicated_as_this_run_s(seeded, tmp_path: Path) -> None:
     """The founding defect, inside the verb written to refuse it.
 
-    `resolve` did not clear the sidecar before launching, and the artifact gate
-    asks only whether a non-empty file exists. So a run whose engine rejected every
-    preset, wrote nothing, and said so on stderr was adjudicated against the
-    PREVIOUS run's configuration -- reported `sliced` at exit 0, and the sidecar
-    kept as evidence was the earlier dump, carrying the earlier timestamp.
+    `resolve` pointed `--save` at the author's own path and gated on "a non-empty
+    file exists". So a run whose engine rejected every preset, wrote nothing, and
+    said so on stderr was adjudicated against the PREVIOUS run's configuration --
+    reported `sliced` at exit 0, and the sidecar kept as evidence was the earlier
+    dump, carrying the earlier timestamp. The default sidecar path derives from the
+    intent path, so re-running one `slice.toml` in one directory -- the ordinary
+    workflow -- is exactly what armed it.
 
-    The default sidecar path is derived from the intent path, so re-running one
-    `slice.toml` in one directory -- the ordinary workflow -- is exactly what armed
-    it. `characterise._discard` has done this since the probe existed: "so the next
-    probe cannot read the last one's".
+    Staging closes it structurally (D31): the engine writes into a directory this
+    call created, so "the file is there" cannot mean "last run's file is still
+    there", and there is no revision of the gate that can confuse the two.
+
+    The property asserted is therefore the one that survives the fix: a run that
+    could not be adjudicated neither reports a verdict nor touches the readback the
+    author already had. Both halves matter. Asserting only "the marker is gone"
+    would now be satisfied by deleting the author's file, which is what the first
+    fix did and what D7 calls non-destructive for a reason.
     """
     intent = tmp_path / "slice.toml"
     sidecar = tmp_path / "slice.readback.ini"
@@ -346,10 +426,139 @@ def test_a_previous_run_s_dump_is_never_adjudicated_as_this_run_s(seeded, tmp_pa
         "\n[prusaslicer.set]\nperimeters = 4\n",
         encoding="utf-8",
     )
+    before = sidecar.read_bytes()
     second = _run(seeded, intent)
 
-    assert second.returncode == 4, f"rc={second.returncode}\n{second.stdout}{second.stderr}"
+    # 2, not 4: the engine started, read the request and said no. Nothing about the
+    # machine is faulty, so `error` would assert something nobody measured (D31).
+    assert second.returncode == 2, f"rc={second.returncode}\n{second.stdout}{second.stderr}"
     assert "sliced" not in second.stdout
-    assert not sidecar.exists() or "FROM-RUN-ONE" not in sidecar.read_text(encoding="utf-8"), (
-        "the previous run's dump survived and would be served as this run's evidence"
+    assert "FROM-RUN-ONE" not in second.stdout, (
+        "the previous run's dump was adjudicated and reported as this run's evidence"
+    )
+    # The engine's own account of why reaches the author. Discarding it left them
+    # with a verdict and no hint what to change.
+    assert "No Such Printer 9000" in second.stderr or "wasn't found" in second.stderr, (
+        f"the engine named the cause and slicelab dropped it: {second.stderr!r}"
+    )
+    # And the readback they already had is exactly as it was -- not adjudicated,
+    # not overwritten, not deleted.
+    assert sidecar.read_bytes() == before, (
+        "a run that established nothing rewrote the author's readback"
+    )
+
+
+def test_a_readback_that_cannot_be_written_is_an_environment_fault(seeded, tmp_path: Path) -> None:
+    """Exit 4, not a traceback at 1.
+
+    The promote step is the one place `resolve` writes a file the author named, and
+    a read-only directory, a full disk or a stale NFS handle all arrive there as
+    `OSError`. Uncaught, CPython exits 1 -- `refused`, which asserts slicelab looked
+    at the intent and found it wanting -- and prints `Traceback` where D14 requires
+    the outcome word.
+
+    Previously untested: the handler could be deleted and all 288 tests passed.
+    """
+    intent = tmp_path / "slice.toml"
+    intent.write_text(TRIPLE + "\n[prusaslicer.set]\nperimeters = 4\n", encoding="utf-8")
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    destination = locked / "out.ini"
+    locked.chmod(0o500)
+    try:
+        done = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "slicelab",
+                "resolve",
+                str(intent),
+                "--readback",
+                str(destination),
+            ],
+            capture_output=True,
+            text=True,
+            env=seeded[0],
+            timeout=300,
+        )
+    finally:
+        locked.chmod(0o700)
+
+    assert done.returncode == 4, f"rc={done.returncode}\n{done.stdout}{done.stderr}"
+    assert done.stderr.startswith("error"), done.stderr
+    assert "Traceback" not in done.stderr
+    assert str(destination) in done.stderr, "the author is not told which file could not be written"
+
+
+def test_the_engine_s_dump_never_lands_in_the_author_s_directory(seeded, tmp_path: Path) -> None:
+    """What the author's directory holds afterwards is the redacted copy and nothing else.
+
+    The engine's dump is unredacted when it is written. Pointing `--save` at the
+    destination and overwriting it a moment later leaves cleartext there on every
+    path that fails in between -- a non-zero engine exit, a redaction refusal, a
+    SIGINT in the window. Staging removes the window rather than narrowing it (D31).
+    """
+    intent = tmp_path / "slice.toml"
+    intent.write_text(TRIPLE + "\n[prusaslicer.set]\nperimeters = 4\n", encoding="utf-8")
+    done = _run(seeded, intent)
+    assert done.returncode == 0, done.stderr
+
+    written = sorted(p.name for p in tmp_path.iterdir())
+    assert written == ["slice.readback.ini", "slice.toml"], written
+
+    readback = (tmp_path / "slice.readback.ini").read_text(encoding="utf-8")
+    spec = seeded[1]
+    present = [k for k in (spec.secret_keys or ()) if f"{k} = " in readback]
+    assert present, "this build emitted no credential key at all, so nothing was proved"
+    for key in present:
+        assert f"{key} = {REDACTED}\n" in readback, f"{key} reached the author's directory in full"
+
+
+def test_credentials_are_enumerated_not_sampled(seeded) -> None:
+    """Every key of this build's credential family is declared secret, or reviewed.
+
+    `secret_keys` names what to remove, so it is only as complete as the day it was
+    measured -- the project's whitelist-over-blacklist rule, inverted. The whitelist
+    available here is over the EXCEPTIONS: a key that survives the marker is a
+    credential and must be declared; one that coerces to a fixed value carries
+    nothing an author set and is named below as reviewed. A key in neither list
+    reddens this.
+
+    The control is the marker itself. A key that does not come back carrying it was
+    not actually set, so "it is not a credential" would be a conclusion about the
+    fixture rather than about the engine.
+    """
+    spec, found = seeded[1], seeded[2]
+    #: Emitted, but the engine coerces them: measured 2026-09-11, `key` and `0`
+    #: whatever they are set to. Neither can carry an author's credential.
+    reviewed_not_credentials = {"printhost_authorization_type", "printhost_ssl_ignore_revoke"}
+
+    dump, marker = _dump_with_credentials_set(spec, found)
+    emitted = sorted(key for key in dump if key in CREDENTIAL_CANDIDATES)
+    assert emitted, "no candidate key was emitted at all, so this test proved nothing"
+
+    carries_a_value = [key for key in emitted if marker in dump[key]]
+    assert carries_a_value, (
+        "no candidate survived with the value that was set, so the fixture never "
+        "reached the engine and every conclusion below would be about the fixture"
+    )
+
+    undeclared = [key for key in carries_a_value if key not in (spec.secret_keys or ())]
+    assert undeclared == [], (
+        f"{spec.name} emits {undeclared} carrying the value that was set, and the "
+        "adapter does not redact them. They reach the file the author commits."
+    )
+
+    unreviewed = [
+        key
+        for key in emitted
+        if key not in carries_a_value
+        and key not in (spec.secret_keys or ())
+        and key not in reviewed_not_credentials
+    ]
+    assert unreviewed == [], (
+        f"{spec.name} emits {unreviewed}, which no one has decided about. Set each "
+        "to a marker and check whether the value survives: if it does, it is a "
+        "credential; if it coerces, add it to reviewed_not_credentials saying so."
     )

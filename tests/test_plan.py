@@ -42,23 +42,25 @@ def test_the_argv_is_the_preset_triple_then_the_overrides_then_the_sidecar(
     that leg exists.
     """
     sidecar = tmp_path / "out.ini"
-    plan = plan_resolve(intent({"perimeters": 4}), PRUSASLICER, sidecar)
+    staged = tmp_path / "staging" / "readback"
+    plan = plan_resolve(intent({"perimeters": 4}), PRUSASLICER, sidecar, staged)
     assert plan.argv == (
         "--printer-profile=Original Prusa i3 MK3S & MK3S+",
         "--print-profile=0.20mm QUALITY @MK3",
         "--material-profile=Prusament PLA",
         "--perimeters=4",
-        f"--save={sidecar.resolve()}",
+        f"--save={staged.resolve()}",
     )
+    assert f"--save={sidecar.resolve()}" not in plan.argv
 
 
 def test_no_geometry_and_no_export_are_in_the_argv() -> None:
     """`resolve` asks what the engine WOULD resolve; it slices nothing.
 
-    That is what makes it ~0.2 s, and it is why the verb can ship before anything
-    that produces an artifact exists.
+    That is why the verb can ship before anything that produces an artifact exists.
+    Measured cost is on `plan_resolve`; it is a preset load, not "fast".
     """
-    plan = plan_resolve(intent({"perimeters": 4}), PRUSASLICER, Path(__file__))
+    plan = plan_resolve(intent({"perimeters": 4}), PRUSASLICER, Path(__file__), Path("staged"))
     joined = " ".join(plan.argv)
     assert "--export-gcode" not in joined
     assert ".stl" not in joined
@@ -68,8 +70,12 @@ def test_no_geometry_and_no_export_are_in_the_argv() -> None:
 def test_the_argv_is_deterministic_across_authoring_order() -> None:
     """A Plan is diffed by humans and compared in tests; a reordering argv is one
     nobody can read. Base keys follow the engine's declared order, overrides sort."""
-    a = plan_resolve(intent({"perimeters": 4, "fill-density": "60%"}), PRUSASLICER, Path(__file__))
-    b = plan_resolve(intent({"fill-density": "60%", "perimeters": 4}), PRUSASLICER, Path(__file__))
+    a = plan_resolve(
+        intent({"perimeters": 4, "fill-density": "60%"}), PRUSASLICER, Path(__file__), Path("s")
+    )
+    b = plan_resolve(
+        intent({"fill-density": "60%", "perimeters": 4}), PRUSASLICER, Path(__file__), Path("s")
+    )
     assert a.argv == b.argv
 
 
@@ -80,7 +86,9 @@ def test_requested_records_the_string_that_was_emitted() -> None:
     `absent` by transforming a name, and the same trap exists for values -- a
     boolean emitted as `1` must not be compared as `True`.
     """
-    plan = plan_resolve(intent({"spiral-vase": True, "perimeters": 4}), PRUSASLICER, Path(__file__))
+    plan = plan_resolve(
+        intent({"spiral-vase": True, "perimeters": 4}), PRUSASLICER, Path(__file__), Path("s")
+    )
     assert plan.requested == {"spiral-vase": "1", "perimeters": "4"}
 
 
@@ -88,10 +96,11 @@ def test_an_empty_subject_set_plans_a_run_that_checks_nothing(tmp_path: Path) ->
     """G1/D24: the first file anyone writes. `keys_checked` is 0, and the run that
     follows is `empty` at exit 3 rather than `sliced` at 0."""
     sidecar = tmp_path / "x.ini"
-    plan = plan_resolve(intent(), PRUSASLICER, sidecar)
+    staged = tmp_path / "staging" / "readback"
+    plan = plan_resolve(intent(), PRUSASLICER, sidecar, staged)
     assert plan.keys_checked == 0
     assert plan.requested == {}
-    assert f"--save={sidecar.resolve()}" in plan.argv
+    assert f"--save={staged.resolve()}" in plan.argv
 
 
 def test_keys_checked_counts_the_authored_delta_not_the_resolution() -> None:
@@ -101,13 +110,13 @@ def test_keys_checked_counts_the_authored_delta_not_the_resolution() -> None:
     checks. Presenting it as one would be the vacuous green wearing a bigger number.
     """
     plan = plan_resolve(
-        intent({"perimeters": 4, "fill-density": "60%"}), PRUSASLICER, Path(__file__)
+        intent({"perimeters": 4, "fill-density": "60%"}), PRUSASLICER, Path(__file__), Path("s")
     )
     assert plan.keys_checked == 2
 
 
 def test_plan_is_frozen() -> None:
-    plan = plan_resolve(intent(), PRUSASLICER, Path(__file__))
+    plan = plan_resolve(intent(), PRUSASLICER, Path(__file__), Path("s"))
     try:
         plan.argv = ()  # type: ignore[misc]
     except AttributeError:
@@ -127,7 +136,25 @@ def test_a_relative_sidecar_is_resolved_before_anyone_can_disagree_about_it(
     the failure this project is named after.
     """
     monkeypatch.chdir(tmp_path)
-    plan = plan_resolve(intent({"perimeters": 4}), PRUSASLICER, Path("rel.ini"))
-    assert plan.sidecar.is_absolute()
-    assert plan.paths == frozenset({str(tmp_path / "rel.ini")})
-    assert f"--save={tmp_path / 'rel.ini'}" in plan.argv
+    plan = plan_resolve(intent({"perimeters": 4}), PRUSASLICER, Path("rel.ini"), Path("rel.staged"))
+    assert plan.destination.is_absolute()
+    assert plan.staged.is_absolute()
+    assert plan.paths == frozenset({str(tmp_path / "rel.staged")})
+    assert f"--save={tmp_path / 'rel.staged'}" in plan.argv
+
+
+def test_the_engine_is_never_granted_the_author_s_path(tmp_path: Path) -> None:
+    """The engine writes the staging path and is given access to nothing else.
+
+    Its dump is unredacted at the moment it is written -- on 2.9.6 a preset triple
+    emits six credential-bearing keys in cleartext -- so the author's directory,
+    which the README's git model says you commit, is the one place it must not land.
+    `paths` is what a sandboxed engine is granted (D19), so this is where that is
+    enforced rather than merely intended.
+    """
+    sidecar = tmp_path / "out.ini"
+    staged = tmp_path / "staging" / "readback"
+    plan = plan_resolve(intent({"perimeters": 4}), PRUSASLICER, sidecar, staged)
+    assert plan.paths == frozenset({str(staged.resolve())})
+    assert str(sidecar.resolve()) not in plan.paths
+    assert str(sidecar.resolve()) not in " ".join(plan.argv)

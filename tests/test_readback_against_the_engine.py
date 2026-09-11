@@ -70,7 +70,7 @@ def _resolve(
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Plan, run, and read the sidecar back. Returns (requested, resolved)."""
     intent = Intent(engine=spec.name, base=dict(TRIPLE), overrides=overrides, source=sidecar.parent)
-    plan = plan_resolve(intent, preflight(intent), sidecar)
+    plan = plan_resolve(intent, preflight(intent), sidecar.parent / "promoted.ini", sidecar)
     assert found.form is not None
     completed = run(argv_for(found.form, plan.argv, plan.paths))
     assert completed.signal is None

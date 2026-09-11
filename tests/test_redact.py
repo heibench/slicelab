@@ -11,7 +11,14 @@ import pytest
 from slicelab.adapters import ORCASLICER, PRUSASLICER
 from slicelab.redact import REDACTED, RedactionError, redact
 
-SECRETS = ("print_host", "printhost_apikey", "printhost_cafile")
+SECRETS = (
+    "print_host",
+    "printhost_apikey",
+    "printhost_cafile",
+    "printhost_password",
+    "printhost_port",
+    "printhost_user",
+)
 
 #: A placeholder that is not a credential and cannot be mistaken for one.
 #:
@@ -34,12 +41,23 @@ DUMP = (
     + _line("printhost_apikey", PLACEHOLDER)
     + _line("layer_height", "0.2")
     + _line("printhost_cafile", "/etc/ssl/ca.pem")
+    + _line("printhost_password", PLACEHOLDER)
+    + _line("printhost_port", "8080")
+    + _line("printhost_user", "someone")
 )
 
 
 def test_a_credential_does_not_survive() -> None:
+    """The headline property, asserted against the value the fixture actually sets.
+
+    An earlier revision asserted `"EXAMPLE-NOT-A-REAL-KEY"`, one word off from
+    PLACEHOLDER's `"EXAMPLE-NOT-A-REAL-VALUE"`. That literal is nowhere in the input,
+    so the assertion was true before `redact` was called -- the test named for the
+    property was the one test in the module that could not fail on it (org 2.4).
+    """
+    assert PLACEHOLDER in DUMP, "the fixture must contain what this test claims to remove"
     result = redact(DUMP, SECRETS)
-    assert "EXAMPLE-NOT-A-REAL-KEY" not in result.text
+    assert PLACEHOLDER not in result.text
     assert "octopi.local" not in result.text
     assert "/etc/ssl/ca.pem" not in result.text
 
@@ -58,6 +76,17 @@ def test_every_other_byte_is_left_alone() -> None:
 def test_what_was_removed_is_named() -> None:
     """ "The engine's output minus a named list" is statable; "complete" would be false."""
     assert redact(DUMP, SECRETS).keys == SECRETS
+
+
+def test_every_declared_credential_key_is_exercised_by_the_fixture() -> None:
+    """A key added to `secret_keys` with no line in DUMP would be declared and untested.
+
+    The declaration grew from three to six once the family was enumerated rather
+    than sampled; without this, the three new ones could be listed in the adapter,
+    never appear in any fixture, and every test in the module would still pass.
+    """
+    for key in PRUSASLICER.secret_keys or ():
+        assert _line(key, "").split(" = ")[0] + " = " in DUMP, f"{key} is declared but never tested"
 
 
 def test_a_removed_value_is_distinguishable_from_an_empty_one() -> None:
@@ -87,6 +116,12 @@ def test_an_engine_whose_credentials_are_unmeasured_is_refused() -> None:
 
 
 def test_the_engine_that_was_measured_declares_what_was_found() -> None:
+    """Six, not three. Measured 2026-09-11 by enumerating the `printhost_*` family
+    and setting each to a marker, rather than reading a default dump -- which is
+    how it came to be three: a default preset sets no digest credentials, so
+    `printhost_password` and `printhost_user` were not there to find. See the
+    comment on `PRUSASLICER.secret_keys` for the full result including the keys
+    that are emitted but carry nothing authored."""
     assert PRUSASLICER.secret_keys == SECRETS
 
 

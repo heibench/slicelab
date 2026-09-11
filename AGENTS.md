@@ -25,8 +25,9 @@ the project rather than ship it.
 can be believed, and reports its identity. `presets` enumerates an engine's
 printer presets, adjudicated on the JSON rather than the exit code. `resolve` reads
 a `slice.toml`, asks the engine what it would resolve it to, and diffs that
-against what was asked -- the mechanism, without producing an artifact.
-Nothing slices or writes a lock.
+against what was asked -- the mechanism, without slicing. It does write one file:
+the engine's configuration dump, staged, redacted and promoted beside the intent
+(D31). Nothing produces G-code or writes a lock.
 
 Treat this section as code: the moment another verb works, this paragraph is
 false and the change that made it work is not finished until it is corrected

@@ -78,6 +78,19 @@ DECLARED_VOCABULARY = frozenset(
         "requested",
         "sidecar",
         "paths",
+        # Where a readback lives while it is being made safe, and where it ends up
+        # (D7, D31). slicelab's own file plumbing, and checked against both engines'
+        # real key universes before being declared: zero matches for either name in
+        # PrusaSlicer 2.9.6's 381-key dump or OrcaSlicer 2.4.2's 639-key dump, with
+        # `layer_height` as the control that the comparison finds anything at all.
+        "staged",
+        "destination",
+        "slicelab-readback-",
+        # POSIX stream names. `_diagnosis` labels which stream the engine spoke on,
+        # because "it said nothing on either stream" and "slicelab dropped it" have
+        # to be tellable apart. Neither is a config key on either engine.
+        "stderr",
+        "stdout",
         # The adjudicated result: one verdict per authored override, and the keys
         # it was compared against. Slicelab's own report vocabulary, not an
         # engine's -- the engine's key names travel in the VALUES of `compared`,

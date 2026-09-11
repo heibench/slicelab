@@ -1304,3 +1304,86 @@ indistinguishable from exact ones.
 adjudicate rather than merely record, that is a change to `readback.py` and to
 D27, not to this map — the map states which keys followed the value, and that is
 the thing that was measured.
+
+## D31 — the readback is staged, redacted, then promoted; the engine never writes the author's path
+
+`resolve` asked the engine for its configuration by pointing `--save` at the path
+the author would keep, and overwrote that file with a redacted copy once it came
+back. Three things were wrong with that, and they share one cause: the engine's
+dump is unredacted at the moment the engine writes it.
+
+**Cleartext at the destination, kept on every failure in between.** Measured on
+2.9.6 with a preset triple: the dump carries `print_host`, `printhost_apikey`,
+`printhost_cafile`, `printhost_password`, `printhost_port` and `printhost_user`
+with the values that were set. Any failure between the engine's write and
+slicelab's overwrite leaves those bytes at the author's path permanently — a
+non-zero engine exit, an `OSError` on the write, a `RedactionError`, a SIGINT in
+the window. Two of those are branches `resolve` itself takes, and the report said
+nothing about the file sitting there. The directory in question is the one the
+README's git model says you commit.
+
+**A stale dump read as fresh.** Gating on "a non-empty file exists at the
+destination" cannot tell "the engine wrote this" from "the engine wrote nothing and
+last time's file is still here". The default destination derives from the intent
+path, so re-running one `slice.toml` in one directory — the ordinary workflow — was
+what armed it, and the run reported `sliced` at exit 0 against the previous run's
+configuration. The first fix for this deleted the destination before launching,
+which closed the stale read by destroying the author's evidence, and D7 says
+non-destructive for a reason.
+
+**So:** the engine is told to write inside a temporary directory `resolve` creates
+and destroys; slicelab redacts what it finds there and writes the redacted copy to
+the destination. `Plan.paths` grants the staged path and **not** the destination, so
+a sandboxed engine cannot reach the author's file even if it tried. This is D7's
+mechanism — "slices into a scratch directory and promotes to the destination" —
+applied to the readback, and it closes the stale read structurally: the staged path
+is inside a directory that did not exist a moment ago, so there is no revision of
+the gate that can confuse this run's dump with the last one's.
+
+**Where this parts from D7, and why.** D7 promotes *only on `sliced`*. The readback
+is promoted on any outcome that was actually adjudicated, including `incomplete` and
+the `empty` run D24 requires be kept. For G-code a partial artifact is dangerous and
+withholding it is the safe default; the readback is the opposite — it *is* the
+evidence for a non-green verdict, and handing the author a finding with nothing to
+check it against is the failure mode, not the protection. A run that reached
+adjudication has a complete, engine-written dump. A run that did not reach it
+promotes nothing and leaves the previous file untouched.
+
+## D32 — an engine that ran, refused, and wrote nothing is `incomplete` (2), not `error` (4)
+
+When the engine starts, reads the request, writes no configuration and exits
+non-zero — an unknown option, a preset name that does not exist — slicelab has no
+readback to adjudicate. That was reported as `error` at exit 4.
+
+Exit 4 is an environment fault under org contract 2.2, and nothing in the
+environment is faulty: the engine was found, launched, and answered. Claiming a
+machine problem for a request the engine declined asserts something nobody measured.
+
+`refused` (1) over-claims in the other direction. The exit status alone cannot
+separate "your request was wrong" from "this install is broken" — [V5] has 2.9.6
+returning 1 on complete success, and [V10] measures that exit fidelity differs per
+package and per host. A `refused` here would be slicelab deciding, from a number it
+has already established carries little information, that the author's file is at
+fault.
+
+`incomplete` is the word for exactly this: slicelab ran and cannot stand behind an
+answer. It is what D14 reserves for a run that reached no verdict, and it leaves the
+author with the accurate statement rather than a confident wrong one.
+
+**The engine's own account is carried in the message**, every line of it. 2.9.6
+names the cause every time, and it does not put it on the first line:
+
+```
+Error while loading config from profiles:
+Printer profile 'No Such Printer 9000' wasn't found.
+```
+
+A `splitlines()[0]` keeps the header and drops the sentence, which was reproduced
+inside the first revision of this very fix. Discarding the engine's words leaves the
+author with a verdict and no hint what to change — the failure D28 exists to avoid.
+
+*Supersedes:* if an adapter ever declares a **measured** predicate for "this
+engine's stderr means it refused the request", that engine's refusals become
+`refused` (1) and this stays the answer for every engine that has not measured one.
+The classification would live on the adapter, never in `resolve.py` or `readback.py`
+— D26's boundary is what keeps an engine's diagnostics out of the core.

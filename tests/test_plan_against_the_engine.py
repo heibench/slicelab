@@ -62,7 +62,7 @@ def test_the_planned_argv_makes_the_engine_state_what_it_resolved(
     intent = Intent(
         engine=spec.name, base=dict(TRIPLE), overrides={"perimeters": 4}, source=tmp_path
     )
-    plan = plan_resolve(intent, preflight(intent), sidecar)
+    plan = plan_resolve(intent, preflight(intent), tmp_path / "promoted.ini", sidecar)
 
     completed = run(argv_for(found.form, plan.argv, plan.paths))
 
@@ -93,7 +93,7 @@ def test_an_override_the_engine_coerces_comes_back_changed(
     intent = Intent(
         engine=spec.name, base=dict(TRIPLE), overrides={"perimeters": 4.7}, source=tmp_path
     )
-    plan = plan_resolve(intent, preflight(intent), sidecar)
+    plan = plan_resolve(intent, preflight(intent), tmp_path / "promoted.ini", sidecar)
     completed = run(argv_for(found.form, plan.argv, plan.paths))
 
     assert completed.signal is None
@@ -125,7 +125,7 @@ def test_a_boolean_reaches_the_engine_as_the_engine_spells_it(
         overrides={"spiral-vase": True},
         source=tmp_path,
     )
-    plan = plan_resolve(intent, preflight(intent), sidecar)
+    plan = plan_resolve(intent, preflight(intent), tmp_path / "promoted.ini", sidecar)
     assert plan.requested["spiral-vase"] == "1"
 
     completed = run(argv_for(found.form, plan.argv, plan.paths))
