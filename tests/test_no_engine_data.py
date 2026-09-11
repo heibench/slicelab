@@ -19,11 +19,16 @@ have reported green on the exact state that produced the incident.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
+
+from slicelab.adapters import PRUSASLICER
+from slicelab.engine.characterise import cache_path_for
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -117,11 +122,226 @@ def test_git_reports_a_file_list_at_all() -> None:
     assert "pyproject.toml" in candidates
 
 
+def _engine_written_among(candidates: Iterable[str]) -> list[str]:
+    """The judging half of the format rule, separated so it can be tested.
+
+    The content rule was given this split after a review found its production
+    assertion had no red state -- it runs over a tree that is supposed to be clean.
+    The format rule was marked unchanged in that round and inherited the identical
+    defect: emptying `ENGINE_WRITTEN_SUFFIXES` left every test green, and that is
+    the rule which catches the incident D11 is actually written about.
+    """
+    return sorted(c for c in candidates if Path(c).suffix.lower() in ENGINE_WRITTEN_SUFFIXES)
+
+
 def test_nothing_an_engine_wrote_is_headed_for_the_sdist() -> None:
-    strays = sorted(
-        p for p in _sdist_candidates() if Path(p).suffix.lower() in ENGINE_WRITTEN_SUFFIXES
-    )
+    strays = _engine_written_among(_sdist_candidates())
     assert not strays, (
         "these files would ship in the sdist, in formats an engine writes and "
         f"slicelab does not author, which D11 forbids: {strays}"
     )
+
+
+#: The fields that identify a characterisation document and nothing else.
+#:
+#: Not a word list to grep for -- ``tests/test_characterise.py`` names every one of
+#: these and must stay green. The rule below requires them to be **the keys of an
+#: actual mapping**, which only the document itself satisfies.
+_MAP_SIGNATURE = frozenset({"schema", "engine", "version", "entries"})
+
+
+def _is_characterisation(document: object) -> bool:
+    """Whether a parsed object is a characterisation map.
+
+    The map is what D11 most specifically forbids shipping: an engine's option
+    vocabulary, measured on someone's machine, written into XDG cache and
+    gitignored. `cache_path_for` puts it outside the repository, and this is the
+    check that the arrangement held.
+    """
+    return isinstance(document, dict) and set(document) >= _MAP_SIGNATURE
+
+
+def _carries_a_map(path: Path) -> bool:
+    """Whether a file's WHOLE CONTENT is a characterisation document.
+
+    Whole-file, deliberately, and an earlier revision that also walked Python dict
+    literals shows why: it flagged `slicelab/engine/characterise.py` -- the module
+    that *writes* the document -- and this file's own fixture. A dict with those
+    keys is how you construct a map, not how you ship one, so matching on the
+    literal makes the rule red on every file that knows the shape.
+
+    The container does not matter and the extension does not matter: the map is
+    JSON, so `keys.txt`, `keys.csv` and an extension-free file all carry it
+    identically, and all three pass the suffix rule.
+
+    **A map deliberately re-encoded as a Python literal evades this**, and that is
+    a stated bound rather than an oversight. The accident being guarded against is
+    committing a generated file; `characterise` writes JSON to the XDG cache, so
+    JSON is the form an accident takes. Re-encoding it is a deliberate act, and no
+    content rule survives a determined author -- a base64 blob evades everything.
+    """
+    try:
+        # utf-8-sig, because a BOM is the one evasion ordinary tooling produces
+        # without being asked -- a Windows editor or a PowerShell redirection adds
+        # one. It is a strict superset of utf-8 for files that do not have one.
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return False
+    try:
+        return _is_characterisation(json.loads(text))
+    except (json.JSONDecodeError, RecursionError):
+        return False
+
+
+def _maps_among(candidates: Iterable[str], root: Path) -> list[str]:
+    """The judging half, separated from the scanning half so it can be tested.
+
+    A previous revision asserted only over the real tree, which is supposed to be
+    clean -- so the production rule had no red state and a threshold raised to
+    10000 left every test green. Splitting the judge out is what makes the rule
+    itself checkable.
+    """
+    return sorted(c for c in candidates if (p := root / c).is_file() and _carries_a_map(p))
+
+
+def test_no_characterisation_map_is_headed_for_the_sdist() -> None:
+    """D11 by content. The format rule matches on extension and cannot see this.
+
+    The map committed as ``option_key_map.py``, ``.txt``, ``.csv`` or with no
+    extension passes the suffix rule -- measured, it does -- so the thing D11 names
+    most specifically was the one thing that rule could not catch.
+    """
+    strays = _maps_among(_sdist_candidates(), _ROOT)
+    assert not strays, (
+        "these files carry a characterisation map and would ship in the sdist, "
+        f"which D11 forbids: {strays}. It belongs in the XDG cache, gitignored."
+    )
+
+
+def _real_document() -> dict[str, object]:
+    """The document `_write_cache` writes, in miniature but in its real shape."""
+    return {
+        "schema": 3,
+        "engine": "prusaslicer",
+        "version": "2.9.6",
+        "baseline_key_count": 343,
+        "volatile_keys": [],
+        "entries": {
+            "perimeters": {
+                "keys": ["perimeters"],
+                "side_effects": [],
+                "tracking": "exact",
+                "outcome": "mapped",
+            }
+        },
+        "inconclusive": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["option-key-map.json", "keys.txt", "keys.csv", "option-key-map", "map.cache"],
+)
+def test_the_scan_reddens_on_a_planted_map_in_any_container(tmp_path: Path, name: str) -> None:
+    """Red-capability of the production rule, through the same judge it uses.
+
+    The containers are the ones the suffix rule misses. Only the first has an
+    extension an engine writes; the rest are why a content rule had to exist.
+    """
+    (tmp_path / name).write_text(json.dumps(_real_document()), encoding="utf-8")
+    assert _maps_among([name], tmp_path) == [name]
+
+
+def test_the_scan_reddens_on_a_map_planted_in_the_real_tree() -> None:
+    """End to end, through `_sdist_candidates` rather than a fixture list.
+
+    A red-capable judge does not prove the scan reaches the file. An
+    untracked-but-unignored file is exactly what `--others` is for, and this is the
+    only test that exercises that path against a real violation.
+    """
+    planted = _ROOT / "slicelab" / "option-key-map.json"
+    assert not planted.exists(), "the fixture path is already taken"
+    try:
+        planted.write_text(json.dumps(_real_document()), encoding="utf-8")
+        assert "slicelab/option-key-map.json" in _maps_among(_sdist_candidates(), _ROOT)
+    finally:
+        planted.unlink(missing_ok=True)
+
+
+def test_a_map_re_encoded_as_python_is_a_stated_bound_not_a_silent_one() -> None:
+    """The limit, pinned so nobody closes it by reintroducing the false positives.
+
+    Walking Python dict literals for the signature was tried and reverted: it made
+    the rule red on `characterise.py`, the module that writes the document, and on
+    this file's own fixture. Both are code that knows the shape rather than data
+    that is one.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as scratch:
+        path = Path(scratch) / "option_key_map.py"
+        path.write_text("MAP = " + repr(_real_document()), encoding="utf-8")
+        assert not _carries_a_map(path)
+
+
+def test_the_detector_is_not_red_on_the_tests_that_name_its_fields() -> None:
+    """A guard on the guard, and the reason this is a shape rule not a word list.
+
+    ``tests/test_characterise.py`` names ``schema``, ``entries``,
+    ``baseline_key_count`` and ``volatile_keys`` throughout, because it tests the
+    thing that writes them. A rule that grepped for those words would be red on
+    the suite that proves the map works, and would have been deleted rather than
+    fixed.
+    """
+    named = _ROOT / "tests" / "test_characterise.py"
+    assert named.is_file()
+    assert not _carries_a_map(named)
+    assert _maps_among(_sdist_candidates(), _ROOT) == []
+
+
+def test_the_map_is_written_outside_the_repository() -> None:
+    """The structural half: the accident this guards against should not be possible.
+
+    A content rule catches a map that reached the tree. This checks it has no
+    ordinary route in -- `cache_path_for` resolves under XDG, and nothing under
+    the repository root.
+    """
+    destination = cache_path_for(PRUSASLICER, "2.9.6").resolve()
+    assert _ROOT.resolve() not in destination.parents
+    assert "slicelab" in destination.parts
+
+
+@pytest.mark.parametrize("name", ["result.json", "00000.log", "part.gcode", "out.bgcode"])
+def test_the_format_rule_reddens_on_an_engine_written_file(name: str) -> None:
+    """Red-capability of the rule that catches the incident D11 exists for.
+
+    `result.json` is not hypothetical: it is how engine output reached this
+    repository once already, and `00000.log` is the litter D20 and V13 are written
+    about. Without this, emptying `ENGINE_WRITTEN_SUFFIXES` left the whole suite
+    green -- a rule with no red state, guarding the original defect.
+    """
+    assert _engine_written_among([name]) == [name]
+
+
+def test_the_format_rule_is_quiet_on_what_slicelab_authors() -> None:
+    """A guard on the guard: a rule red on our own tree would be deleted, not fixed."""
+    assert _engine_written_among(["pyproject.toml", "README.md", "slicelab/cli.py"]) == []
+
+
+def test_the_format_vocabulary_is_not_empty() -> None:
+    """An empty set makes every file pass, which reads exactly like a clean tree."""
+    assert ENGINE_WRITTEN_SUFFIXES
+    assert ".json" in ENGINE_WRITTEN_SUFFIXES
+    assert ".gcode" in ENGINE_WRITTEN_SUFFIXES
+
+
+def test_the_signature_is_not_empty() -> None:
+    """`set(document) >= frozenset()` is True for every dict.
+
+    So emptying `_MAP_SIGNATURE` degrades the detector to "any JSON object" and
+    survives, because no tracked file is one. The direction is benign -- it
+    over-broadens rather than opening a hole -- but an unpinned constant that reads
+    as a tightening is worth refusing.
+    """
+    assert _MAP_SIGNATURE
+    assert not _is_characterisation({"unrelated": 1})
