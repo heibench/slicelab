@@ -581,9 +581,26 @@ def test_no_gating_job_carries_an_environment_that_can_disable_a_hook() -> None:
             # none and exit 0. The `pre-commit` job has a backstop -- a `SKIP` written
             # this way is inherited by the prover, whose adjudication then fires --
             # and `check` and `test` have none.
-            assert "GITHUB_ENV" not in _shell(step), (
-                f"a step in `{name}` writes to the job environment, which reaches "
-                f"every later step: {step.get('name') or step.get('run')}"
+            # Both of GitHub's environment files, not just the one. `$GITHUB_PATH`
+            # has the same reach -- every later step in the job -- and putting a shim
+            # ahead of `just` on PATH makes the pinned `- run: just test` exit 0 having
+            # run nothing. It is not a hypothetical spelling here: this repository's
+            # own engine workflow writes to it twice, so it reads as established
+            # practice rather than as an attack.
+            for lever in ("GITHUB_ENV", "GITHUB_PATH"):
+                assert lever not in _shell(step), (
+                    f"a step in `{name}` writes to `${lever}`, which reaches every "
+                    f"later step: {step.get('name') or step.get('run')}"
+                )
+            # And no local action. `.github` is a whole allowed segment in the root
+            # allowlist, and a composite action's own steps take `env:` and `shell:` --
+            # both refused here -- and can write those environment files. Factoring the
+            # repeated checkout/setup preamble into `./.github/actions/prep` is an
+            # ordinary refactor, and it moves every lever into a file no assertion here
+            # reads. This is the justfile `import` finding, one directory over.
+            assert not str(step.get("uses", "")).startswith("./"), (
+                f"a step in `{name}` runs a local action, whose own steps carry keys "
+                f"that are refused here: uses: {step['uses']!r}"
             )
 
 
@@ -643,7 +660,10 @@ def test_the_local_recipe_runs_the_version_ci_runs() -> None:
     directives = [
         line.strip()
         for line in (ROOT / "justfile").read_text(encoding="utf-8").splitlines()
-        if re.match(r"\s*(import\??|!include)\s", line)
+        # No trailing `\s`: just accepts `import'scripts/ci.just'` with no space, which
+        # slipped straight past the first version of this guard. The negative lookahead
+        # keeps a recipe named `import-docs:` or `importantly:` out of it.
+        if re.match(r"\s*(!include|import\??)(?![A-Za-z0-9_-])", line)
     ]
     assert directives == [], (
         "the justfile pulls in another file, whose `set` and `export` lines neither "
@@ -657,6 +677,19 @@ def test_the_local_recipe_runs_the_version_ci_runs() -> None:
     # this one kept `startswith`, so `uvx pre-commit@4.2.0 run || true` satisfied it --
     # `--all-files` gone, so on a clean tree the hooks are handed nothing, and the
     # exit code swallowed on top.
+    # The SAME version, not merely a pinned one. This function's docstring says the two
+    # must resolve the same hooks and cites the ruff test, which asserts equality; this
+    # one matched each side against the pattern independently, so bumping one of the
+    # seven occurrences and missing the others was green -- which is the maintenance
+    # case, and it also has the prover's self-tests adjudicating a different runner than
+    # the one gating the tree.
+    pinned = set(
+        re.findall(r"uvx pre-commit@([\d.]+)", WORKFLOW.read_text(encoding="utf-8"))
+    ) | set(re.findall(r"uvx pre-commit@([\d.]+)", (ROOT / "justfile").read_text(encoding="utf-8")))
+    assert len(pinned) == 1, (
+        f"the pre-commit runner is pinned to more than one version, so the tree can "
+        f"pass locally and fail in CI with nothing in the diff to explain it: {sorted(pinned)}"
+    )
     for line in recipe:
         assert re.fullmatch(r"uvx pre-commit@[\d.]+ run --all-files", line), (
             f"the local hook recipe is not the pinned invocation CI runs: {line!r}"
