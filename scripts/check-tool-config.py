@@ -22,13 +22,15 @@ must reject. Probe before adjudicating, the same shape `prove-hooks-catch.sh` us
 from __future__ import annotations
 
 import copy
+import subprocess
 import sys
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
+ROOT = Path(__file__).resolve().parent.parent
+PYPROJECT = ROOT / "pyproject.toml"
 
 #: Every rule family `just lint` and the `ruff-check` hook are expected to enforce.
 #: A superset is fine; dropping one is not.
@@ -146,9 +148,71 @@ WEAKENINGS: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
 ]
 
 
+#: The suite file this whole change exists to keep running.
+GATE_TEST = "tests/test_pre_commit_gate.py"
+
+
+def nested_ruff_configs(tracked: list[str]) -> list[str]:
+    """Every tracked file that ruff would prefer over the root configuration.
+
+    Ruff resolves configuration hierarchically, so `slicelab/ruff.toml` holding
+    `[lint] select = []` turns ruff off over the whole package -- past `just lint`, past
+    the `ruff-check` hook, past the table checks above (the root file is untouched),
+    past the root allowlist test (which reads only the first path segment), and past the
+    prover (which copies two files into its scratch repository, and a nested one is not
+    among them).
+
+    Takes the file list rather than reading it, so the self-test below can hand it a
+    tree it knows the answer for.
+    """
+    found = []
+    for path in tracked:
+        name = path.rsplit("/", 1)[-1]
+        if name in {"ruff.toml", ".ruff.toml"} or (name == "pyproject.toml" and "/" in path):
+            found.append(f"{path} is a second ruff configuration, and ruff prefers the nearest")
+    return found
+
+
+def gate_is_missing_from(collected: str) -> bool:
+    """Whether a plain `pytest --collect-only` run left the gate out.
+
+    `collect_ignore = ["test_pre_commit_gate.py"]` in `tests/conftest.py` removes it and
+    leaves 331 of 357 tests passing -- the same number and the same outcome as the
+    `--ignore` spelling the tables above refuse, from a file no table mentions.
+
+    Collected the way `just test` collects: through `testpaths`, with no path argument.
+    Naming the file explicitly BYPASSES `collect_ignore`, so that spelling would report
+    the gate present either way and could not fail.
+    """
+    return f"{GATE_TEST}::" not in collected
+
+
+def tree_problems() -> list[str]:
+    """The two checks above, against this repository."""
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+    found = nested_ruff_configs(tracked)
+
+    collected = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if gate_is_missing_from(collected.stdout):
+        found.append(
+            f"{GATE_TEST} is not collected by a plain `pytest` run -- a `collect_ignore` "
+            "or a conftest can remove it without touching any configuration table"
+        )
+    return found
+
+
 def self_test() -> list[str]:
     """This script's own gate: it must pass a clean configuration and reject each bad one."""
     failures: list[str] = []
+    if not WEAKENINGS:
+        return ["there are no weakenings to detect, so this script proves nothing"]
     clean = problems(copy.deepcopy(INTACT))
     if clean:
         return [f"a configuration with nothing wrong with it was reported as weakened: {clean}"]
@@ -157,6 +221,25 @@ def self_test() -> list[str]:
         damage(tool)
         if not problems(tool):
             failures.append(f"no longer detects: {label}")
+
+    # The tree checks get the same treatment, which is why they take their input rather
+    # than reading it: deleting either one left this script printing success and every
+    # assertion in the suite green, because nothing exercised them on a tree they should
+    # reject. Probe first -- a tree and a collection with nothing wrong with them must
+    # come back clean, or a detection below establishes nothing.
+    if nested_ruff_configs(["pyproject.toml", "slicelab/cli.py", "tests/conftest.py"]):
+        failures.append("reports a tree with no nested ruff configuration as having one")
+    if gate_is_missing_from(f"{GATE_TEST}::test_x\ntests/test_other.py::test_y"):
+        failures.append("reports the gate as uncollected when it is collected")
+    for label, tracked in (
+        ("a nested ruff.toml", ["pyproject.toml", "slicelab/ruff.toml"]),
+        ("a nested .ruff.toml", ["pyproject.toml", "tests/.ruff.toml"]),
+        ("a nested pyproject.toml", ["pyproject.toml", "slicelab/pyproject.toml"]),
+    ):
+        if not nested_ruff_configs(tracked):
+            failures.append(f"no longer detects: {label}")
+    if not gate_is_missing_from("tests/test_other.py::test_y\n2 tests collected"):
+        failures.append("no longer detects: the gate missing from collection")
     return failures
 
 
@@ -172,6 +255,10 @@ def main() -> int:
         )
         return 1
 
+    # The tables, then the tree. Reported separately and in that order, so a run
+    # against a directory holding only a doctored `pyproject.toml` says why it failed
+    # without the tree checks' noise -- which is how the suite proves this script still
+    # rejects a real file, and not merely that `problems()` still works in isolation.
     found = problems(tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"])
     for problem in found:
         print(f"error: {problem}", file=sys.stderr)
@@ -179,9 +266,16 @@ def main() -> int:
         print(f"{PYPROJECT.name} weakens a check that is otherwise gated", file=sys.stderr)
         return 1
 
+    in_tree = tree_problems()
+    for problem in in_tree:
+        print(f"error: {problem}", file=sys.stderr)
+    if in_tree:
+        print("the tree weakens a check that is otherwise gated", file=sys.stderr)
+        return 1
+
     print(
-        f"tool configuration intact, and this check still rejects {len(WEAKENINGS)} "
-        "configurations it is written to reject"
+        f"tool configuration intact, the gate is collected, and this check still "
+        f"rejects {len(WEAKENINGS)} configurations it is written to reject"
     )
     return 0
 

@@ -320,6 +320,20 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
         "fail, so the prover could stop proving anything and no one would know"
     )
     broken = self_tests[0]
+    # WHICH ARGUMENT IS DOCTORED. Three of these hand the prover a doctored pre-commit
+    # config and the real `pyproject.toml`; the fourth is the other way round. Swapping
+    # the fourth's two positionals leaves it passing the real config twice, which the
+    # prover rejects for the wrong reason and every assertion here still allows.
+    doctored_hooks = len(
+        re.findall(rf'\./{re.escape(PROVER)} "\$doctored" {re.escape(PYPROJECT.name)} ', broken)
+    )
+    doctored_project = len(
+        re.findall(rf'\./{re.escape(PROVER)} {re.escape(CONFIG.name)} "\$doctored" ', broken)
+    )
+    assert doctored_hooks >= 3 and doctored_project >= 1, (
+        "the self-tests do not doctor both configurations the prover reads: "
+        f"{doctored_hooks} doctor the hooks, {doctored_project} doctor the project"
+    )
     for doctoring, what in (
         ("alias: gitleaks-history", "a hook that does not exist"),
         ("gitleaks dir", "a blind history scan"),
@@ -731,6 +745,112 @@ def test_every_hook_repository_is_pinned_to_an_immutable_revision() -> None:
             f"{repo['repo']} is pinned to {rev!r}, which can move under a green run. "
             "Use a version tag or a full commit sha"
         )
+
+
+def test_the_tool_config_check_still_rejects_a_real_file(tmp_path: Path) -> None:
+    """Its self-test proves `problems()` works. Nothing proved it is still WIRED UP.
+
+    The suite asserts the script exits 0 on this repository, and the script asserts it
+    still detects sixteen weakened configurations. Between those two is one line reading
+    the real file, and severing it satisfies both:
+
+        found = problems({**tomllib.loads(...)["tool"], **INTACT})
+
+    left `just check` at exit 0 printing its reassuring line over a `pyproject.toml`
+    carrying `--co`, with `just test` collecting 357 tests and running none. (The
+    blunter `found = []` is caught, but only incidentally, by ruff noticing `tomllib`
+    became unused. That is luck, not a guard.)
+
+    So: hand the script a directory whose `pyproject.toml` is weakened and require it
+    to say so. `PYPROJECT` is derived from the script's own location, which is what
+    makes this possible without a flag the script could be made to ignore.
+
+    Asserted on the DIAGNOSTIC, not only the exit code -- the bypass above can still
+    exit 1 for an unrelated reason, and `addopts` appearing in the message is what says
+    the real file was read.
+    """
+    sandbox = tmp_path / "scripts"
+    sandbox.mkdir()
+    (sandbox / "check-tool-config.py").write_bytes((ROOT / TOOL_CONFIG_CHECK).read_bytes())
+    (tmp_path / "pyproject.toml").write_text(
+        PYPROJECT.read_text(encoding="utf-8").replace(
+            'addopts = ["-ra"]', 'addopts = ["-ra", "--co"]'
+        ),
+        encoding="utf-8",
+    )
+    done = subprocess.run(
+        [sys.executable, str(sandbox / "check-tool-config.py")], capture_output=True, text=True
+    )
+    assert done.returncode == 1, (
+        f"a weakened pyproject.toml was accepted: {done.stdout}{done.stderr}"
+    )
+    assert "addopts" in done.stderr, (
+        "the check failed, but not on the weakening it was handed -- it is no longer "
+        f"reading the file it reports on: {done.stderr}"
+    )
+
+
+def _sandbox(tmp_path: Path) -> Path:
+    """A directory the tool-config check will adjudicate as if it were the repository.
+
+    `PYPROJECT` and `ROOT` are both derived from the script's own location, so copying
+    it into `<tmp>/scripts/` is what redirects it -- no flag, and nothing the script
+    could be edited to ignore.
+    """
+    (tmp_path / "scripts").mkdir(parents=True)
+    (tmp_path / "scripts" / "check-tool-config.py").write_bytes(
+        (ROOT / TOOL_CONFIG_CHECK).read_bytes()
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        PYPROJECT.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    for command in (["init", "-q", "-b", "main", "."], ["add", "-A"]):
+        subprocess.run(["git", *command], cwd=tmp_path, check=True, capture_output=True)
+    return tmp_path
+
+
+def _adjudicate(sandbox: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(sandbox / "scripts" / "check-tool-config.py")],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_the_tool_config_check_still_rejects_a_real_tree(tmp_path: Path) -> None:
+    """Its self-test proves the tree predicates work. This proves they are WIRED UP.
+
+    Same defect as the one above, one level in: `nested_ruff_configs` and
+    `gate_is_missing_from` are each exercised on inputs they must reject, and
+    `tree_problems` is what hands them the real ones. Replacing either call --
+    `found = []`, `if False:` -- left the script printing success and all 27 assertions
+    here green, because nothing ran it against a tree it should refuse.
+
+    Two sandboxes rather than one, and asserted on the DIAGNOSTIC, so each says which
+    check fired: a tree with a nested ruff configuration and a collectable gate, and a
+    tree with neither.
+    """
+    nested = _sandbox(tmp_path / "a")
+    (nested / "slicelab").mkdir()
+    (nested / "slicelab" / "ruff.toml").write_text("[lint]\nselect = []\n", encoding="utf-8")
+    (nested / "tests").mkdir()
+    (nested / "tests" / "test_pre_commit_gate.py").write_text(
+        "def test_placeholder() -> None:\n    pass\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "-A"], cwd=nested, check=True, capture_output=True)
+    done = _adjudicate(nested)
+    assert done.returncode == 1, f"a second ruff configuration was accepted: {done.stdout}"
+    assert "second ruff configuration" in done.stderr, (
+        f"the nested ruff configuration was not the finding: {done.stderr}"
+    )
+
+    uncollected = _sandbox(tmp_path / "b")
+    done = _adjudicate(uncollected)
+    assert done.returncode == 1, f"a tree with no collectable gate was accepted: {done.stdout}"
+    assert "is not collected" in done.stderr, f"the missing gate was not the finding: {done.stderr}"
+    assert "second ruff configuration" not in done.stderr, (
+        f"this tree has no nested ruff configuration and one was reported: {done.stderr}"
+    )
 
 
 def test_the_prover_plants_a_defect_for_every_hook_that_is_configured() -> None:
