@@ -999,7 +999,9 @@ def pytest_runtest_makereport(item, call):
 """
 
 
-def _replica_sandbox(tmp_path: Path, conftest: str | None) -> Path:
+def _replica_sandbox(
+    tmp_path: Path, conftest: str | None, *, stub_body: str = "assert _jobs()", drop: str = ""
+) -> Path:
     sandbox = _sandbox(tmp_path)
     (sandbox / ".github" / "workflows").mkdir(parents=True)
     (sandbox / ".github" / "workflows" / "ci.yml").write_text(_REPLICA_WORKFLOW, encoding="utf-8")
@@ -1012,8 +1014,8 @@ def _replica_sandbox(tmp_path: Path, conftest: str | None) -> Path:
         # An assertion, not `pass`: the check refuses a declared test with nothing in
         # it that can fail, and this stand-in has to satisfy the same rule the real
         # gate does.
-        f"\n\ndef {name}() -> None:\n    assert _jobs()\n"
-        for name in sorted(_checker().GATE_TESTS - implemented)
+        f"\n\ndef {name}() -> None:\n    {stub_body}\n"
+        for name in sorted(_checker().GATE_TESTS - implemented - {drop})
     )
     (sandbox / "tests" / "test_pre_commit_gate.py").write_text(
         _REPLICA_GATE_HEAD + stubs, encoding="utf-8"
@@ -1080,6 +1082,42 @@ def test_the_matrix_covers_every_python_this_project_claims() -> None:
     assert tested == claimed, (
         f"the test matrix and the declared interpreters disagree. Claimed and untested: "
         f"{sorted(claimed - tested)}. Tested and unclaimed: {sorted(tested - claimed)}"
+    )
+
+
+def test_the_tool_config_check_proves_the_inventory_and_stub_checks_are_wired(
+    tmp_path: Path,
+) -> None:
+    """The two newest tree checks were self-tested as predicates and called by nothing.
+
+    Three of the five tree checks have a sandbox that drives them: a nested ruff
+    configuration, an uncollected gate, a quarantined one. The inventory and the stub
+    check had none -- the stand-in declares every name and gives every stub a real
+    assertion, so both passed in every sandbox that existed, and `self_test()` reaches
+    the predicates without reaching the call.
+
+    Severing either was measured green end to end. Without the stub call, gutting
+    twenty-four of twenty-six bodies left `just check` clean over a `ci.yml` carrying a
+    retargeted-PR branch filter and a shallow checkout -- both of which live tests exist
+    for. Without the inventory call, deleting a test outright did the same.
+
+    That is this change's own recurring defect: a verified predicate, wired up by a line
+    nothing exercises.
+    """
+    incomplete = _replica_sandbox(
+        tmp_path / "f", None, drop="test_the_pre_commit_job_fetches_the_history_it_scans"
+    )
+    done = _adjudicate(incomplete)
+    assert done.returncode == 1, f"a gate missing a declared test was accepted: {done.stdout}"
+    assert "no longer contains" in done.stderr, (
+        f"the missing test was not the finding: {done.stderr}"
+    )
+
+    hollow = _replica_sandbox(tmp_path / "g", None, stub_body="pass")
+    done = _adjudicate(hollow)
+    assert done.returncode == 1, f"a gate of empty tests was accepted: {done.stdout}"
+    assert "nothing in them that can fail" in done.stderr, (
+        f"the emptied tests were not the finding: {done.stderr}"
     )
 
 

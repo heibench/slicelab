@@ -309,6 +309,7 @@ GATE_TESTS = frozenset(
         "test_the_recipes_ci_invokes_still_run_what_they_claim",
         "test_the_repository_root_holds_nothing_stray",
         "test_the_tool_config_check_notices_a_gate_that_cannot_fail",
+        "test_the_tool_config_check_proves_the_inventory_and_stub_checks_are_wired",
         "test_the_tool_config_check_still_rejects_a_real_file",
         "test_the_tool_config_check_still_rejects_a_real_tree",
     }
@@ -385,8 +386,13 @@ def gate_stub_problems(source: str) -> list[str]:
     """
     hollow = sorted(
         node.name
-        for node in ast.parse(source).body
-        if isinstance(node, ast.FunctionDef)
+        # `ast.walk`, not `.body`: `gate_inventory_problems` splits a node id on `::`
+        # and takes the last segment, so it accepts `...::TestGate::test_foo` as
+        # satisfying the declaration. Reading only module level would let the two
+        # disagree -- the inventory reporting a class-nested test present while this
+        # check quietly stopped covering it, file-wide and with no diagnostic.
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
         and node.name in GATE_TESTS
         and not any(isinstance(inner, ast.Assert | ast.Raise) for inner in ast.walk(node))
     )
@@ -539,6 +545,11 @@ def tree_problems() -> list[str]:
 #: added; it exists so that removing one is loud.
 WEAKENINGS_FLOOR = 28
 
+#: And for the ruff rule families. Someone who finds `SIM` noisy edits `select`, is
+#: told `select` is missing it, and repairs that by editing this set instead -- the
+#: natural path, with nothing objecting.
+REQUIRED_RULES_FLOOR = 6
+
 
 def self_test() -> list[str]:
     """This script's own gate: it must pass a clean configuration and reject each bad one."""
@@ -615,6 +626,12 @@ def self_test() -> list[str]:
     # its own self-test with it.
     if len(GATE_PLANTS) < 3:
         failures.append(f"only {len(GATE_PLANTS)} plants: a lever this gate defends lost its proof")
+    if len(REQUIRED_RULES) < REQUIRED_RULES_FLOOR:
+        failures.append(
+            f"only {len(REQUIRED_RULES)} required rule families: `select` is checked as a "
+            "superset of this set, and `INTACT` derives its own select from it, so "
+            "dropping one here shrinks the guard and its control together"
+        )
     if len(WEAKENINGS) < WEAKENINGS_FLOOR:
         failures.append(
             f"only {len(WEAKENINGS)} weakenings: a configuration check lost its self-test"
