@@ -273,9 +273,11 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
     `|| true` was rejected, `set +e` above the loop. Each left a blind hook reported as
     catching, with every assertion here green.
 
-    So the prover lives in a script, and CI runs it twice: once against the real
-    configuration, and once against configurations deliberately broken two ways,
-    requiring it to notice. Weakening the prover fails there, whatever the spelling.
+    So the prover lives in a script, and CI runs it against the real configuration and
+    then against configurations broken in ways it is required to notice -- each aimed
+    at a different hook, because two doctorings of the same hook are one doctoring
+    twice. Weakening the prover fails there, whatever the spelling. The doctorings
+    asserted below are the list; this sentence deliberately does not count them.
     """
     _, job = _pre_commit_job()
     runs = [_shell(step) for step in job["steps"]]
@@ -492,18 +494,21 @@ def test_no_gating_job_carries_an_environment_that_can_disable_a_hook() -> None:
         env:
           SKIP: trailing-whitespace,end-of-file-fixer,check-yaml,check-toml
 
-    on the job leaves every assertion here green and those four hooks unrun. The
-    prover covers only the three hooks it plants defects for, so the rest go quiet.
-    An allowlist rather than a check for `SKIP`, because the next off switch will have
-    a different name: adding an `env:` here means adding it in a diff someone can
-    object to.
+    on the job left every assertion here green and those four hooks unrun, back when
+    the prover planted for three hooks of ten and the rest could go quiet. It now
+    plants for all of them and inherits the job's environment, so a `SKIP` naming any
+    configured hook also fails the prover -- but that is the prover's answer, arriving
+    after a scratch repository and ten hook runs. This is the cheap one, and it is an
+    allowlist rather than a check for `SKIP`, because the next off switch will have a
+    different name: adding an `env:` here means adding it in a diff someone can object
+    to.
     """
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     # WORKFLOW level first. Every `workflow[...]` access in this file was
     # `workflow["jobs"]`, so a top-level `env:` -- which every job inherits -- sat one
     # scope above everything that looked. Measured: `SKIP:` there reported six of ten
-    # hooks Skipped and the job exited 0, and the prover and all three self-tests
-    # noticed nothing, because the six are not the ones it plants for.
+    # hooks Skipped and the job exited 0, and the prover and every self-test noticed
+    # nothing, because the six were not among the three it then planted for.
     # `defaults:` is the same class of inherited override and is refused with it.
     for key in ("env", "defaults"):
         assert key not in workflow, (
