@@ -43,9 +43,12 @@ than argued.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -320,6 +323,11 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
         "fail, so the prover could stop proving anything and no one would know"
     )
     broken = self_tests[0]
+    step_body = next(
+        str(s.get("run", ""))
+        for s in job["steps"]
+        if "::error::the prover passed" in str(s.get("run", ""))
+    )
     # Each self-test must END IN `exit 1`. The step runs under `set -euo pipefail` and
     # each block is `if <prover>; then echo "::error::..."; exit 1; fi` -- delete the
     # `exit 1` and `echo` returns 0, so the step passes over a prover that accepted a
@@ -332,25 +340,29 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
     # deleting that one's `exit 1`, or the whole block, was green, and it is the only
     # guard on the coverage check the prover gained at the same time. A count that has
     # to be maintained by hand beside the thing it counts is a claim needing evidence.
-    # Derived from the `if` ITSELF, not from the command inside it. Counting
-    # `::error::the prover passed` counted a hand-written phrase: a sixth self-test
-    # worded "the prover accepted", or the fifth reworded while tidying messages, is
-    # not counted, so its missing `exit 1` is not noticed -- and the fifth block is the
-    # only guard on the prover's coverage loop. One rewording restored the defect this
-    # threshold was derived to close.
+    # MEASURED, not counted. Every doctoring must actually fail the step.
     #
-    # Then counting the invocation required the runner literal on the SAME PHYSICAL LINE
-    # as the `if`, which a `\` continuation breaks -- and the line in question is the
-    # longest in the workflow, over the repo's own limit, beside four the author did
-    # wrap. Hoisting the runner into a variable, the idiom the prover script itself
-    # uses, drove the count to 0 and made the whole assertion vacuous, so all seven
-    # `exit 1` lines could go. Over-counting is the safe direction: an unrelated `if`
-    # added here makes CI red rather than lowering the bar.
-    declared = len(re.findall(r"(?m)^\s*if\b", broken))
-    assert broken.count("exit 1") >= declared, (
-        "a prover self-test prints `::error::` and does not fail the step, so that "
-        f"doctoring proves nothing: {broken.count('exit 1')} of {declared} end in `exit 1`"
-    )
+    # This assertion has been wrong five rounds running, and every version of it was a
+    # regex over shell text standing in for a semantic property -- "this block fails the
+    # step". `>= 4` went stale when a fifth arrived; counting `::error::the prover
+    # passed` was defeated by rewording one message; counting the invocation was
+    # defeated by a `\` continuation and by hoisting the runner into a variable;
+    # counting `^\s*if` is defeated by `cmd && echo`, by `! cmd || echo`, and by an
+    # inlined `if` -- all shapes this repository's own scripts use, and each a single
+    # edit. A proxy always has a next spelling.
+    #
+    # So run the step with a stub prover instead. The stub accepts on its Nth
+    # invocation and rejects otherwise; for every N the step must fail. The control --
+    # a stub that rejects everything -- must make the step PASS, which is what catches
+    # `|| true` on an invocation, and it is also where the number of invocations comes
+    # from, so an eighth doctoring raises no threshold by hand.
+    if sys.platform != "win32" and shutil.which("bash"):
+        unguarded, invocations = _self_tests_that_prove_nothing(step_body)
+        assert invocations > 0, "the self-test step never invokes the prover"
+        assert unguarded == [], (
+            f"{unguarded} of the {invocations} prover invocations in this step do not "
+            "fail it: that doctoring prints its `::error::` and proves nothing"
+        )
     # WHICH ARGUMENT IS DOCTORED. Three of these hand the prover a doctored pre-commit
     # config and the real `pyproject.toml`; the fourth is the other way round. Swapping
     # the fourth's two positionals leaves it passing the real config twice, which the
@@ -400,6 +412,68 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
         ("^slicelab/misformatted", "a hook proved by another hook's plant"),
     ):
         assert doctoring in broken, f"the prover is never tested against {what}"
+
+
+#: A prover that accepts on its Nth invocation and rejects otherwise, so the step it is
+#: handed to can be checked one doctoring at a time. It ignores its arguments: nothing
+#: here needs a network or a real hook environment.
+_STUB_PROVER = """\
+#!/usr/bin/env bash
+set -eu
+n=$(( $(cat "$STUB_COUNT") + 1 ))
+printf %s "$n" > "$STUB_COUNT"
+test "$n" = "$STUB_PASS_ON"
+"""
+
+
+def _run_self_test_step(body: str, workspace: Path, pass_on: int) -> tuple[int, int]:
+    """Run the step with the stub accepting on its `pass_on`th call. Returns (rc, calls)."""
+    counter = workspace / "count"
+    counter.write_text("0", encoding="utf-8")
+    done = subprocess.run(
+        ["bash", "-c", body],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "STUB_COUNT": str(counter),
+            "STUB_PASS_ON": str(pass_on),
+        },
+    )
+    return done.returncode, int(counter.read_text(encoding="utf-8"))
+
+
+def _self_tests_that_prove_nothing(body: str) -> tuple[list[int], int]:
+    """Which invocations in this step fail to fail it, and how many there are.
+
+    A doctoring proves something only if the step fails when the prover accepts the
+    configuration that doctoring produced. That is a property of the shell, not of the
+    text, and five rounds of matching the text got it wrong five different ways.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        workspace = Path(scratch)
+        (workspace / "scripts").mkdir()
+        stub = workspace / PROVER
+        stub.write_text(_STUB_PROVER, encoding="utf-8")
+        stub.chmod(0o755)
+        for name in (CONFIG.name, PYPROJECT.name):
+            (workspace / name).write_text(
+                (ROOT / name).read_text(encoding="utf-8"), encoding="utf-8"
+            )
+
+        # The control, and where the count comes from: a prover that rejects every
+        # doctoring is the state this step exists to confirm, so the step must pass.
+        control, invocations = _run_self_test_step(body, workspace, pass_on=0)
+        assert control == 0, (
+            "the self-test step fails even when the prover rejects every doctoring it "
+            "is handed, so it cannot distinguish a weakened prover from a sound one"
+        )
+        return [
+            call
+            for call in range(1, invocations + 1)
+            if _run_self_test_step(body, workspace, pass_on=call)[0] == 0
+        ], invocations
 
 
 def test_the_pre_commit_job_fetches_the_history_it_scans() -> None:
