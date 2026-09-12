@@ -43,6 +43,7 @@ than argued.
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,10 @@ HISTORY_SCAN_ENTRY = "gitleaks git --redact --verbose"
 #: catching while none ran.
 HISTORY_SCAN_ALIAS = "gitleaks-history"
 PINNED_RUNNER = "uvx pre-commit@"
+
+#: The script CI runs to prove each hook catches, and that CI also runs against
+#: broken configurations to prove the script still notices.
+PROVER = "scripts/prove-hooks-catch.sh"
 PYPROJECT = ROOT / "pyproject.toml"
 
 
@@ -246,72 +251,49 @@ def test_the_pre_commit_job_is_not_disabled_or_tolerated() -> None:
 def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
     """The assertions in this file read configuration, which pins presence not effect.
 
-    `gitleaks git` swapped for `gitleaks dir`, or `--maxkb` added beside
-    `--enforce-all`, leaves every other test here green and the hook blind. The CI job
-    has network and already runs the hooks, so it plants one defect per hook and
-    requires `pre-commit` to reject them. This asserts that step still exists, because
-    deleting it would restore exactly the gap the rest of this file cannot see.
+    `gitleaks git` swapped for `gitleaks dir`, or `--maxkb` beside `--enforce-all`,
+    leaves every other test here green and the hook blind. CI has network and runs the
+    hooks, so the proving happens there.
+
+    What this can honestly assert about a shell script is that it is INVOKED, and that
+    something checks it still works. Four review rounds defeated substring guesses at
+    its semantics one spelling at a time -- a deleted `exit 1` under an `::error::`
+    that fails nothing, an accumulator that stopped being incremented, `|| echo` where
+    `|| true` was rejected, `set +e` above the loop. Each left a blind hook reported as
+    catching, with every assertion here green.
+
+    So the prover lives in a script, and CI runs it twice: once against the real
+    configuration, and once against configurations deliberately broken two ways,
+    requiring it to notice. Weakening the prover fails there, whatever the spelling.
     """
     _, job = _pre_commit_job()
-    proofs = [
-        str(step.get("run", ""))
-        for step in job["steps"]
-        if "git init" in str(step.get("run", "")) and "pre-commit" in str(step.get("run", ""))
-    ]
-    assert proofs, "no CI step plants a defect and requires the hooks to reject it"
-    script = proofs[0]
-    for plant, why in (
-        ("urandom", "a large file"),
-        ("<<<<<<<", "a conflict marker"),
-        ("AKIA", "a secret in history"),
+    runs = [str(step.get("run", "")) for step in job["steps"]]
+
+    assert (ROOT / PROVER).is_file(), f"{PROVER} is referenced by CI and not in the tree"
+
+    self_tests = [r for r in runs if PROVER in r and "::error::the prover passed" in r]
+    # The real configuration, in a step that is not one of the self-tests. `any(PROVER
+    # in r)` was satisfied by the self-test step alone, so deleting the invocation that
+    # proves THIS repository's hooks catch -- the only one that gates anything -- left
+    # all sixteen tests green. Measured.
+    real = [r for r in runs if PROVER in r and r not in self_tests]
+    assert real, (
+        f"every CI step running {PROVER} is a self-test against a doctored config; "
+        "nothing proves this repository's own hooks catch anything"
+    )
+    assert any(f"{PROVER} {CONFIG.name}" in r for r in real), (
+        f"{PROVER} is run, but never against {CONFIG.name}: {[r.strip() for r in real]}"
+    )
+    assert self_tests, (
+        "nothing runs the prover against a broken configuration and requires it to "
+        "fail, so the prover could stop proving anything and no one would know"
+    )
+    broken = self_tests[0]
+    for doctoring, what in (
+        ("alias: gitleaks-history", "a hook that does not exist"),
+        ("gitleaks dir", "a blind history scan"),
     ):
-        assert plant in script, f"the proof step plants no {why}"
-    # ONE HOOK PER INVOCATION. The aggregate exit code of a single
-    # `pre-commit run --all-files` proves at least one hook fired, not that each did:
-    # blinding the history scan alone still exits 1 because the other two fail, and
-    # the step printed success. Measured, in the step this replaced.
-    for hook in ("gitleaks-history", "check-merge-conflict", "check-added-large-files"):
-        assert hook in script, f"the proof step does not name {hook}"
-    # TWO per-hook invocations, with the plant between them -- not "contains
-    # `run \"$hook\"`". A presence check was satisfied by the probe loop alone once the
-    # probe was added, so the adjudication loop could revert to one aggregate
-    # `run --all-files` with every assertion here still green. That is the round-2
-    # defect restored by the round-3 fix, and it is why this asserts an ordering
-    # rather than another substring.
-    per_hook = [i for i in range(len(script)) if script.startswith('run "$hook"', i)]
-    assert len(per_hook) == 2, (
-        f"expected one per-hook invocation to probe and one to adjudicate, found "
-        f"{len(per_hook)}: a single one means the adjudication reads an aggregate exit "
-        "code, and a blind hook hides behind the other hooks' failures"
-    )
-    planted = script.find("git rm -q creds.txt")
-    assert planted != -1, "the proof step never commits and removes the planted secret"
-    assert per_hook[0] < planted < per_hook[1], (
-        "the plant does not sit between the probe and the adjudication, so one of them "
-        "is running against the wrong repository state"
-    )
-    # PROBE BEFORE ADJUDICATING. `pre-commit run <unknown-id>` exits 1 just as a
-    # caught defect does, so without a clean-repo probe, deleting one `alias:` line
-    # made the step report three hooks catching while none of them ran.
-    # The probe is a bare command under `set -e`. Asserting its diagnostic string was
-    # not enough twice over: the `exit 1` beneath an `::error::` could be deleted (an
-    # annotation fails nothing), and the accumulator it fed could stop being
-    # incremented -- each leaving the message in place and a missing hook counted as a
-    # catch. What is asserted now is the shell's own strictness, which has nothing to
-    # forget.
-    assert "set -euo pipefail" in script, (
-        "the proof step does not abort on the first failing command, so a probe "
-        "failure can be printed and then ignored"
-    )
-    assert "does not resolve or did not pass on a clean repository" in script or (
-        "did not resolve or did not pass on a clean repository" in script
-    ), "the proof step does not explain a probe failure"
-    # And it must act on the tally. `exit 1` alone is not the property: the key-length
-    # guard also exits 1, so that substring survives deleting the check that matters.
-    assert 'test "$failures" -eq 0' in script, (
-        "the proof step counts hooks that passed a planted defect and does nothing with the count"
-    )
-    assert "::error::" in script, "the proof step reports nothing when a hook is blind"
+        assert doctoring in broken, f"the prover is never tested against {what}"
 
 
 def test_the_pre_commit_job_fetches_the_history_it_scans() -> None:
@@ -381,6 +363,14 @@ def test_the_aggregator_fails_when_pre_commit_does() -> None:
         assert not step.get("continue-on-error"), (
             f"a step in `ok` tolerates its own failure: {step.get('name') or step.get('run')}"
         )
+    # `||`, not `&&`. Every clause is "this job did not succeed", so joining them with
+    # `&&` means one green job makes the whole condition false, the gate step is
+    # skipped, and `ok` passes with the others red. One character, and every other
+    # assertion here still holds.
+    assert "&&" not in condition, (
+        "the gate's clauses are joined with `&&`, so it fires only when EVERY upstream "
+        f"job failed: if: {condition!r}"
+    )
     assert not set(re.findall(r"\b(github|env|inputs|vars)\.", condition)), (
         "the gate is conditional on something other than the upstream results, so it "
         f"can be skipped while those results are red: if: {condition!r}"
@@ -403,8 +393,69 @@ def test_no_upstream_job_tolerates_its_own_failure() -> None:
     ]
     assert tolerant == [], f"{tolerant} report success whatever happens in them"
 
+    # And at STEP level, for every one of them. The job-level check above was written
+    # for `pre-commit` and applied only there, so `continue-on-error` or `if: false` on
+    # `- run: just check` left the job green with no typechecker -- which is verbatim
+    # the incident org AGENTS.md 8.1 cites.
+    for name in workflow["jobs"]["ok"]["needs"]:
+        for step in workflow["jobs"][name].get("steps", []):
+            label = step.get("name") or step.get("run") or step.get("uses")
+            assert not step.get("continue-on-error"), (
+                f"a step in `{name}` tolerates its own failure: {label}"
+            )
+            assert "if" not in step, (
+                f"a step in `{name}` is conditional, so it can skip while the job "
+                f"passes: {label} -- if: {step.get('if')!r}"
+            )
+
 
 @pytest.mark.parametrize("hook_id", ["trailing-whitespace", "end-of-file-fixer", "check-toml"])
 def test_the_hooks_that_were_already_right_are_still_there(hook_id: str) -> None:
     """Correcting three of them is not a licence to lose the rest."""
     assert _hook(hook_id)
+
+
+def test_the_repository_root_holds_nothing_stray() -> None:
+    """Seven zero-byte scratch files were committed by the change that added this file.
+
+    They came from a mutation sweep and a `git add -A`, and nothing noticed:
+    `check-added-large-files` has no opinion about a 0-byte file, and no test looked at
+    the tree. In a change whose subject is a pre-commit gate, the gate let the author's
+    own debris through.
+
+    An allowlist rather than a pattern, because the failure was files nobody would
+    think to exclude — named `1a probe-deleted`, `2c coe-on-check-job`. Adding a real
+    top-level file means adding it here, in a diff someone can object to.
+    """
+    tracked = {
+        line.split("/")[0]
+        for line in subprocess.run(
+            ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+        ).stdout.splitlines()
+    }
+    allowed = {
+        ".editorconfig",
+        ".github",
+        ".gitignore",
+        ".pre-commit-config.yaml",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "LICENSE",
+        "README.md",
+        "SECURITY.md",
+        "docs",
+        "justfile",
+        "notes",
+        "pyproject.toml",
+        "scripts",
+        "slicelab",
+        "tests",
+        "uv.lock",
+    }
+    stray = sorted(tracked - allowed)
+    assert stray == [], (
+        f"{stray} are tracked at the repository root and not declared here. If one is "
+        "meant to be there, add it to `allowed`; if it is debris, it should never have "
+        "been committed."
+    )
