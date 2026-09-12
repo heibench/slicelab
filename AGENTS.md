@@ -31,9 +31,11 @@ the engine's configuration dump, staged, redacted and promoted beside the intent
 
 Treat this section as code: the moment another verb works, this paragraph is
 false and the change that made it work is not finished until it is corrected
-(org AGENTS.md 2.5). It has been corrected once when the exit map landed, once
-when `which` did, and once when `presets` did — stated as causes rather than as
-a tally, because the tally in `SECURITY.md` kept being the stale claim.
+(org AGENTS.md 2.5). It has been corrected when the exit map landed, when
+`which` did, when `presets` did, and when `resolve` did — stated as causes rather
+than as a tally, because the tally in `SECURITY.md` kept being the stale claim.
+Appending the cause is the correction; a change that leaves this list alone has
+not finished.
 
 ## Start here
 

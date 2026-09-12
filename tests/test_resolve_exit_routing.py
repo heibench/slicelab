@@ -177,7 +177,7 @@ def test_an_engine_that_answered_with_nothing_to_adjudicate_is_incomplete(
     assert capsys.readouterr().err.startswith("incomplete")
 
 
-def test_a_datadir_whose_home_cannot_be_determined_is_an_environment_fault() -> None:
+def test_a_datadir_whose_home_cannot_be_determined_is_an_environment_fault(any_engine) -> None:
     """4, not a traceback at 1 -- the same defect as `resolve .`, in the verb next door.
 
     `Path.expanduser()` raises `RuntimeError` for a `~user` whose home directory it
@@ -188,6 +188,12 @@ def test_a_datadir_whose_home_cannot_be_determined_is_an_environment_fault() -> 
 
     Pre-existing, released in 0.0.1, and fixed here because this PR is what added the
     routing module and the rule it enforces.
+
+    Takes `any_engine` — the only test in this module that does. `_presets` discovers
+    the engine BEFORE expanding this path, so without one the run never reaches the
+    expansion and the absent-engine branch answers 4 for a different reason. The
+    fixture makes that a skip, or a failure where a runner declares an engine is
+    supposed to be present, rather than a green that measured nothing.
     """
     done = subprocess.run(
         [
@@ -207,3 +213,10 @@ def test_a_datadir_whose_home_cannot_be_determined_is_an_environment_fault() -> 
     assert done.stderr.startswith("error"), done.stderr
     assert "Traceback" not in done.stderr
     assert "refused" not in done.stderr
+    # Naming the datadir, because `_presets` discovers the engine BEFORE expanding
+    # this path -- so on a host with no slicer the absent-engine branch also answers
+    # 4 starting with `error`, and every assertion above passes without the expansion
+    # ever being reached. This is the one that tells the two apart.
+    assert "--datadir" in done.stderr, (
+        "this passed on the absent-engine branch, not on the path expansion: " + done.stderr
+    )

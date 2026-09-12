@@ -144,9 +144,9 @@ separate tool that does not exist yet.
 OrcaSlicer adapter whose job is to prove the mechanism is not PrusaSlicer-shaped.
 
 **Deliberately not in v0.1.0:** any normalized cross-engine setting vocabulary.
-There is no `CORE_KEYS` yet -- it lands with the intent parser. Authored keys
-will be the engine's own
-native names. You cannot build a PrusaSlicer-shaped abstraction if you decline to
+`CORE_KEYS` exists and is **empty by assertion** — `tests/test_vocabulary_empty.py`
+fails the moment a name is added to it — rather than empty because nobody has got
+round to filling it. Authored keys are the engine's own native names. You cannot build a PrusaSlicer-shaped abstraction if you decline to
 write the abstraction until a second engine has voted on it.
 
 **Not planned:** authoring or design generation, G-code post-processing, machine

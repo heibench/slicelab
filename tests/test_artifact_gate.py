@@ -96,6 +96,27 @@ def test_a_dump_beside_a_failed_engine_is_never_adjudicated(a_dump: Path) -> Non
         _artifact(completed, a_dump, PRUSASLICER, INTENT)
 
 
+def test_an_empty_dump_is_not_a_configuration(tmp_path: Path) -> None:
+    """The fourth condition in the same function, and the only one left unpinned.
+
+    `wrote_something` is `is_file() and st_size`. Dropping the size half left the
+    whole suite green: a zero-byte dump parses to `{}`, so a base-only intent would
+    report `empty` (3) and promote an empty file as evidence that is "real". Milder
+    than the three gates above -- it cannot reach exit 0 -- and it is the same
+    sentence of D7, so it gets the same treatment.
+    """
+    staged = tmp_path / "readback"
+    staged.write_text("", encoding="utf-8")
+    with pytest.raises(ResolveIncomplete, match="wrote no configuration"):
+        _artifact(Completed(exit_status=0), staged, PRUSASLICER, INTENT)
+
+
+def test_a_missing_dump_is_not_a_configuration(tmp_path: Path) -> None:
+    """The other half. Exit 0 is not evidence the engine wrote anything (V15)."""
+    with pytest.raises(ResolveIncomplete, match="wrote no configuration"):
+        _artifact(Completed(exit_status=0), tmp_path / "never-written", PRUSASLICER, INTENT)
+
+
 def test_a_clean_run_reaches_the_dump(a_dump: Path) -> None:
     """The control. Without it every test above passes against an `_artifact` that
     refuses everything, which would be three checks that cannot fail in the other

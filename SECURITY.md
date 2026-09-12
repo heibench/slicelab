@@ -125,9 +125,12 @@ for shape, and printed.
 **Processes they will start.** `which` invokes discovered engines with `--help`
 and with one flag they are expected to reject. `presets` invokes them with the
 adapter's enumeration flag. `resolve` invokes the engine once per run to ask for
-its configuration — and, the **first** time it meets a given build, several
-hundred more times to measure the option-to-key map, which is then cached per
-engine and version. On a host where an untrusted binary is earlier on `PATH` than
+its configuration — and, the **first** time it meets a given build, **a few
+thousand** more times to measure the option-to-key map, which is then cached per
+engine and version. Three samples of a dozen of 2.9.6's 416 option spellings
+extrapolate to 1,800–2,800 invocations; the cost per option depends on how many
+sentinel types the option rejects before one is accepted, so the sampling is
+unstable and only the order of magnitude is established here. On a host where an untrusted binary is earlier on `PATH` than
 the real slicer, that binary is what gets executed — ordinary `PATH` semantics,
 but worth stating for a tool whose job is finding executables.
 
@@ -165,7 +168,8 @@ binary is asked to do.
 `--load`ed config file rather than only from a flag — see `notes/evidence.md`
 V15, where it also causes the engine to block on stdin at exit 0 while producing
 no artifact. slicelab therefore refuses a resolved configuration carrying a
-post-processing script rather than slicing and hoping. An authored `slice.toml`
+post-processing script rather than slicing and hoping — **will**, like everything
+in this section; `post_process` appears nowhere in the code today. An authored `slice.toml`
 from an untrusted source must be read as executable input, because the engine
 treats it that way.
 

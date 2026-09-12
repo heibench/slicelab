@@ -154,8 +154,8 @@ def _promote(readback: Redacted, destination: Path) -> None:
     destination's OWN directory, because a rename across filesystems is not atomic
     and the staging directory is often on a different one.
 
-    Two things a rename does that writing in place did not, both handled here rather
-    than left to be discovered:
+    Three things a rename does that writing in place did not, the first two handled
+    here rather than left to be discovered:
 
     * **It replaces.** Writing to `/dev/null` discarded the bytes; renaming onto it
       would substitute a regular file for the device node. So a destination that
@@ -163,9 +163,11 @@ def _promote(readback: Redacted, destination: Path) -> None:
     * **It substitutes a new inode**, which takes the temporary's mode -- 0600 from
       `NamedTemporaryFile` -- where an in-place write kept whatever the file had.
       Measured: a destination at 0644 came back 0600. `_mode_for` puts that back.
-      The remaining difference is that a hard link to the destination keeps the old
-      content instead of following, which is inherent to renaming and is noted rather
-      than fixed: the alternative is writing in place, which is the defect above.
+    * **It leaves a window.** A hard link to the destination keeps the old content
+      instead of following, and a signal between the write and the rename leaves the
+      temporary beside the destination. Both are inherent to renaming; the temporary
+      holds redacted bytes, so it is litter rather than exposure, and the alternative
+      is writing in place, which is the defect above.
     """
     # A rename REPLACES what is there, which `write_text` did not: writing to
     # `/dev/null` discarded the bytes harmlessly, whereas renaming onto it would
