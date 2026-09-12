@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import copy
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
@@ -236,12 +238,95 @@ def gate_did_not_pass(summary: str, returncode: int) -> bool:
     return bool(re.search(r"\b\d+ (skipped|xfailed|xpassed|deselected|failed|error)", summary))
 
 
+#: The gate assertion the replica run below must trip. Naming it, rather than taking
+#: any failure, is what distinguishes "the gate caught the planted defect" from "the
+#: gate errored for an unrelated reason".
+GATE_MUST_CATCH = "test_no_upstream_job_tolerates_its_own_failure"
+
+
+def gate_did_not_catch(output: str, returncode: int) -> bool:
+    """Whether a run of the gate against a deliberately broken workflow failed as it should.
+
+    `gate_did_not_pass` requires the gate to RUN. It cannot require the gate to be ABLE
+    TO FAIL, because it reads what the run reports, and four lines can make the report
+    lie in both channels at once:
+
+        @pytest.hookimpl(wrapper=True)
+        def pytest_runtest_makereport(item, call):
+            report = yield
+            if "test_pre_commit_gate" in item.nodeid:
+                report.outcome = "passed"
+            return report
+
+    `pytest_runtest_makereport` rewrites the outcome BEFORE the session counts it, so
+    the summary says 28 passed and the exit code is 0 -- both honest reports of a
+    falsified result. Measured over a `ci.yml` whose `check` job tolerates its own
+    failure: ruff clean, mypy clean, 359 passed, and this script printing success.
+
+    And it need not come from `tests/conftest.py`: `[project.entry-points.pytest11]`
+    registers the same hook from an installed module, one table above everything
+    `problems()` reads. So an allowlist over conftest would not close it, and the only
+    instrument that does is the one the rest of this change already uses -- plant a
+    defect and require the detector to notice.
+    """
+    return returncode == 0 or GATE_MUST_CATCH not in output
+
+
+def _replica(destination: Path) -> None:
+    """Every tracked file, as a committed git repository the gate can adjudicate."""
+    listing = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True
+    ).stdout.decode()
+    for relative in filter(None, listing.split("\0")):
+        source = ROOT / relative
+        if not source.is_file():
+            continue
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    for command in (["init", "-q", "-b", "main", "."], ["add", "-A"]):
+        subprocess.run(["git", *command], cwd=destination, check=True, capture_output=True)
+
+
+def gate_catches_a_planted_defect() -> tuple[str, int]:
+    """Run the gate against a replica whose workflow tolerates a failing `check` job.
+
+    A replica rather than this tree, because the defect has to be planted somewhere the
+    gate will read, and `just check` must not mutate the repository it is checking. The
+    lie travels with the replica -- `tests/conftest.py` is tracked and an entry-point
+    plugin is installed -- which is exactly why this catches both.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        replica = Path(scratch)
+        _replica(replica)
+        workflow = replica / ".github" / "workflows" / "ci.yml"
+        workflow.write_text(
+            workflow.read_text(encoding="utf-8").replace(
+                "  check:\n", "  check:\n    continue-on-error: true\n", 1
+            ),
+            encoding="utf-8",
+        )
+        done = subprocess.run(
+            [sys.executable, "-m", "pytest", GATE_TEST, "-q", "-p", "no:cacheprovider"],
+            cwd=replica,
+            capture_output=True,
+            text=True,
+        )
+        return done.stdout, done.returncode
+
+
 def tree_problems() -> list[str]:
     """The two checks above, against this repository."""
     tracked = subprocess.run(
         ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
     ).stdout.splitlines()
+    # Reported in order, each group only if the ones before it passed. A tree that is
+    # already known wrong makes every later verdict noise -- and the later checks run
+    # the suite, which cannot say anything useful about a tree whose configuration is
+    # the thing at fault. Probe before adjudicating, one more time.
     found = nested_ruff_configs(tracked)
+    if found:
+        return found
 
     collected = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q"],
@@ -250,10 +335,10 @@ def tree_problems() -> list[str]:
         text=True,
     )
     if gate_is_missing_from(collected.stdout):
-        found.append(
+        return [
             f"{GATE_TEST} is not collected by a plain `pytest` run -- a `collect_ignore` "
             "or a conftest can remove it without touching any configuration table"
-        )
+        ]
 
     # And it has to RUN. Named explicitly here, which is right for this question:
     # `collect_ignore` is already covered by the bare run above, and naming the file is
@@ -266,7 +351,16 @@ def tree_problems() -> list[str]:
     )
     summary = ran.stdout.strip().rsplit("\n", 1)[-1]
     if gate_did_not_pass(summary, ran.returncode):
-        found.append(f"{GATE_TEST} is collected but does not run and pass: {summary!r}")
+        return [f"{GATE_TEST} is collected but does not run and pass: {summary!r}"]
+
+    # And it has to be ABLE TO FAIL. Everything above reads what a run reports.
+    output, returncode = gate_catches_a_planted_defect()
+    if gate_did_not_catch(output, returncode):
+        found.append(
+            f"{GATE_TEST} does not catch a `check` job that tolerates its own failure, "
+            f"so it can no longer fail: exit {returncode}, "
+            f"{output.strip().rsplit(chr(10), 1)[-1]!r}"
+        )
     return found
 
 
@@ -311,6 +405,14 @@ def self_test() -> list[str]:
         ("the gate failing", "27 passed, 1 failed in 1.1s", 1),
     ):
         if not gate_did_not_pass(summary, returncode):
+            failures.append(f"no longer detects: {label}")
+    if gate_did_not_catch(f"FAILED {GATE_TEST}::{GATE_MUST_CATCH}\n1 failed, 27 passed", 1):
+        failures.append("reports a gate that DID catch the planted defect as unable to fail")
+    for label, output, returncode in (
+        ("a gate that reports everything as passing", "28 passed in 1.3s", 0),
+        ("a gate that failed for an unrelated reason", f"FAILED {GATE_TEST}::test_other", 1),
+    ):
+        if not gate_did_not_catch(output, returncode):
             failures.append(f"no longer detects: {label}")
     return failures
 

@@ -542,17 +542,27 @@ def test_no_gating_job_carries_an_environment_that_can_disable_a_hook() -> None:
             f"a workflow-level `{key}:` is inherited by every job, so one line there "
             f"reaches inside all of them: {key}: {workflow[key]!r}"
         )
-    for name in workflow["jobs"]["ok"]["needs"]:
+    # `ok` ITSELF, not only the jobs it waits for. The loop was written for the jobs
+    # that do the work, and the aggregator -- the job branch protection requires -- was
+    # not in its own `needs:`.
+    for name in [*workflow["jobs"]["ok"]["needs"], "ok"]:
         job = workflow["jobs"][name]
-        assert "env" not in job, (
-            f"the `{name}` job sets environment variables, which is how a hook is "
-            f"turned off without touching its configuration: env: {job['env']!r}"
-        )
-        for step in job.get("steps", []):
-            assert "env" not in step, (
-                f"a step in `{name}` sets environment variables: "
-                f"{step.get('name') or step.get('run')} -- env: {step['env']!r}"
+        # `defaults:` at job level is what `defaults:` at workflow level was refused
+        # for: `defaults.run.shell` is a command template in which `{0}` is the
+        # generated script, so `shell: cat {0}` prints the step and runs none of it at
+        # exit 0. The workflow-level loop refused it; the job-level loop refused only
+        # `env`.
+        for key in ("env", "defaults"):
+            assert key not in job, (
+                f"the `{name}` job sets `{key}:`, which reaches inside every step "
+                f"in it: {key}: {job[key]!r}"
             )
+        for step in job.get("steps", []):
+            for key in ("env", "shell"):
+                assert key not in step, (
+                    f"a step in `{name}` sets `{key}:`: "
+                    f"{step.get('name') or step.get('run')} -- {key}: {step[key]!r}"
+                )
             # And the same lever with a different syntax. The allowlist above is over
             # the YAML key, and a plain `run:` writing to `$GITHUB_ENV` sets the
             # environment for every later step in the job without ever using it.
@@ -602,6 +612,17 @@ def test_the_local_recipe_runs_the_version_ci_runs() -> None:
         for line in (ROOT / "justfile").read_text(encoding="utf-8").splitlines()
         if line.startswith("set ")
     ]
+    # `export` is not a `set ` line, and it sets the environment of every recipe body.
+    # `export PYTEST_ADDOPTS := "--ignore=tests/test_usage_exit_64.py"` dropped six
+    # tests from CI with `just check` green and this file green -- the same lever the
+    # workflow refuses three ways (`env:` at workflow, job and step level, and
+    # `$GITHUB_ENV`), one file over.
+    exports = [
+        line.strip()
+        for line in (ROOT / "justfile").read_text(encoding="utf-8").splitlines()
+        if line.startswith("export ")
+    ]
+    assert exports == [], f"the justfile exports into every recipe's environment: {exports}"
     assert settings == ["set dotenv-load := false"], (
         "the justfile sets an interpreter-level option, and a pinned recipe body is "
         f"only worth what the shell running it does: {settings}"
@@ -902,6 +923,97 @@ def test_the_tool_config_check_still_rejects_a_real_tree(tmp_path: Path) -> None
     assert "is not collected" in done.stderr, f"the missing gate was not the finding: {done.stderr}"
     assert "second ruff configuration" not in done.stderr, (
         f"this tree has no nested ruff configuration and one was reported: {done.stderr}"
+    )
+
+
+#: A workflow whose `check` job does NOT tolerate its own failure, and a gate that says
+#: so. The tool-config check doctors the first and requires the second to notice, so a
+#: replica needs both -- and the gate here is a stand-in rather than a copy of this
+#: file, which is what keeps the nesting finite.
+_REPLICA_WORKFLOW = """\
+name: CI
+on:
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just check
+"""
+
+_REPLICA_GATE = """\
+from pathlib import Path
+
+import yaml
+
+
+def test_no_upstream_job_tolerates_its_own_failure() -> None:
+    workflow = yaml.safe_load(
+        (Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml").read_text()
+    )
+    for name, job in workflow["jobs"].items():
+        assert not job.get("continue-on-error"), name
+"""
+
+#: Four lines that make every assertion in a gate file inert while the run reports
+#: everything passing at exit 0. `pytest_runtest_makereport` rewrites the outcome before
+#: the session counts it, so neither the summary nor the exit code registers a failure.
+_A_GATE_THAT_CANNOT_FAIL = """\
+import pytest
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = yield
+    report.outcome = "passed"
+    report.longrepr = None
+    return report
+"""
+
+
+def _replica_sandbox(tmp_path: Path, conftest: str | None) -> Path:
+    sandbox = _sandbox(tmp_path)
+    (sandbox / ".github" / "workflows").mkdir(parents=True)
+    (sandbox / ".github" / "workflows" / "ci.yml").write_text(_REPLICA_WORKFLOW, encoding="utf-8")
+    (sandbox / "tests").mkdir()
+    (sandbox / "tests" / "test_pre_commit_gate.py").write_text(_REPLICA_GATE, encoding="utf-8")
+    if conftest is not None:
+        (sandbox / "tests" / "conftest.py").write_text(conftest, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=sandbox, check=True, capture_output=True)
+    return sandbox
+
+
+def test_the_tool_config_check_notices_a_gate_that_cannot_fail(tmp_path: Path) -> None:
+    """Everything else reads what a run REPORTS. This reads what it can still catch.
+
+    Four lines of `pytest_runtest_makereport` rewrite the outcome before the session
+    counts it, so the gate runs, collects, and reports 28 passed at exit 0 over a
+    workflow whose `check` job tolerates its own failure -- with ruff clean, mypy clean
+    and this check printing success. `[project.entry-points.pytest11]` registers the
+    same hook from an installed module, one table above anything `problems()` reads, so
+    refusing it in `tests/conftest.py` would close one spelling of two.
+
+    So the check plants a defect in a replica and requires the gate to notice -- the
+    instrument the rest of this change already uses. What is proved here is that it is
+    still WIRED: the predicate is self-tested one file over, and replacing the call
+    would otherwise leave everything green.
+
+    The replica's gate is a stand-in rather than a copy of this file. A copy would build
+    its own replica, without end.
+    """
+    lying = _replica_sandbox(tmp_path / "d", _A_GATE_THAT_CANNOT_FAIL)
+    done = _adjudicate(lying)
+    assert done.returncode == 1, f"a gate that cannot fail was accepted: {done.stdout}"
+    assert "does not catch" in done.stderr, (
+        f"the gate being unable to fail was not the finding: {done.stderr}"
+    )
+
+    # The control. Without it this asserts only that something failed, and a check that
+    # fires on every input is not a check.
+    honest = _replica_sandbox(tmp_path / "e", None)
+    done = _adjudicate(honest)
+    assert done.returncode == 0, (
+        f"a replica with nothing wrong with it was rejected: {done.stdout}{done.stderr}"
     )
 
 
