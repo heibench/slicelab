@@ -41,8 +41,14 @@ lint:
 typecheck:
     uv run mypy slicelab/ tests/
 
-# Format-check + lint + typecheck -- the CI-equivalent gate
-check: fmt-check lint typecheck
+# Verify pyproject.toml does not weaken the checks the other recipes run.
+# Deliberately not a test: `addopts = [..., "--co"]` collects the suite without
+# running it, so an assertion inside the suite cannot catch that one.
+config-check:
+    uv run python scripts/check-tool-config.py
+
+# Format-check + lint + typecheck + config -- the CI-equivalent gate
+check: fmt-check lint typecheck config-check
 
 # Run tests. Engine-dependent tests skip when no slicer is installed.
 test:

@@ -33,6 +33,12 @@ hooks='gitleaks-staged gitleaks-history check-merge-conflict check-added-large-f
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 cp "$config" "$scratch/.pre-commit-config.yaml"
+# And the project configuration the hooks read. Without it ruff falls back to its own
+# defaults in here, so narrowing `[tool.ruff.lint] select` to nothing blinded the
+# `ruff-check` hook in the real tree while this script went on printing
+# `ok: ruff-check rejected its planted defect`. A hook is only proved under the
+# configuration it actually runs with.
+cp "$(dirname "$(realpath "$0")")/../pyproject.toml" "$scratch/pyproject.toml"
 cd "$scratch"
 git init -q -b main .
 git config user.email ci@example.invalid

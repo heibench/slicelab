@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,10 @@ PINNED_RUNNER = "uvx pre-commit@"
 #: The script CI runs to prove each hook catches, and that CI also runs against
 #: broken configurations to prove the script still notices.
 PROVER = "scripts/prove-hooks-catch.sh"
+
+#: The tool-configuration check, which runs from `just check` rather than from pytest
+#: because one of the weakenings it catches switches the suite off.
+TOOL_CONFIG_CHECK = "scripts/check-tool-config.py"
 PYPROJECT = ROOT / "pyproject.toml"
 
 
@@ -526,6 +531,17 @@ def test_no_gating_job_carries_an_environment_that_can_disable_a_hook() -> None:
                 f"a step in `{name}` sets environment variables: "
                 f"{step.get('name') or step.get('run')} -- env: {step['env']!r}"
             )
+            # And the same lever with a different syntax. The allowlist above is over
+            # the YAML key, and a plain `run:` writing to `$GITHUB_ENV` sets the
+            # environment for every later step in the job without ever using it.
+            # `PYTEST_ADDOPTS=--co` there makes `just test` collect 356 tests, run
+            # none and exit 0. The `pre-commit` job has a backstop -- a `SKIP` written
+            # this way is inherited by the prover, whose adjudication then fires --
+            # and `check` and `test` have none.
+            assert "GITHUB_ENV" not in _shell(step), (
+                f"a step in `{name}` writes to the job environment, which reaches "
+                f"every later step: {step.get('name') or step.get('run')}"
+            )
 
 
 @pytest.mark.parametrize("hook_id", ["trailing-whitespace", "end-of-file-fixer", "check-toml"])
@@ -549,9 +565,13 @@ def test_the_local_recipe_runs_the_version_ci_runs() -> None:
         if "pre-commit" in line and not line.lstrip().startswith("#")
     ]
     assert recipe, "no justfile recipe runs the hooks"
+    # Fullmatch, not a prefix. The CI-side twin of this learned that a round ago;
+    # this one kept `startswith`, so `uvx pre-commit@4.2.0 run || true` satisfied it --
+    # `--all-files` gone, so on a clean tree the hooks are handed nothing, and the
+    # exit code swallowed on top.
     for line in recipe:
-        assert line.startswith(PINNED_RUNNER), (
-            f"the local hook recipe does not pin the runner CI pins: {line!r}"
+        assert re.fullmatch(r"uvx pre-commit@[\d.]+ run --all-files", line), (
+            f"the local hook recipe is not the pinned invocation CI runs: {line!r}"
         )
 
 
@@ -584,13 +604,36 @@ def test_the_recipes_ci_invokes_still_run_what_they_claim() -> None:
         "the `test` recipe CI runs is not a plain, unfiltered pytest -- a `-k` or "
         f"`--ignore` deselects the gate and CI stays green: {recipes.get('test')}"
     )
-    assert recipes.get("check") == ["fmt-check lint typecheck"], (
-        "the `check` recipe CI runs no longer depends on all three of fmt-check, lint "
-        f"and typecheck: {recipes.get('check')}"
+    assert recipes.get("check") == ["fmt-check lint typecheck config-check"], (
+        "the `check` recipe CI runs no longer depends on all four of fmt-check, lint, "
+        f"typecheck and config-check: {recipes.get('check')}"
     )
     # `--locked` is the third of these, and the justfile calls it load-bearing rather
     # than tidiness: plain `uv sync` reconciles a stale lock and rewrites it at exit 0
     # with no diagnostic, so the committed lockfile is never tested.
+    # AND THE CONFIGURATION THOSE RECIPES READ -- checked from OUTSIDE pytest.
+    #
+    # Every guard in this file gates an invocation: a recipe, a workflow step, a hook.
+    # `pyproject.toml` reaches the same outcomes from a file none of them inspected.
+    # `addopts = ["-ra", "--ignore=tests/test_pre_commit_gate.py"]` left 331 of 356
+    # tests running -- 356 minus the assertions here. `select = []` blinded `just lint`
+    # AND the `ruff-check` hook. `ignore_errors = true` silenced `just typecheck`.
+    #
+    # And one of them cannot be caught from in here at all: `addopts = [..., "--co"]`
+    # collects the whole suite and runs none of it at exit 0, so an assertion inside
+    # the suite is the thing it switches off. That check therefore lives in
+    # `scripts/check-tool-config.py`, which `just check` runs and pytest cannot reach.
+    # What is asserted here is that `check` still depends on it -- and the script is
+    # run, so a local pytest run reports the same thing CI does.
+    assert (ROOT / TOOL_CONFIG_CHECK).is_file(), f"{TOOL_CONFIG_CHECK} is gone"
+    assert recipes.get("config-check") == ["", f"uv run python {TOOL_CONFIG_CHECK}"], (
+        f"the recipe that checks the tool configuration is not the pinned invocation: "
+        f"{recipes.get('config-check')}"
+    )
+    done = subprocess.run(
+        [sys.executable, str(ROOT / TOOL_CONFIG_CHECK)], capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
     assert recipes.get("setup") == ["", "uv sync --locked"], (
         f"the `setup` recipe CI runs no longer fails on a stale lockfile: {recipes.get('setup')}"
     )
@@ -625,7 +668,7 @@ def test_the_pull_request_trigger_keeps_no_branch_filter() -> None:
     )
 
 
-@pytest.mark.parametrize("recipe", ["check", "test"])
+@pytest.mark.parametrize("recipe", ["setup", "check", "test"])
 def test_ci_invokes_the_recipes_this_file_pins(recipe: str) -> None:
     """Pinning what a recipe does is worth nothing if nothing runs it.
 
