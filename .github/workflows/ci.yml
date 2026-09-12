@@ -103,7 +103,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        # 3.14 is here because `requires-python` admits it and because a defect
+        # reached this repository that only exists there: 3.14 made
+        # `Path.is_file()` swallow every OSError, so an unreadable directory read
+        # as "not configured" rather than "could not tell". A matrix stopping at
+        # 3.13 cannot see it -- on 3.13 the guard behaves correctly for a different
+        # reason, so the regression test passes there whether the fix is present or
+        # not. The newest admitted interpreter is not optional cover.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
         os: [ubuntu-latest]
         include:
           - python-version: "3.11"

@@ -6,7 +6,50 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-__all__ = ["EngineSpec", "OptionProbe", "PresetQuery"]
+__all__ = ["ConfigLocation", "EngineSpec", "OptionProbe", "PresetQuery"]
+
+
+@dataclass(frozen=True)
+class ConfigLocation:
+    """Where this engine keeps the configuration its verbs need, and what marks it.
+
+    A fresh install has none, and asking such an engine to enumerate its presets gets
+    an error on stdout rather than JSON. slicelab reported that as `incomplete` (2) --
+    *could not tell* -- when it can tell, and the answer is specific: the engine is
+    installed and not configured. That is an environment fault under org contract 2.2,
+    which is fixable and branchable, where 2 invites a retry that cannot help (D29).
+
+    **Established, never inferred from the engine's error prose.** Matching that prose
+    would put engine strings outside `adapters/`, depend on wording upstream can change
+    without notice, and break under any locale. Looking for the directory answers the
+    same question from a fact.
+
+    Each field is a path RELATIVE to that platform's configuration root, or `None`
+    where nobody has measured it. `None` is not "there is none": it means slicelab
+    will not claim a directory is absent when it does not know where to look, and the
+    verb keeps whatever behaviour it had. Only a location that is known and empty
+    produces the environment fault.
+    """
+
+    marker: str
+    """A file whose presence means this engine has been configured at least once.
+
+    A directory can exist and hold nothing -- the Flatpak runtime creates one for its
+    own reasons before the engine has ever run -- so existence of the directory is not
+    the question.
+    """
+
+    flatpak: str | None = None
+    """Relative to ``~/.var/app/<app-id>/config/``."""
+
+    xdg: str | None = None
+    """Relative to ``$XDG_CONFIG_HOME`` or ``~/.config``."""
+
+    macos: str | None = None
+    """Relative to ``~/Library/Application Support``."""
+
+    windows: str | None = None
+    """Relative to ``%APPDATA%``."""
 
 
 @dataclass(frozen=True)
@@ -120,6 +163,13 @@ class EngineSpec:
     flatpak_app_id: str | None
     macos_exec: tuple[str, ...] = ()
     preset_query: PresetQuery | None = None
+    config_location: ConfigLocation | None = None
+    """Where this engine's configuration lives, or `None` if nobody has measured it.
+
+    `None` keeps today's behaviour: slicelab cannot establish that a configuration is
+    absent, so it does not say so.
+    """
+
     secret_keys: tuple[str, ...] | None = None
     """Keys this engine's readback carries in cleartext that must never be written out.
 

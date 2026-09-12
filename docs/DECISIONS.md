@@ -961,11 +961,54 @@ Two things this decision does not get to assume:
 
 ### Status
 
-**Decided, not yet implemented.** `which` is unaffected and correctly exits 0 on a
-fresh install, because discovery asks the engine to identify itself and that needs
-no configuration. `presets` reports 2 today. The implementation lands with #19;
-this entry exists so `resolve` does not invent a third answer for the same
-condition, which is what #19 was filed to prevent.
+**Implemented**, by `presets` and `resolve` alike, which is what this entry existed
+to ensure. `which` is unaffected and correctly exits 0 on a fresh install, because
+discovery asks the engine to identify itself and that needs no configuration.
+
+### What the implementation does differently, and why
+
+Two departures from the text above. Both are deliberate; neither was noticed until
+review, because the entry was not read before the code was written — the failure this
+repository's own "Read `docs/DECISIONS.md` before changing anything structural" exists
+to prevent, and it produced a duplicate numbered decision that has since been removed.
+
+**"in `adapters/<engine>/`" is split.** The engine *facts* are in the adapter — a
+`ConfigLocation` naming the directory per launch form and the file that marks it
+configured. The *mechanism* that reads them is `slicelab/engine/configured.py`, which
+names no engine. That is the shape `OptionProbe` already uses: what differs per engine
+is declared on the spec, and the measuring is engine-neutral. Putting the mechanism in
+each adapter would duplicate the Flatpak/XDG/platform path logic per engine, and the
+first copy to drift would be wrong about a path nobody re-measured.
+
+**The third state is not in `ConfigState`.** This entry names one — a datadir that
+exists and carries no vendor bundle, producing G3's `{"printer_models": ""}`. That
+case is real and is already refused. G3's payload is `{"printer_models": ""}`, and
+`adjudicate` answers **`MALFORMED`** for it -- `'printer_models' is str, not a list` --
+deliberately, because `presets.py` keeps `""` and `[]` apart: "conflating them would
+hide a schema change behind an empty result". `EMPTY` is the neighbouring verdict, for
+a well-formed but empty list. An earlier draft of this paragraph named `EMPTY`, having
+read a docstring instead of running `adjudicate`; a docstring is not a measurement. The
+docstring in question was itself wrong, which is how the draft went wrong, and it is
+corrected on this branch.
+
+Modelling the state a second time in `ConfigState` would mean two places deciding one
+thing, and the two would disagree the first time one changed. `ConfigState` answers only what a directory can
+tell you — configured, not configured, or could-not-tell — and the inventory's
+emptiness is the adjudication `presets` already performs on the answer.
+
+What the implementation adds, which this entry did not anticipate: **`UNDETERMINED`**.
+A location is declared per launch form, and only the Flatpak one is measured, because
+only Flatpaks are installed on the machine that measured them. An engine or platform
+with no declared location answers "could not tell" and changes nothing. Reporting "not
+configured" because slicelab does not know where to look would put a guess behind the
+exit code reserved for facts (§2.3), and would make every unmeasured engine a
+permanent exit 4.
+
+**The marker is a file, not the directory.** The Flatpak runtime creates a config
+directory before the engine has ever run, so testing for the directory reports every
+fresh install as configured. Measured: a datadir copied whole with only
+`PrusaSlicer.ini` removed makes the engine exit 1 with "Configuration wasn't found",
+so that file is exactly what decides.
 
 
 ## D30 — the option-to-key map is probed with two sentinels, cached per build, and its value is a tuple of keys

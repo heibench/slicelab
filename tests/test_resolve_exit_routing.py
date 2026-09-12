@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+ROOT = Path(__file__).resolve().parent.parent
+
 TRIPLE = """[prusaslicer.base]
 printer-profile = "Original Prusa i3 MK3S & MK3S+"
 print-profile = "0.20mm QUALITY @MK3"
@@ -33,6 +35,7 @@ def _resolve(intent: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=120,
+        cwd=ROOT,
     )
 
 
@@ -101,6 +104,7 @@ def test_a_path_that_is_not_a_file_is_an_environment_fault(argument: str) -> Non
         capture_output=True,
         text=True,
         timeout=120,
+        cwd=ROOT,
     )
     assert done.returncode == 4, f"rc={done.returncode}\n{done.stdout}{done.stderr}"
     assert done.stderr.startswith("error"), done.stderr
@@ -208,6 +212,7 @@ def test_a_datadir_whose_home_cannot_be_determined_is_an_environment_fault(any_e
         capture_output=True,
         text=True,
         timeout=120,
+        cwd=ROOT,
     )
     assert done.returncode == 4, f"rc={done.returncode}\n{done.stdout}{done.stderr}"
     assert done.stderr.startswith("error"), done.stderr
@@ -220,3 +225,44 @@ def test_a_datadir_whose_home_cannot_be_determined_is_an_environment_fault(any_e
     assert "--datadir" in done.stderr, (
         "this passed on the absent-engine branch, not on the path expansion: " + done.stderr
     )
+
+
+def test_an_unconfigured_engine_is_an_environment_fault(any_engine, tmp_path: Path) -> None:
+    """4, from a fact rather than from the engine's error prose (D29).
+
+    `presets` met this first: a fresh install answers with an error on stdout where
+    JSON was expected, and slicelab reported `incomplete` (2) -- could not tell -- when
+    it can tell. `resolve` inherited the same ambiguity when it shipped, because #19
+    was meant to land with or before it and did not.
+
+    Driven through `--datadir`, which is the same check by the route a caller can
+    actually reach: an empty directory is a real datadir with no configuration in it.
+
+    Takes `any_engine`. `_presets` discovers the engine BEFORE it reaches the config
+    check, so without one the absent-engine branch answers first and this fails rather
+    than skips -- on every CI runner, none of which installs a slicer. The test one
+    function above documents the same trap and takes the fixture for it.
+    """
+    intent = tmp_path / "slice.toml"
+    intent.write_text(TRIPLE, encoding="utf-8")
+    empty = tmp_path / "empty-datadir"
+    empty.mkdir()
+
+    done = subprocess.run(
+        [sys.executable, "-m", "slicelab", "presets", "prusaslicer", "--datadir", str(empty)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=ROOT,
+    )
+    assert done.returncode == 4, f"rc={done.returncode}\n{done.stdout}{done.stderr}"
+    assert done.stderr.startswith("error"), done.stderr
+    assert "not configured" in done.stderr, done.stderr
+    # The branchable token, not just the prose. §2.2 wants a field a consumer can
+    # branch on; deleting it from both verbs left 72 tests passing. `presets`' sibling
+    # reason is pinned the same way one file over (`test_presets.py`).
+    assert "reason = engine_has_no_configuration" in done.stderr, done.stderr
+    assert str(empty) in done.stderr, (
+        f"the report names a directory other than the one checked: {done.stderr}"
+    )
+    assert "Traceback" not in done.stderr

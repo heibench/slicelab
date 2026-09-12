@@ -22,6 +22,11 @@ from pathlib import Path
 from slicelab import __version__
 from slicelab.adapters import REGISTRY, spec_for
 from slicelab.engine.characterise import CharacterisationError
+from slicelab.engine.configured import (
+    ConfigState,
+    configuration_state,
+    where_configuration_should_be,
+)
 from slicelab.engine.discover import discover
 from slicelab.engine.identity import identify
 from slicelab.engine.launch import run
@@ -234,6 +239,31 @@ def _presets(engine: str, datadir: str | None) -> int:
     if found.form is None:
         print(
             render(Outcome.ERROR, f"{engine}: {found.fidelity.value}", [found.reason]),
+            file=sys.stderr,
+        )
+        return exit_code_for(Outcome.ERROR)
+
+    looked_in = where_configuration_should_be(spec, found, datadir=datadir)
+    if configuration_state(spec, found, datadir=datadir) is ConfigState.ABSENT:
+        # Established, not inferred: slicelab looked where this engine keeps its
+        # configuration and there is none. Exit 4 rather than 2 -- `incomplete` says
+        # "could not tell" and invites a retry that cannot help, where this is a
+        # fixable environment fault with a named remedy (D29, org 2.2).
+        print(
+            render(
+                Outcome.ERROR,
+                f"{engine} is installed but not configured",
+                [
+                    f"no configuration at {looked_in}",
+                    # Different advice depending on whose directory it is. Telling
+                    # someone who passed --datadir to pass --datadir is the kind of
+                    # remedy that reads as though nobody looked at the request.
+                    "that is the --datadir you named"
+                    if datadir
+                    else "run the engine once to create one, or pass --datadir",
+                    "reason = engine_has_no_configuration",
+                ],
+            ),
             file=sys.stderr,
         )
         return exit_code_for(Outcome.ERROR)

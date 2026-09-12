@@ -1072,7 +1072,10 @@ def test_the_import_boundary_test_is_not_vacuous() -> None:
 _KEY_SHAPED = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
 
 #: slicelab's own key-shaped terms under ``slicelab/engine/``, and the only ones
-#: allowed there. Thirteen entries, each a field or member this package defines.
+#: allowed there. Each entry is a name this package defines -- a field, an enum
+#: member, or an environment variable it reads. No count: one was written here by
+#: hand and the next entry falsified it, which is the maintenance this file is
+#: about. `len(ENGINE_PACKAGE_TERMS)` is the count, and it is not a claim.
 #:
 #: **A whitelist, not an exemption rule**, and that is the whole correction. Two
 #: earlier revisions tried to derive the exemption from the source: first "any
@@ -1108,8 +1111,19 @@ ENGINE_PACKAGE_TERMS = frozenset(
         # `Identity` and `Completed`.
         "digest_of",
         "exit_status",
-        # The XDG base-directory spec's own variable name.
+        # The XDG base-directory spec's own variable names. Neither is a config key
+        # on either engine. Checked against a bare `--save` from PrusaSlicer 2.9.6 and
+        # a bare `--export-settings` from OrcaSlicer 2.4.2 -- the same two dumps D30's
+        # table calls the baseline readback -- with `layer_height` as the control that
+        # the comparison finds anything at all.
+        #
+        # No key counts here. The first version of this comment quoted two, and both
+        # were the wrong configuration's: a credential-loaded PrusaSlicer dump and a
+        # profile-loaded Orca one, in the same hunk that deleted a hand-written count
+        # for exactly that reason. The counts live in D30's table, where a command
+        # produces them.
         "xdg_cache_home",
+        "xdg_config_home",
     }
 )
 

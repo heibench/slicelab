@@ -46,6 +46,11 @@ from pathlib import Path
 
 from slicelab.adapters import EngineSpec
 from slicelab.engine.characterise import CharacterisationError, MapEntry, load_name_map
+from slicelab.engine.configured import (
+    ConfigState,
+    configuration_state,
+    where_configuration_should_be,
+)
 from slicelab.engine.discover import Discovery, argv_for, discover
 from slicelab.engine.identity import identify
 from slicelab.engine.launch import run
@@ -112,6 +117,18 @@ def resolve(intent_path: Path, sidecar: Path) -> Resolved:
     found = discover(spec)
     if found.form is None:
         raise ResolveError(f"no usable {spec.name} on this machine")
+
+    if configuration_state(spec, found) is ConfigState.ABSENT:
+        # The same condition `presets` meets, answered the same way. #19 said this
+        # should land with or before `resolve`; it did not, so for one release the two
+        # verbs disagreed about what a missing configuration means. An engine with no
+        # presets cannot honour a `[base]` naming three of them, and saying so from a
+        # directory that is not there beats waiting for the engine to fail obscurely.
+        raise ResolveError(
+            f"{spec.name} is installed but not configured: no configuration at "
+            f"{where_configuration_should_be(spec, found)}. Run the engine once to "
+            "create one. reason = engine_has_no_configuration"
+        )
 
     name_map = _name_map(spec, found)
 
