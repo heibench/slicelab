@@ -892,6 +892,12 @@ def test_every_hook_repository_is_pinned_to_an_immutable_revision() -> None:
     nothing in the history to point at.
     """
     for repo in _config()["repos"]:
+        # `local` and `meta` carry no `rev` by design, and adding one is ordinary
+        # maintenance. Skipping them beats a `KeyError` where the question does not
+        # apply; a local hook is proved by effect like every other, because the prover
+        # and the configuration must name the same set.
+        if repo["repo"] in {"local", "meta"}:
+            continue
         rev = str(repo["rev"])
         assert re.fullmatch(r"v?\d[\w.\-]*|[0-9a-f]{40}", rev), (
             f"{repo['repo']} is pinned to {rev!r}, which can move under a green run. "
@@ -1297,10 +1303,21 @@ def test_the_prover_plants_a_defect_for_every_hook_that_is_configured() -> None:
     # trimmed prover then reports `ok:` over a `stages: [manual]` on a hook it no
     # longer names, and all four CI self-tests still pass because they target hooks
     # inside the trimmed list.
+    # Comment lines removed first, for the reason `_shell` removes them: a rationale
+    # that spells out the construction it forbids satisfies a search for that
+    # construction, and the comment above has to quote `; then hooks=` to explain
+    # itself.
+    code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
     assignments = re.findall(
-        r"^[ \t]*(?:(?:declare|typeset|readonly|export|local)[ \t]+(?:-\w+[ \t]+)*)?"
+        # Anchored to the start of a COMMAND, not of a line. The previous anchor was
+        # written for an indented override and did not catch the one-line spelling of
+        # that same override -- `if [ -n "${PROVE_FAST:-}" ]; then hooks='...'; fi`,
+        # the example its own commit message gave. `&&`, `||` and a bare `;` reach the
+        # same place.
+        r"(?:^|[;&|(])[ \t]*(?:(?:then|do|else)[ \t]+)?"
+        r"(?:(?:declare|typeset|readonly|export|local)[ \t]+(?:-\w+[ \t]+)*)?"
         r"hooks[ \t]*[+:]?=",
-        source,
+        code,
         re.MULTILINE,
     )
     assert len(assignments) == 1, (
