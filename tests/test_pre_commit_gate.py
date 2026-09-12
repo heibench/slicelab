@@ -1285,7 +1285,10 @@ def test_the_prover_plants_a_defect_for_every_hook_that_is_configured() -> None:
     # second `hooks='...'` line trimming the list to the four hooks the CI self-tests
     # happen to target passed everything -- which is the state planting for all ten
     # closed.
-    listed = re.findall(r"^hooks='([^']*)'", source, re.MULTILINE | re.DOTALL)
+    # `readonly`, and the assertion says so: bash binds a name without `=` too, and
+    # `read -r hooks <<< "${hooks/check-yaml/}"` trimmed the list past both assignment
+    # guards. `readonly` refuses `read`, `mapfile`, `for` and plain assignment alike.
+    listed = re.findall(r"^readonly hooks='([^']*)'", source, re.MULTILINE | re.DOTALL)
     assert len(listed) == 1, (
         f"{PROVER} assigns `hooks=` {len(listed)} times; bash takes the last and this "
         "takes the first"

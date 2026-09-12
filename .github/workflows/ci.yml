@@ -97,6 +97,21 @@ jobs:
           fi
           echo 'ok: the prover rejected a blinded ruff configuration'
 
+          # A fifth, aimed at the prover's own loops rather than at either
+          # configuration it reads. A USE-SITE trim leaves the `hooks` assignment
+          # intact, so the suite's set-equality check stays green, and all four
+          # doctorings above target hooks that remain inside the trimmed list.
+          trimmed="$(mktemp)"
+          sed 's|for hook in \$hooks; do|for hook in ${hooks/check-added-large-files/}; do|' \
+            scripts/prove-hooks-catch.sh > "$trimmed"
+          chmod +x "$trimmed"
+          if "$trimmed" .pre-commit-config.yaml pyproject.toml uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed without adjudicating every hook it lists."
+            exit 1
+          fi
+          rm -f "$trimmed"
+          echo 'ok: the prover rejected a loop that skipped a hook'
+
   check:
     name: Check
     runs-on: ubuntu-latest

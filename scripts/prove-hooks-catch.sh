@@ -33,7 +33,10 @@ runner=("${@:-pre-commit}")
 
 # `gitleaks-staged` is adjudicated on its own below: its plant has to be staged and
 # not committed, which is the whole difference between it and the history scan.
-hooks='gitleaks-staged gitleaks-history check-merge-conflict check-added-large-files
+# `readonly`, because bash binds a name without `=` too. `read -r hooks <<< "${hooks/check-yaml/}"`
+# is one line with no assignment operator, and it trimmed the list past every guard --
+# `readonly` refuses `read`, `mapfile`, `for` and plain assignment alike, measured.
+readonly hooks='gitleaks-staged gitleaks-history check-merge-conflict check-added-large-files
        check-yaml check-toml ruff-check trailing-whitespace end-of-file-fixer
        ruff-format'
 
@@ -66,8 +69,10 @@ git add -A && git commit -q -m 'a repository with nothing wrong with it'
 # Probe. Bare commands under `set -e`: no accumulator to forget to increment, no `||`
 # to swallow the result. A missing hook stops the script here, so it can never reach
 # the adjudication and be counted as a catch.
+probed=''
 for hook in $hooks; do
   "${runner[@]}" run "$hook" --all-files
+  probed="$probed $hook"
 done
 echo 'probe: every hook resolves and passes on a clean repository'
 
@@ -106,6 +111,7 @@ git rm -q slicelab/creds.txt && git commit -q -m 'delete it again'
 # rewrite the file and exit 1, so without the restore a later hook can pass on a
 # defect an earlier hook already cleaned up, and the order of the list would silently
 # decide the verdict.
+adjudicated=''
 for hook in $hooks; do
   git checkout -q -- .
   if [ "$hook" = gitleaks-staged ]; then
@@ -123,4 +129,24 @@ for hook in $hooks; do
   if [ "$hook" = gitleaks-staged ]; then
     git rm -q -f --cached slicelab/staged-creds.txt && rm -f slicelab/staged-creds.txt
   fi
+  adjudicated="$adjudicated $hook"
 done
+
+# Every hook in the list, REACHED. The list itself is pinned equal to the configuration
+# by the suite, and the assignment is pinned by both a literal search and a
+# command-anchored one -- but neither sees a trim at the USE site, and
+# `for hook in ${hooks/check-added-large-files/}` needs no assignment at all. The probe
+# half is the worse one: `pre-commit run <unresolvable-id>` exits 1 whether the tree is
+# clean or broken, so a hook the probe never resolved is then adjudicated as catching,
+# and the run prints ten `ok:` lines with no signal in any of them.
+#
+# An accumulator that stops being appended makes this FAIL, which is the direction that
+# matters; the accumulator this file's history warns about counted failures and so
+# failed open.
+for reached in "$probed" "$adjudicated"; do
+  test "$(echo $reached)" = "$(echo $hooks)" || {
+    echo "::error::a loop skipped a hook: reached [$(echo $reached)], the list is [$(echo $hooks)]"
+    exit 1
+  }
+done
+echo 'proved: every hook in the list was probed and adjudicated'
