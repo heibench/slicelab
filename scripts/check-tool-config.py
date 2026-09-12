@@ -22,6 +22,7 @@ must reject. Probe before adjudicating, the same shape `prove-hooks-catch.sh` us
 from __future__ import annotations
 
 import copy
+import re
 import subprocess
 import sys
 import tomllib
@@ -40,8 +41,11 @@ REQUIRED_RULES = {"E", "F", "I", "UP", "B", "SIM"}
 #: checked as a superset; these say what is exempted, and one line of any of them takes
 #: a whole subpackage out with every other instrument green -- the prover included,
 #: because it plants at `slicelab/*.py` and cannot see a rule scoped below that.
+#: `include` is here because an allowlist narrows: `include = ["slicelab/**"]` took
+#: `tests/` and `scripts/` out of both `just lint` and `just fmt-check` while leaving
+#: the prover's plants visible, so every instrument stayed green.
 #: An allowlist of absence, so adding one is a diff someone can object to.
-RUFF_SUBTRACTIONS = ("exclude", "extend-exclude", "force-exclude")
+RUFF_SUBTRACTIONS = ("include", "exclude", "extend-exclude", "force-exclude")
 RUFF_LINT_SUBTRACTIONS = (
     "ignore",
     "extend-ignore",
@@ -85,12 +89,22 @@ def problems(tool: dict[str, Any]) -> list[str]:
     mypy = tool["mypy"]
     if mypy.get("ignore_errors"):
         found.append("[tool.mypy] ignore_errors is set -- `just typecheck` reports nothing")
+    # `disable_error_code` reaches the same place quietly: with `["return-value"]` set,
+    # mypy said "Success: no issues found in 50 source files" over a planted
+    # `def f() -> int: return "not an int"`. No hook runs mypy, so `just typecheck` is
+    # the only place it happens and there is nothing behind it.
+    if mypy.get("disable_error_code"):
+        found.append(
+            f"[tool.mypy] disable_error_code = {mypy['disable_error_code']!r} -- "
+            "`just typecheck` stops reporting those"
+        )
     for override in mypy.get("overrides", []):
-        if override.get("ignore_errors"):
-            found.append(
-                f"[[tool.mypy.overrides]] ignores errors for {override.get('module')!r} -- "
-                "`just typecheck` reports nothing for those modules"
-            )
+        for key in ("ignore_errors", "disable_error_code"):
+            if override.get(key):
+                found.append(
+                    f"[[tool.mypy.overrides]] {key} for {override.get('module')!r} -- "
+                    "`just typecheck` stops reporting for those modules"
+                )
 
     if "uv" in tool:
         found.append(
@@ -137,9 +151,18 @@ WEAKENINGS: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
         for k in RUFF_LINT_SUBTRACTIONS
     ),
     ("mypy ignores every error", _weaken(("mypy",), "ignore_errors", True)),
+    ("mypy disables an error code", _weaken(("mypy",), "disable_error_code", ["return-value"])),
     (
         "mypy ignores errors per module",
         _weaken(("mypy",), "overrides", [{"module": ["slicelab.*"], "ignore_errors": True}]),
+    ),
+    (
+        "mypy disables an error code per module",
+        _weaken(
+            ("mypy",),
+            "overrides",
+            [{"module": ["slicelab.*"], "disable_error_code": ["return-value"]}],
+        ),
     ),
     (
         "uv overrides the resolved ruff",
@@ -187,6 +210,32 @@ def gate_is_missing_from(collected: str) -> bool:
     return f"{GATE_TEST}::" not in collected
 
 
+def gate_did_not_pass(summary: str, returncode: int) -> bool:
+    """Whether a run of the gate file actually passed, rather than merely existing.
+
+    `gate_is_missing_from` closes `collect_ignore`, deselection and
+    `pytest_ignore_collect`. It does not close a skip or an xfail, which leave the file
+    collected and every assertion in it inert. Three lines in `tests/conftest.py` --
+
+        def pytest_collection_modifyitems(config, items):
+            for item in items:
+                if "test_pre_commit_gate" in item.nodeid:
+                    item.add_marker(pytest.mark.skip(reason="quarantined"))
+
+    -- left `331 passed, 28 skipped` and every other instrument green. An autouse
+    fixture calling `pytest.skip` does the same. A non-strict `xfail` is the quiet one:
+    it skips nothing today and reports every future failure of this gate as green.
+
+    A whitelist, not a denylist of words: the run has to say some tests passed and say
+    nothing else about them.
+    """
+    if returncode != 0:
+        return True
+    if not re.search(r"\b\d+ passed\b", summary):
+        return True
+    return bool(re.search(r"\b\d+ (skipped|xfailed|xpassed|deselected|failed|error)", summary))
+
+
 def tree_problems() -> list[str]:
     """The two checks above, against this repository."""
     tracked = subprocess.run(
@@ -205,6 +254,19 @@ def tree_problems() -> list[str]:
             f"{GATE_TEST} is not collected by a plain `pytest` run -- a `collect_ignore` "
             "or a conftest can remove it without touching any configuration table"
         )
+
+    # And it has to RUN. Named explicitly here, which is right for this question:
+    # `collect_ignore` is already covered by the bare run above, and naming the file is
+    # what keeps `pytest_collection_modifyitems` and an autouse skip in scope.
+    ran = subprocess.run(
+        [sys.executable, "-m", "pytest", GATE_TEST, "-q", "-p", "no:cacheprovider"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    summary = ran.stdout.strip().rsplit("\n", 1)[-1]
+    if gate_did_not_pass(summary, ran.returncode):
+        found.append(f"{GATE_TEST} is collected but does not run and pass: {summary!r}")
     return found
 
 
@@ -240,6 +302,16 @@ def self_test() -> list[str]:
             failures.append(f"no longer detects: {label}")
     if not gate_is_missing_from("tests/test_other.py::test_y\n2 tests collected"):
         failures.append("no longer detects: the gate missing from collection")
+    if gate_did_not_pass("28 passed in 1.13s", 0):
+        failures.append("reports a clean run of the gate as not having passed")
+    for label, summary, returncode in (
+        ("the gate skipped", "5 passed, 28 skipped in 1.1s", 0),
+        ("the gate xfailed", "5 passed, 28 xpassed in 1.1s", 0),
+        ("the gate deselected", "no tests ran in 0.1s", 5),
+        ("the gate failing", "27 passed, 1 failed in 1.1s", 1),
+    ):
+        if not gate_did_not_pass(summary, returncode):
+            failures.append(f"no longer detects: {label}")
     return failures
 
 

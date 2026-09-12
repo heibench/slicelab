@@ -42,6 +42,7 @@ than argued.
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import subprocess
 import sys
@@ -586,6 +587,25 @@ def test_the_local_recipe_runs_the_version_ci_runs() -> None:
         if "pre-commit" in line and not line.lstrip().startswith("#")
     ]
     assert recipe, "no justfile recipe runs the hooks"
+    # AND THE INTERPRETER THE BODIES ARE HANDED TO. Every recipe body in this file is
+    # pinned and the shell running them was not:
+    #
+    #     set shell := ["bash", "-c", "true;"]
+    #
+    # makes `just` echo each line and run none of it -- the body arrives as `$0`. All
+    # three commands CI runs go to exit 0 with ruff, mypy, the config check and every
+    # test never executing. The working idiom, `["bash", "-euo", "pipefail", "-c"]`,
+    # differs from that only in argument order, so an allowlist of absence is the
+    # honest instrument: adding a setting means adding it here.
+    settings = [
+        line.strip()
+        for line in (ROOT / "justfile").read_text(encoding="utf-8").splitlines()
+        if line.startswith("set ")
+    ]
+    assert settings == ["set dotenv-load := false"], (
+        "the justfile sets an interpreter-level option, and a pinned recipe body is "
+        f"only worth what the shell running it does: {settings}"
+    )
     # Fullmatch, not a prefix. The CI-side twin of this learned that a round ago;
     # this one kept `startswith`, so `uvx pre-commit@4.2.0 run || true` satisfied it --
     # `--all-files` gone, so on a clean tree the hooks are handed nothing, and the
@@ -651,10 +671,20 @@ def test_the_recipes_ci_invokes_still_run_what_they_claim() -> None:
         f"the recipe that checks the tool configuration is not the pinned invocation: "
         f"{recipes.get('config-check')}"
     )
-    done = subprocess.run(
-        [sys.executable, str(ROOT / TOOL_CONFIG_CHECK)], capture_output=True, text=True
-    )
-    assert done.returncode == 0, done.stderr
+    # Its TABLE checks, run in-process against this repository's real `pyproject.toml`.
+    #
+    # Not as a subprocess: the script now runs the gate suite itself, to catch a gate
+    # that is collected and then skipped, and this file is that gate -- invoking it here
+    # would recurse without end. Calling `problems()` directly asks the same question
+    # about the same file and terminates. The tree half comes from `just check`, which
+    # CI is required to invoke two tests down.
+    spec = importlib.util.spec_from_file_location("check_tool_config", ROOT / TOOL_CONFIG_CHECK)
+    assert spec and spec.loader
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+    assert checker.self_test() == [], checker.self_test()
+    weakened = checker.problems(tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"])
+    assert weakened == [], f"pyproject.toml weakens a check that is otherwise gated: {weakened}"
     # AND THE THREE `check` DEPENDS ON. `check` was pinned to name them and their
     # bodies were not, so `uv run mypy slicelab/ tests/ || true` left `just check` at
     # exit 0 over a real type error -- and no pre-commit hook runs mypy, so that recipe
@@ -842,6 +872,28 @@ def test_the_tool_config_check_still_rejects_a_real_tree(tmp_path: Path) -> None
     assert done.returncode == 1, f"a second ruff configuration was accepted: {done.stdout}"
     assert "second ruff configuration" in done.stderr, (
         f"the nested ruff configuration was not the finding: {done.stderr}"
+    )
+
+    quarantined = _sandbox(tmp_path / "c")
+    (quarantined / "tests").mkdir()
+    (quarantined / "tests" / "test_pre_commit_gate.py").write_text(
+        "def test_placeholder() -> None:\n    pass\n", encoding="utf-8"
+    )
+    (quarantined / "tests" / "conftest.py").write_text(
+        "import pytest\n\n\n"
+        "def pytest_collection_modifyitems(config, items):\n"
+        "    for item in items:\n"
+        '        item.add_marker(pytest.mark.skip(reason="quarantined"))\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=quarantined, check=True, capture_output=True)
+    done = _adjudicate(quarantined)
+    assert done.returncode == 1, f"a quarantined gate was accepted: {done.stdout}"
+    assert "does not run and pass" in done.stderr, (
+        f"the gate being collected and then skipped was not the finding: {done.stderr}"
+    )
+    assert "is not collected" not in done.stderr, (
+        f"this gate IS collected -- it is skipped, which is a different thing: {done.stderr}"
     )
 
     uncollected = _sandbox(tmp_path / "b")
