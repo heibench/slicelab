@@ -198,6 +198,17 @@ def test_ci_invokes_the_hooks_rather_than_mentioning_them() -> None:
         and "mktemp" not in str(step.get("run", ""))
         and not str(step.get("run", "")).strip().startswith("echo")
     ]
+    # `|| true` on the one step that scans THIS repository leaves every assertion in
+    # this file green and nothing scanning the tree. Same for `; true` and `|| :`.
+    for step in job["steps"]:
+        command = str(step.get("run", ""))
+        if PINNED_RUNNER not in command:
+            continue
+        for swallow in ("|| true", "|| :", "; true", "|| exit 0"):
+            assert swallow not in command, (
+                f"a pre-commit invocation swallows its own failure with {swallow!r}: "
+                f"{command.strip()[:80]}"
+            )
     assert here, (
         "no step runs pre-commit against this repository; every invocation is inside "
         f"a scratch directory. The job's run steps are "
@@ -261,20 +272,40 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
     # the step printed success. Measured, in the step this replaced.
     for hook in ("gitleaks-history", "check-merge-conflict", "check-added-large-files"):
         assert hook in script, f"the proof step does not name {hook}"
-    # The per-hook INVOCATION, not just the names. Dropping `"$hook"` from the command
-    # leaves every name above present in a loop that no longer drives it, and the step
-    # reverts to reading one aggregate exit code.
-    assert 'run "$hook"' in script, (
-        "the proof step does not run one hook per invocation, so a blind hook hides "
-        "behind the other hooks' failures"
+    # TWO per-hook invocations, with the plant between them -- not "contains
+    # `run \"$hook\"`". A presence check was satisfied by the probe loop alone once the
+    # probe was added, so the adjudication loop could revert to one aggregate
+    # `run --all-files` with every assertion here still green. That is the round-2
+    # defect restored by the round-3 fix, and it is why this asserts an ordering
+    # rather than another substring.
+    per_hook = [i for i in range(len(script)) if script.startswith('run "$hook"', i)]
+    assert len(per_hook) == 2, (
+        f"expected one per-hook invocation to probe and one to adjudicate, found "
+        f"{len(per_hook)}: a single one means the adjudication reads an aggregate exit "
+        "code, and a blind hook hides behind the other hooks' failures"
+    )
+    planted = script.find("git rm -q creds.txt")
+    assert planted != -1, "the proof step never commits and removes the planted secret"
+    assert per_hook[0] < planted < per_hook[1], (
+        "the plant does not sit between the probe and the adjudication, so one of them "
+        "is running against the wrong repository state"
     )
     # PROBE BEFORE ADJUDICATING. `pre-commit run <unknown-id>` exits 1 just as a
     # caught defect does, so without a clean-repo probe, deleting one `alias:` line
     # made the step report three hooks catching while none of them ran.
-    assert "does not resolve or does not pass on a clean repository" in script, (
-        "the proof step does not establish that each hook exists and runs before "
-        "reading a non-zero exit as proof it caught something"
+    # The probe is a bare command under `set -e`. Asserting its diagnostic string was
+    # not enough twice over: the `exit 1` beneath an `::error::` could be deleted (an
+    # annotation fails nothing), and the accumulator it fed could stop being
+    # incremented -- each leaving the message in place and a missing hook counted as a
+    # catch. What is asserted now is the shell's own strictness, which has nothing to
+    # forget.
+    assert "set -euo pipefail" in script, (
+        "the proof step does not abort on the first failing command, so a probe "
+        "failure can be printed and then ignored"
     )
+    assert "does not resolve or did not pass on a clean repository" in script or (
+        "did not resolve or did not pass on a clean repository" in script
+    ), "the proof step does not explain a probe failure"
     # And it must act on the tally. `exit 1` alone is not the property: the key-length
     # guard also exits 1, so that substring survives deleting the check that matters.
     assert 'test "$failures" -eq 0' in script, (

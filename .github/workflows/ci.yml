@@ -72,13 +72,20 @@ jobs:
           # Probe: on a clean repo every hook must resolve and pass. A hook that does
           # not exist fails here, so it can never be mistaken for one that caught
           # something below.
+          # Bare commands under `set -e`, with no accumulator and no `||`. Every
+          # earlier shape had something a one-line edit could remove -- an `exit 1`
+          # beneath an `::error::` (which is only an annotation and fails nothing), or
+          # a `failures=$((failures + 1))` the probe could stop doing -- and each time
+          # a missing hook then sailed through to be counted as a catch. There is
+          # nothing here to delete except the invocation itself, and the number of
+          # invocations is asserted.
+          trap 'echo "::error::a hook did not resolve or did not pass on a clean repository; nothing below would establish anything"' ERR
           for hook in $hooks; do
-            if ! uvx pre-commit@4.2.0 run "$hook" --all-files; then
-              echo "::error::$hook does not resolve or does not pass on a clean repository."
-              exit 1
-            fi
+            uvx pre-commit@4.2.0 run "$hook" --all-files
           done
+          trap - ERR
           echo 'probe: all three hooks resolve and pass on a clean repository'
+          failures=0
 
           head -c 2000000 /dev/urandom > big.bin
           printf 'a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> other\n' > conflicted.txt
@@ -95,7 +102,6 @@ jobs:
           git add creds.txt && git commit -q -m 'plant a secret'
           git rm -q creds.txt && git commit -q -m 'delete it again'
 
-          failures=0
           for hook in $hooks; do
             if uvx pre-commit@4.2.0 run "$hook" --all-files; then
               echo "::error::$hook passed its planted defect. That hook is decorative."
@@ -104,6 +110,11 @@ jobs:
               echo "ok: $hook rejected its planted defect"
             fi
           done
+
+          # ONE exit, fed by both loops. They had an `exit 1` each, and deleting the
+          # probe's left its `::error::` line in place -- which is a GitHub annotation
+          # and does not fail anything -- so the step printed "all three hooks resolve"
+          # over a hook that does not exist and exited 0.
           test "$failures" -eq 0 || exit 1
 
   check:
