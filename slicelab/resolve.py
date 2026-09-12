@@ -144,10 +144,10 @@ def _promote(readback: Redacted, destination: Path) -> None:
     **Written beside, then renamed.** `write_text` opens for writing, which truncates
     at open, so a failure part-way through -- ENOSPC, EDQUOT, EIO, a signal -- left
     the author holding a half-written file where their previous readback had been,
-    while slicelab reported exit 4 and "nothing was established". Reproduced with a
-    write limit: a 1191-byte readback became 8192 bytes of the new one and the old
-    content was gone. An earlier revision of this docstring asserted there was no
-    such window; there was, and D7 says stage-then-promote for exactly this reason.
+    while slicelab reported exit 4 and "nothing was established". Reproduced under an
+    8192-byte write limit: a 1080-byte readback came back as 8192 bytes of the new
+    one, the old content gone. An earlier revision of this docstring asserted there
+    was no such window; there was, and D7 says stage-then-promote for this reason.
 
     `os.replace` is atomic on POSIX and on Windows, so the destination holds the old
     bytes or the new ones and never a mixture. The temporary lives in the
@@ -186,7 +186,7 @@ def _promote(readback: Redacted, destination: Path) -> None:
         )
 
     try:
-        handle = tempfile.NamedTemporaryFile(  # noqa: SIM115 - closed in the finally below
+        handle = tempfile.NamedTemporaryFile(  # noqa: SIM115 - closed by the `with` below
             mode="w",
             encoding="utf-8",
             dir=destination.parent,
