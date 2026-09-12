@@ -112,6 +112,31 @@ jobs:
           rm -f "$trimmed"
           echo 'ok: the prover rejected a loop that skipped a hook'
 
+          # A sixth, aimed at WHERE the prover plants rather than at what it runs. The
+          # plants sit under the real tree's directory names so a path filter scoped to
+          # one hook fails by effect; moving them to the root left every instrument
+          # green with that hook blind.
+          sed 's#^        args: \[--enforce-all\]$#&\n        exclude: ^(slicelab|tests)/#' \
+            .pre-commit-config.yaml > "$doctored"
+          if ./scripts/prove-hooks-catch.sh "$doctored" pyproject.toml uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed a hook that cannot see the source tree."
+            exit 1
+          fi
+          echo 'ok: the prover rejected a path-scoped blinding of one hook'
+
+          # A seventh, aimed at plant INDEPENDENCE. `ruff-format` reformats any badly
+          # formatted `.py`, so while two neighbouring plants were `.py` files it
+          # reported catching with its own plant removed -- a hook proved by someone
+          # else's defect. Blinding it to its own plant alone is clean only if the
+          # other plants no longer reach it.
+          sed 's#^      - id: ruff-format$#&\n        exclude: ^slicelab/misformatted\.py$#' \
+            .pre-commit-config.yaml > "$doctored"
+          if ./scripts/prove-hooks-catch.sh "$doctored" pyproject.toml uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed a hook that only its neighbours' plants reach."
+            exit 1
+          fi
+          echo 'ok: the prover rejected a hook proved by another hook''s plant'
+
   check:
     name: Check
     runs-on: ubuntu-latest

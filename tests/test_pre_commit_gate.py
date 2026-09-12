@@ -333,7 +333,13 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
     # deleting that one's `exit 1`, or the whole block, was green, and it is the only
     # guard on the coverage check the prover gained at the same time. A count that has
     # to be maintained by hand beside the thing it counts is a claim needing evidence.
-    declared = broken.count("::error::the prover passed")
+    # Derived from the INVOCATIONS, not from the sentence beside them. Counting
+    # `::error::the prover passed` counted a hand-written phrase: a sixth self-test
+    # worded "the prover accepted", or the fifth reworded while tidying messages, is
+    # not counted, so its missing `exit 1` is not noticed -- and the fifth block is the
+    # only guard on the prover's coverage loop. One rewording restored the defect this
+    # threshold was derived to close.
+    declared = len(re.findall(rf"(?m)^\s*if\s+\S+.*{re.escape(PINNED_RUNNER)}", broken))
     assert broken.count("exit 1") >= declared, (
         "a prover self-test prints `::error::` and does not fail the step, so that "
         f"doctoring proves nothing: {broken.count('exit 1')} of {declared} end in `exit 1`"
@@ -373,6 +379,18 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
         # assignment anchors and the set-equality check stay green, and each of the
         # four doctorings above targets a hook that remains inside the trimmed list.
         ("${hooks/check-added-large-files/}", "a loop that skips a hook it lists"),
+        # A SIXTH, aimed at where the prover PLANTS rather than at what it runs. The
+        # plants sit under the real tree's directory names so that a path-scoped
+        # `exclude:` on a single hook fails by effect -- and that placement was claimed
+        # in a docstring with no instrument behind it. Moving the plants to the
+        # repository root, or the two `.txt` ones back to `.py`, left everything green
+        # while a hook-level `exclude:` proved out clean.
+        ("exclude: ^(slicelab|tests)/", "one hook blinded by a path filter"),
+        # A SEVENTH, aimed at plant INDEPENDENCE rather than plant location. Two of the
+        # plants were `.py` files, which `ruff-format` reformats, so it reported
+        # catching with its own plant removed. Per-hook attribution was measured once by
+        # hand and pinned by nothing until here.
+        ("^slicelab/misformatted", "a hook proved by another hook's plant"),
     ):
         assert doctoring in broken, f"the prover is never tested against {what}"
 
