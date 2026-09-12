@@ -35,47 +35,61 @@ jobs:
       # resolve with no diff in this repository.
       - run: uvx pre-commit@4.2.0 run --all-files --show-diff-on-failure
 
-      # Prove the hooks CATCH, not merely that the flags are spelled right.
+      # Prove each hook CATCHES, one at a time.
       #
       # `tests/test_pre_commit_gate.py` reads this configuration, which keeps the
       # suite offline but pins presence rather than effect: `gitleaks git` swapped
-      # for `gitleaks dir`, or `--maxkb` added beside `--enforce-all`, leaves every
-      # assertion there green and the hook blind. This job already has network and
-      # already runs the hooks, so it is the cheap place to close that.
+      # for `gitleaks dir`, or `--maxkb` beside `--enforce-all`, leaves every
+      # assertion there green and the hook blind. This job has network and already
+      # runs the hooks, so it is the cheap place to close that.
       #
-      # Three defects, one per hook that was silently passing before this change.
-      # If `pre-commit` exits 0 on them, the gate is decorative and this fails.
-      - name: The hooks catch what they are named for
+      # ONE HOOK PER INVOCATION. An earlier version planted all three defects and
+      # read the aggregate exit code, which `pre-commit` sets to 1 if ANY hook
+      # fails -- so blinding the history scan alone left the step printing "rejected
+      # all three" and the job green. That is the defect this step exists to catch,
+      # inside the step itself.
+      - name: Each hook catches what it is named for
         run: |
           set -euo pipefail
           scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
           cp .pre-commit-config.yaml "$scratch/"
           cd "$scratch"
           git init -q -b main .
           git config user.email ci@example.invalid
           git config user.name CI
+
           head -c 2000000 /dev/urandom > big.bin
           printf 'a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> other\n' > conflicted.txt
           git add -A && git commit -q -m 'plant a large file and a conflict marker'
+
           # A secret that lives only in history, so the staged scan cannot see it.
-          #
-          # Two ways this plant passes for the wrong reason, both met while writing
-          # it: gitleaks allowlists canonical example keys such as
-          # AKIAIOSFODNN7EXAMPLE, and its aws-access-token rule wants AKIA plus
-          # exactly sixteen uppercase alphanumerics -- a shorter random tail is not
-          # a finding and the hook reports clean. Hence the length, and hence
-          # running this by hand before trusting it here.
-          key="AKIA$(head -c 20 /dev/urandom | base32 | tr -d = | tr a-z A-Z | tr -d 0189 | head -c 16)"
+          # gitleaks allowlists canonical example keys such as AKIAIOSFODNN7EXAMPLE,
+          # and its aws-access-token rule wants AKIA plus exactly sixteen characters
+          # from its alphabet -- a shorter tail is not a finding and the hook reports
+          # clean, which is how the first version of this step passed for the wrong
+          # reason. base32 emits A-Z2-7, which is already within that alphabet.
+          key="AKIA$(head -c 20 /dev/urandom | base32 | tr -d = | head -c 16)"
           test ${#key} -eq 20 || { echo "::error::planted key is ${#key} chars, not 20; gitleaks will not flag it"; exit 1; }
           printf 'aws_access_key_id = %s\n' "$key" > creds.txt
           git add creds.txt && git commit -q -m 'plant a secret'
           git rm -q creds.txt && git commit -q -m 'delete it again'
-          if uvx pre-commit@4.2.0 run --all-files; then
-            echo "::error::pre-commit passed a 2 MB tracked file, a committed conflict marker and a secret in history. The gate is decorative."
-            exit 1
-          fi
-          echo 'the hooks rejected all three plants'
-          cd / && rm -rf "$scratch"
+
+          failures=0
+          for pair in \
+            'gitleaks-history:a secret that survives only in history' \
+            'check-merge-conflict:a committed conflict marker' \
+            'check-added-large-files:a 2 MB tracked file'
+          do
+            hook="${pair%%:*}"; what="${pair#*:}"
+            if uvx pre-commit@4.2.0 run "$hook" --all-files; then
+              echo "::error::$hook passed $what. That hook is decorative."
+              failures=$((failures + 1))
+            else
+              echo "ok: $hook rejected $what"
+            fi
+          done
+          test "$failures" -eq 0 || exit 1
 
   check:
     name: Check

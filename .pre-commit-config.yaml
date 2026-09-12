@@ -12,6 +12,10 @@ repos:
       # bytes and passes. A check that was handed nothing is not a check (org 2.4).
       # Needs `fetch-depth: 0`, or there is no history here to scan.
       - id: gitleaks
+        # An alias, so CI can run this hook ALONE and require it to reject a planted
+        # secret. Without one, `pre-commit run gitleaks` runs both gitleaks hooks and
+        # the aggregate exit code cannot say which of them fired.
+        alias: gitleaks-history
         name: gitleaks (history)
         entry: gitleaks git --redact --verbose
         always_run: true

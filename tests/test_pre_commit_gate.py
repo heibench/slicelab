@@ -32,10 +32,17 @@ hook in a scratch repository and requires `pre-commit` to reject them. That job 
 network and already runs the hooks, so it is the cheap place to prove effect rather
 than presence. `test_the_hooks_are_proved_to_catch_not_merely_to_be_configured` is what
 stops that step being quietly deleted.
+
+These assertions match strings in a shell script, which is a weaker instrument than it
+looks -- two earlier attempts matched substrings that survived the very mutation they
+were written for. Each one is pinned to the exact token its mutation removes, and the
+real proof is the step itself: blinding the history scan makes it fail, measured rather
+than argued.
 """
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -46,6 +53,10 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / ".pre-commit-config.yaml"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+
+#: The history scan's command, in full. Asserted exactly rather than by what it must
+#: not contain -- see `test_something_scans_history_and_not_only_the_staged_index`.
+HISTORY_SCAN_ENTRY = "gitleaks git --redact --verbose"
 PYPROJECT = ROOT / "pyproject.toml"
 
 
@@ -100,15 +111,20 @@ def test_something_scans_history_and_not_only_the_staged_index() -> None:
     assert len(scanners) == 2, f"expected a staged scan and a history scan: {scanners}"
     history = [h for h in scanners if h.get("always_run")]
     assert history, "no gitleaks hook runs unconditionally, so CI scans an empty index"
-    entry = history[0].get("entry", "")
-    assert "--staged" not in entry, f"the history scan is still index-scoped: {entry}"
-    # `gitleaks dir` satisfies "not --staged" and scans the worktree, not the history,
-    # which restores the exact defect this hook was added for. And a baseline or a
-    # forced exit code makes it report a leak and pass anyway -- `--baseline-path` is
-    # the documented way to grandfather a finding, so it is the realistic one.
-    assert entry.split()[1:2] == ["git"], f"the history scan is not scanning git history: {entry}"
-    for defeat in ("--baseline-path", "--exit-code 0", "--no-git"):
-        assert defeat not in entry, f"the history scan cannot fail: {entry}"
+    # An EXACT entry, not a list of things it must not contain. A denylist was the
+    # first attempt and it is the shape this file is about: it rejected
+    # `--exit-code 0` and sailed past `--exit-code=0`, which is the same flag in the
+    # spelling cobra also accepts and which makes gitleaks report the leak and exit 0
+    # anyway. `--log-opts=-1` (scan one commit) and `--baseline-path` (the documented
+    # way to grandfather a finding) are two more, and there is no reason to think that
+    # list was ever complete. Both evasions were measured against the real hook.
+    #
+    # Changing this string deliberately is a one-line diff somebody can object to.
+    assert history[0].get("entry") == HISTORY_SCAN_ENTRY, (
+        f"the history scan's command changed: {history[0].get('entry')!r}. If that is "
+        "deliberate, update HISTORY_SCAN_ENTRY and say why -- a flag added here can "
+        "make it report a leak and pass anyway."
+    )
     assert history[0].get("pass_filenames") is False, (
         "a history scan handed a file list is scanning the worktree, not the history"
     )
@@ -191,6 +207,13 @@ def test_the_pre_commit_job_is_not_disabled_or_tolerated() -> None:
         assert not step.get("continue-on-error"), (
             f"a step in {name} tolerates its own failure: {step.get('name') or step.get('run')}"
         )
+        # Step-level `if` is the gap the job-level assertion above leaves open:
+        # `if: github.event_name == 'push'` on the run step means the hooks never run
+        # on a pull request, and the job still reports success.
+        assert "if" not in step, (
+            f"a step in {name} is conditional, so it can skip while the job passes: "
+            f"{step.get('name') or step.get('run')} -- if: {step.get('if')!r}"
+        )
 
 
 def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
@@ -216,6 +239,25 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
         ("AKIA", "a secret in history"),
     ):
         assert plant in script, f"the proof step plants no {why}"
+    # ONE HOOK PER INVOCATION. The aggregate exit code of a single
+    # `pre-commit run --all-files` proves at least one hook fired, not that each did:
+    # blinding the history scan alone still exits 1 because the other two fail, and
+    # the step printed success. Measured, in the step this replaced.
+    for hook in ("gitleaks-history", "check-merge-conflict", "check-added-large-files"):
+        assert hook in script, f"the proof step does not name {hook}"
+    # The per-hook INVOCATION, not just the names. Dropping `"$hook"` from the command
+    # leaves every name above present in a loop that no longer drives it, and the step
+    # reverts to reading one aggregate exit code.
+    assert 'run "$hook"' in script, (
+        "the proof step does not run one hook per invocation, so a blind hook hides "
+        "behind the other hooks' failures"
+    )
+    # And it must act on the tally. `exit 1` alone is not the property: the key-length
+    # guard also exits 1, so that substring survives deleting the check that matters.
+    assert 'test "$failures" -eq 0' in script, (
+        "the proof step counts hooks that passed a planted defect and does nothing with the count"
+    )
+    assert "::error::" in script, "the proof step reports nothing when a hook is blind"
 
 
 def test_the_pre_commit_job_fetches_the_history_it_scans() -> None:
@@ -256,11 +298,25 @@ def test_the_aggregator_fails_when_pre_commit_does() -> None:
     assert gate, "`ok` has no step that fails on an upstream job's result"
     condition = str(gate[0]["if"])
 
-    missing = [job for job in ok["needs"] if job not in condition]
+    # Whole names, not substrings: `test` occurs inside `test-windows`, so a
+    # condition naming only the latter satisfies a substring check for both.
+    named = set(re.findall(r"needs(?:\.|\[')([A-Za-z0-9_-]+)", condition))
+    missing = sorted(set(ok["needs"]) - named)
     assert missing == [], (
         f"`ok` waits for {missing} and does not require them to succeed; a job listed "
         "in needs: but absent from the condition can be red while ok is green"
     )
+    # And the step has to DO something about it. Changing `run: exit 1` to an echo
+    # leaves the condition correct, this test green, and `ok` passing with every
+    # upstream job red -- the same defect one line further down.
+    assert gate[0].get("run", "").strip() == "exit 1", (
+        f"the gate step does not fail the job: run: {gate[0].get('run')!r}"
+    )
+    assert ok.get("if") == "always()", (
+        "`ok` must run even when an upstream job fails, or the gate step never runs "
+        f"and the aggregator is skipped rather than red: if: {ok.get('if')!r}"
+    )
+    assert not ok.get("continue-on-error"), "`ok` tolerates its own failure"
 
 
 @pytest.mark.parametrize("hook_id", ["trailing-whitespace", "end-of-file-fixer", "check-toml"])
