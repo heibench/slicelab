@@ -108,6 +108,48 @@ SPEC = EngineSpec(
     # stderr -- the same code it returns for "that printer was not found"
     # (notes/evidence.md V5). slicelab adjudicates the artifact, never this
     # exit code (D17).
+    # Measured 2026-09-11 by ENUMERATING the family rather than sampling a default
+    # dump, which is how the first three came to be the only three. The binary
+    # carries twelve `print_host*` / `printhost_*` names; each was set to a marker
+    # via `--load`, alongside a preset triple and `--save`, and the dump inspected:
+    #
+    #   emitted, carrying the value that was set  -> a credential, listed here
+    #     print_host  printhost_apikey  printhost_cafile
+    #     printhost_password  printhost_port  printhost_user
+    #   emitted, coerced to a fixed value         -> carries nothing authored
+    #     printhost_authorization_type (-> 'key')  printhost_ssl_ignore_revoke (-> '0')
+    #   not emitted at all
+    #     print_host_webui  printhost_group  printhost_path  printhost_storage
+    #
+    # Control, in the same run: a fabricated key was dropped from the dump [V2], so
+    # "emitted" means a real key of the saved namespace and not an echo of --load.
+    #
+    # The first three were measured against a dump that structurally could not
+    # contain the others -- a default preset sets no digest credentials, so nothing
+    # was there to find. `readback.py` states the hazard ("the readback's key SET is
+    # value-dependent"); the credential measurement was the thing it happened to.
+    # `test_credentials_are_enumerated_not_sampled` keeps this honest, and its
+    # population comes from the BUILD rather than from a list anyone maintains: it
+    # reads credential-shaped names out of the binary's string table (118 on 2.9.6),
+    # sets each to a marker, and then rules on every credential-shaped key in the
+    # resulting dump. A hand-written tuple was the first attempt and it was the same
+    # sampling error one level up -- a name nobody listed is never set, never
+    # appears, and no check downstream can see it.
+    #
+    # The remaining limit, stated rather than implied: a credential whose NAME reads
+    # like nothing in `CREDENTIAL_NAME_WORDS`. `--help-fff` cannot close it either --
+    # 416 option spellings and not one of these names among them. (416, not the 411
+    # this module's own docstring names: 411 is the leading-position scan, which
+    # misses aliases. `_options_from_help_fff` returns 416 and that is the set that
+    # was checked.)
+    secret_keys=(
+        "print_host",
+        "printhost_apikey",
+        "printhost_cafile",
+        "printhost_password",
+        "printhost_port",
+        "printhost_user",
+    ),
     readback_flag="--save",
     # Measured 2026-09-10 across seven boolean options. `1` and `0` are the only two
     # spellings that mean the same thing everywhere: =1 resolved true and =0 resolved

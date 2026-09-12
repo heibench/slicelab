@@ -37,6 +37,7 @@ CORE_MODULE_NAMES = (
     "preflight.py",
     "readback.py",
     "redact.py",
+    "resolve.py",
     "vocab.py",
 )
 
@@ -77,6 +78,27 @@ DECLARED_VOCABULARY = frozenset(
         "requested",
         "sidecar",
         "paths",
+        # Where a readback lives while it is being made safe, and where it ends up
+        # (D7, D31). slicelab's own file plumbing, and checked against both engines'
+        # real key universes before being declared: zero matches for either name in
+        # PrusaSlicer 2.9.6's dump or OrcaSlicer 2.4.2's, with `layer_height` as the
+        # control that the comparison finds anything at all. Both dumps were taken
+        # under a preset triple -- the counts are profile-dependent (PrusaSlicer 343
+        # bare, 376 stock triple, 381 with the credential family loaded; Orca 616
+        # bare, 626 Creality, 639 Artillery) so no single number describes either.
+        "staged",
+        "destination",
+        "slicelab-readback-",
+        # The suffix on the half-written readback, between the write and the rename
+        # (D31). Spelled with the tool's own name rather than a bare `.part`, because
+        # `part` is a substring of OrcaSlicer's `part_cooling_fan_min_pwm` and a
+        # reader hitting this list should not have to work out which it is.
+        ".slicelab-partial",
+        # POSIX stream names. `_diagnosis` labels which stream the engine spoke on,
+        # because "it said nothing on either stream" and "slicelab dropped it" have
+        # to be tellable apart. Neither is a config key on either engine.
+        "stderr",
+        "stdout",
         # The adjudicated result: one verdict per authored override, and the keys
         # it was compared against. Slicelab's own report vocabulary, not an
         # engine's -- the engine's key names travel in the VALUES of `compared`,
@@ -86,6 +108,15 @@ DECLARED_VOCABULARY = frozenset(
         "status",
         "compared",
         "observed",
+        "adjudication",
+        "text",
+        # D4's word for the engine's own configuration dump, and the mechanism
+        # named after it. slicelab's term, not any engine's.
+        "readback",
+        # The marker a removed credential leaves. Deliberately not empty, because
+        # empty is a value the engine also writes -- a reader must be able to tell
+        # "slicelab took this" from "the engine wrote nothing here".
+        "<redacted>",
         "overrides",
         "source",
         # Report/lock structural field names slicelab owns.

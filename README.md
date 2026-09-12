@@ -5,10 +5,12 @@ small configuration delta, slice with a real engine, and get back G-code plus a
 lock file recording exactly what that engine resolved — or a non-zero exit
 saying why slicelab will not stand behind the result.
 
-> **Status: pre-alpha. Two verbs work: `slicelab which` and `slicelab presets`.**
+> **Status: pre-alpha. Three verbs work: `slicelab which`, `slicelab presets` and `slicelab resolve`.**
 > `which` finds an installed slicer and establishes whether its exit status can be
-> believed; `presets` enumerates its printer presets. Nothing slices yet — the `slice.toml` example below is
-> what the tool is *for*, not what it currently does. See
+> believed; `presets` enumerates its printer presets; `resolve` reads a `slice.toml`,
+> asks the engine what it would resolve that to, and diffs the answer against what
+> was asked. Nothing slices yet: `resolve` produces no G-code, and the `[geometry]`
+> half of the example below is what the tool is *for*, not what it currently does. See
 > [`docs/DECISIONS.md`](docs/DECISIONS.md) and
 > [`docs/RESEARCH.md`](docs/RESEARCH.md).
 
@@ -40,32 +42,42 @@ requested, per key, and refuse to call the run green when they disagree.
 
 ```toml
 # slice.toml — what you intended
-engine     = "prusaslicer"
-engine_req = ">=2.9.6,<3"
-
-[geometry] path = "part.stl"
-[output]   path = "part.gcode"
-
 [prusaslicer.base]
-printer  = "Original Prusa i3 MK3S & MK3S+"
-print    = "0.20mm QUALITY @MK3"
-filament = "Prusament PLA"
+printer-profile  = "Original Prusa i3 MK3S & MK3S+"
+print-profile    = "0.20mm QUALITY @MK3"
+material-profile = "Prusament PLA"
 
 [prusaslicer.set]
-perimeters   = 4
-fill_density = "60%"
+perimeters = 4.7
 ```
 
+One top-level table, named for the engine. The keys under `[base]` and `[set]` are
+that engine's own **command-line option names** (D28), so `fill-density`, never
+`fill_density`. Declaring the input model and the output path — `[geometry]`,
+`[output]`, an `engine_req` range — is what issue #7 adds along with `slice`; today
+`read_intent` accepts the engine table and nothing beside it.
+
+This is a real run, against PrusaSlicer 2.9.6:
+
 ```console
-$ slicelab slice
-refused: 1 requested override was not honoured
-  perimeters: requested 4.7, engine resolved 4          [coerced]
-  artifact staged at ~/.cache/slicelab/run-8f21/part.gcode
-  destination part.gcode NOT written
-  fix: set perimeters = 4 in slice.toml
+$ slicelab resolve slice.toml
+incomplete: 1 override(s) checked
+  perimeters: coerced -- requested '4.7', and perimeters came back '4'
+  readback written to /home/you/part/slice.readback.ini
+  redacted print_host, printhost_apikey, printhost_cafile
 $ echo $?
-1
+2
 ```
+
+The same 4.7 the engine took silently at rc=0 above. slicelab exits **2**, names
+both values, and keeps the engine's own configuration dump beside your intent as
+the evidence — minus the credential keys, which it lists rather than removing
+quietly.
+
+`incomplete`, not `refused`: the engine changed the value and said nothing about
+why, so slicelab reports that it cannot stand behind the result rather than
+claiming to know the cause (D27). `slice`, when it exists, gates the G-code on the
+same adjudication.
 
 The intended git model is four files: `part.stl` (the geometry), `slice.toml`
 (what you intended), `slice.lock` (exactly what produced it), `part.gcode` (the
@@ -132,9 +144,9 @@ separate tool that does not exist yet.
 OrcaSlicer adapter whose job is to prove the mechanism is not PrusaSlicer-shaped.
 
 **Deliberately not in v0.1.0:** any normalized cross-engine setting vocabulary.
-There is no `CORE_KEYS` yet -- it lands with the intent parser. Authored keys
-will be the engine's own
-native names. You cannot build a PrusaSlicer-shaped abstraction if you decline to
+`CORE_KEYS` exists and is **empty by assertion** — `tests/test_vocabulary_empty.py`
+fails the moment a name is added to it — rather than empty because nobody has got
+round to filling it. Authored keys are the engine's own native names. You cannot build a PrusaSlicer-shaped abstraction if you decline to
 write the abstraction until a second engine has voted on it.
 
 **Not planned:** authoring or design generation, G-code post-processing, machine

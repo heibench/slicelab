@@ -20,17 +20,22 @@ Everything else — the lock file, the multi-engine story, a native backend —
 is downstream of that one move. If the readback diff is ever weakened, delete
 the project rather than ship it.
 
-**Status: pre-alpha. Two verbs work: `slicelab which` and `slicelab presets`.**
+**Status: pre-alpha. Three verbs work: `slicelab which`, `slicelab presets` and `slicelab resolve`.**
 `which` discovers an installed engine, probes whether that engine's exit status
 can be believed, and reports its identity. `presets` enumerates an engine's
-printer presets, adjudicated on the JSON rather than the exit code. Nothing
-slices, reads a `slice.toml`, or writes a lock.
+printer presets, adjudicated on the JSON rather than the exit code. `resolve` reads
+a `slice.toml`, asks the engine what it would resolve it to, and diffs that
+against what was asked -- the mechanism, without slicing. It does write one file:
+the engine's configuration dump, staged, redacted and promoted beside the intent
+(D31). Nothing produces G-code or writes a lock.
 
 Treat this section as code: the moment another verb works, this paragraph is
 false and the change that made it work is not finished until it is corrected
-(org AGENTS.md 2.5). It has been corrected once when the exit map landed, once
-when `which` did, and once when `presets` did — stated as causes rather than as
-a tally, because the tally in `SECURITY.md` kept being the stale claim.
+(org AGENTS.md 2.5). It has been corrected when the exit map landed, when
+`which` did, when `presets` did, and when `resolve` did — stated as causes rather
+than as a tally, because the tally in `SECURITY.md` kept being the stale claim.
+Appending the cause is the correction; a change that leaves this list alone has
+not finished.
 
 ## Start here
 

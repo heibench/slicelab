@@ -328,7 +328,7 @@ def load_name_map(spec: EngineSpec, version: str) -> Mapping[str, MapEntry]:
             "per-build fact: caching one under an unknown build would hand the next "
             "release a map measured on this one"
         )
-    cached = _read_cache(cache_path_for(spec, version))
+    cached = _read_cache(cache_path_for(spec, version), spec.name, version)
     if cached is not None:
         return cached
     result = characterise(spec, version)
@@ -683,7 +683,7 @@ def _discard(sidecar: Path) -> None:
         sidecar.unlink()
 
 
-def _read_cache(path: Path) -> dict[str, MapEntry] | None:
+def _read_cache(path: Path, engine: str, version: str) -> dict[str, MapEntry] | None:
     """A previously measured map, or ``None`` if there is not a usable one.
 
     Every failure to read is a miss rather than an error: a truncated or
@@ -697,6 +697,15 @@ def _read_cache(path: Path) -> dict[str, MapEntry] | None:
     except (OSError, ValueError):
         return None
     if not isinstance(document, dict) or document.get("schema") != SCHEMA:
+        return None
+    # The document must say it is about the engine and build being asked for.
+    # The PATH is keyed by both, but a file sitting at the right path is not
+    # evidence it was measured there: a hand-edited cache claiming
+    # `engine: "orcaslicer", version: "99.99.99"` was served for PrusaSlicer
+    # 2.9.6 and produced a green run against keys the engine never writes.
+    # Checking the content is what makes this docstring's claim -- that a
+    # hand-edited cache is re-measured -- actually true.
+    if document.get("engine") != engine or document.get("version") != version:
         return None
     raw = document.get("entries")
     if not isinstance(raw, dict) or not raw:

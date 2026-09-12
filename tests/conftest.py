@@ -15,6 +15,7 @@ the entire end-to-end path.
 from __future__ import annotations
 
 import os
+from typing import NoReturn
 
 import pytest
 
@@ -26,6 +27,19 @@ REQUIRE_ENV = "SLICELAB_REQUIRE_ENGINE"
 
 def _require() -> bool:
     return os.environ.get(REQUIRE_ENV, "") not in ("", "0", "false", "False")
+
+
+def skip_or_fail(message: str) -> NoReturn:
+    """Skip, unless a runner has declared an engine is supposed to be here.
+
+    Exported because every engine-backed module needs it and the ones that rolled
+    their own bare `pytest.skip` were the ones that went quiet: a host where the only
+    usable engine lacks the fields a module requires skipped every test in it and
+    reported green, which is the shape this file's docstring names as the enemy.
+    """
+    if _require():
+        pytest.fail(f"{REQUIRE_ENV} is set but {message}")
+    pytest.skip(message)
 
 
 def _usable(spec: EngineSpec) -> tuple[bool, str]:
@@ -49,10 +63,7 @@ def any_engine() -> EngineSpec:
         if ok:
             return spec
         reasons.append(why)
-    message = "no usable engine found: " + "; ".join(reasons)
-    if _require():
-        pytest.fail(f"{REQUIRE_ENV} is set but {message}")
-    pytest.skip(message)
+    skip_or_fail("no usable engine found: " + "; ".join(reasons))
 
 
 @pytest.fixture(scope="session")
@@ -75,7 +86,4 @@ def usable_engines() -> list[EngineSpec]:
             reasons.append(why)
     if usable:
         return usable
-    message = "no usable engine found: " + "; ".join(reasons)
-    if _require():
-        pytest.fail(f"{REQUIRE_ENV} is set but {message}")
-    pytest.skip(message)
+    skip_or_fail("no usable engine found: " + "; ".join(reasons))

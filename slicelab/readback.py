@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from slicelab.engine.characterise import MapEntry, ProbeOutcome, Tracking
 from slicelab.status import KeyStatus, Outcome, forced_outcome_for, worst_of
 
-__all__ = ["KeyVerdict", "Resolution", "diff"]
+__all__ = ["KeyVerdict", "Adjudication", "diff"]
 
 
 @dataclass(frozen=True)
@@ -72,7 +72,7 @@ class KeyVerdict:
 
 
 @dataclass(frozen=True)
-class Resolution:
+class Adjudication:
     """Every authored override, adjudicated."""
 
     verdicts: tuple[KeyVerdict, ...]
@@ -107,7 +107,7 @@ def diff(
     requested: Mapping[str, str],
     resolved: Mapping[str, str],
     name_map: Mapping[str, MapEntry],
-) -> Resolution:
+) -> Adjudication:
     """Adjudicate each authored override against the engine's own readback.
 
     `requested` is what slicelab emitted, option name to the exact string sent --
@@ -115,7 +115,7 @@ def diff(
     own key names to its own values. `name_map` is the probed measurement tying
     one to the other.
     """
-    return Resolution(
+    return Adjudication(
         verdicts=tuple(
             _adjudicate(option, value, resolved, name_map.get(option))
             for option, value in sorted(requested.items())

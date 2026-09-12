@@ -35,13 +35,35 @@ class Plan:
 
     argv: tuple[str, ...]
     requested: dict[str, str]
-    sidecar: Path
+    staged: Path
+    """Where the ENGINE writes its dump. A path slicelab owns and destroys (D7, D31).
+
+    Never the author's path. The engine's dump is unredacted, and which credential
+    keys it carries depends on what was loaded: a stock triple on 2.9.6 emits
+    `print_host`, `printhost_apikey` and `printhost_cafile`, and setting any of the
+    digest keys adds `printhost_password`, `printhost_port` and `printhost_user`.
+    Writing that where the author keeps their `slice.toml` puts those bytes in the
+    directory the README's git model says you commit, and leaves them there on every
+    failure between the engine's write and slicelab's redacted overwrite. The full
+    measurement is on `PRUSASLICER.secret_keys`.
+    """
+
+    destination: Path
+    """Where the REDACTED copy is promoted, once there is one. Written only by slicelab.
+
+    The engine is never granted this path, so a sandboxed engine cannot write it
+    even if it tried.
+    """
+
     paths: frozenset[str]
     """Host paths this run touches, for a sandboxed engine to be granted.
 
     D19: computed from the plan's whole path set, never a fixed pair. A path the
     driver forgot to grant surfaces as an *engine* error about a file the author
     can see, which is a fault slicelab caused reported as one the engine found.
+
+    Holds `staged` and NOT `destination`: the engine has no business writing the
+    author's file, and the grant list is the place that is enforced.
     """
 
     @property
@@ -56,11 +78,22 @@ class Plan:
         return len(self.requested)
 
 
-def plan_resolve(intent: Intent, spec: EngineSpec, sidecar: Path) -> Plan:
+def plan_resolve(intent: Intent, spec: EngineSpec, destination: Path, staged: Path) -> Plan:
     """Compose the argv for `resolve`: ask the engine what it would resolve.
 
     No geometry, no `--export-gcode`, no output. `--save` alone answers the whole
-    question, and it answers it in ~0.2 s because nothing is sliced.
+    question, and it answers it without slicing.
+
+    **What that costs, measured, rather than "fast".** On this host, 2.9.6 via the
+    Flatpak `--command=` form, median of three: a bare `--save` with no presets is
+    0.20 s, and a `--save` with a preset triple -- which is every run `resolve` will
+    actually make, because `base_keys` requires one -- is 1.82 s. Loading the triple
+    is the whole of the difference. The first run against a build is slower again by
+    the option-map probe (D30), which is measured once and cached per build.
+
+    `staged` is where the engine is told to write. `destination` is where slicelab
+    promotes the redacted copy afterwards and is not in the argv at all; see D31 and
+    :class:`Plan`.
 
     Measured 2026-09-10 on 2.9.6: a preset triple plus `--save` and no model file
     exits 0, writes a 376-key configuration, puts zero bytes on stderr, and carries
@@ -82,25 +115,27 @@ def plan_resolve(intent: Intent, spec: EngineSpec, sidecar: Path) -> Plan:
         requested[key] = value
         argv.append(f"--{key}={value}")
 
-    # The sidecar is resolved against slicelab's cwd HERE, once, because two
-    # different directories would otherwise claim it. `grants_for` resolves a
+    # Both paths are resolved against slicelab's cwd HERE, once, because two
+    # different directories would otherwise claim them. `grants_for` resolves a
     # relative path against this process's cwd, while `launch.run` runs the engine
-    # inside a scratch directory it deletes on exit -- so a relative sidecar is
-    # granted in one place, written in another, and destroyed. Measured: exit 0,
-    # zero stderr, and no file at either location. An exit-0 run that produced
-    # nothing is the failure this project is named after, so the path is made
-    # unambiguous before it can become one.
-    sidecar = sidecar.resolve()
+    # inside a scratch directory it deletes on exit -- so a relative path is granted
+    # in one place, written in another, and destroyed. Measured: exit 0, zero
+    # stderr, and no file at either location. An exit-0 run that produced nothing is
+    # the failure this project is named after, so the paths are made unambiguous
+    # before they can become one.
+    staged = staged.resolve()
+    destination = destination.resolve()
 
     if spec.readback_flag is None:
         raise PlanError(
             f"{spec.name} has no measured way to dump its resolved configuration, so "
             "there is nothing to diff a request against"
         )
-    argv.append(f"{spec.readback_flag}={sidecar}")
+    argv.append(f"{spec.readback_flag}={staged}")
     return Plan(
         argv=tuple(argv),
         requested=requested,
-        sidecar=sidecar,
-        paths=frozenset({str(sidecar)}),
+        staged=staged,
+        destination=destination,
+        paths=frozenset({str(staged)}),
     )

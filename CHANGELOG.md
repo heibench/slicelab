@@ -7,6 +7,54 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `slicelab resolve` — reads a `slice.toml`, asks the engine what it would resolve
+  it to, and diffs that against what was asked. No G-code is produced: the engine
+  is asked for its resolved configuration and nothing else, which costs a preset
+  load rather than a slice. Measured on PrusaSlicer 2.9.6 via Flatpak, median of
+  three: 1.82 s with a preset triple, against 0.20 s for a bare dump that loads no
+  presets. The **first** run against a build is slower again, because the
+  option-to-key map is probed once and cached per build.
+  Exits `0` sliced, `1` refused, `2` incomplete, `3` empty, `4` error.
+- The option-to-key map, measured by probing each option with two sentinels. There
+  is no derivable rule: `--after-layer-gcode` writes `layer_gcode`, and a
+  dash-to-underscore transform reports a correct run as incomplete.
+- The engine's configuration dump is kept beside the report, byte for byte, with
+  credential-bearing keys replaced and named. The engine writes it into a
+  directory slicelab creates and destroys; the file you keep is written only by
+  slicelab, only after redaction, and the engine is never granted that path.
+
+### Fixed
+
+- The `secret_keys`, `bool_words` and `readback_flag` an engine needs are declared
+  per adapter rather than assumed. An engine that has not declared one is refused
+  rather than guessed for.
+- PrusaSlicer's credential keys were measured by enumerating them from the build
+  rather than reading a stock dump, which named three of six. A stock preset sets no
+  digest credentials, so `printhost_password`, `printhost_port` and `printhost_user`
+  were not present to be found and reached the readback in cleartext.
+- The readback is renamed into place rather than written over. `write_text`
+  truncates at open, so a failure part-way through — a full disk, a quota, an I/O
+  error — left a half-written file where the previous readback had been while the
+  run reported that nothing was established.
+- `slicelab presets --datadir '~someone/cfg'` exited `1` with a traceback when the
+  named user's home could not be determined, which is ordinary on hosts where
+  accounts are not local. Now `4`, with the reason.
+- `slicelab resolve .` exited `1` with a traceback. Deriving the default readback
+  path raises on a path with an empty name, and it happened outside the handlers, so
+  a path that was never opened was reported as an intent found wanting.
+- An engine that ran, declined the request and wrote no configuration now exits `2`
+  `incomplete` carrying the engine's own diagnosis, not `4` `error`. Nothing in the
+  environment is faulty when the engine starts, reads the request and says no.
+
+### Changed
+
+- `--readback` pointing at something that exists and is not a regular file — a
+  device node, a fifo, a directory — is now refused with exit `4`. The readback is
+  renamed into place, and a rename would replace such a destination rather than
+  write through it.
+
 ## [0.0.1] — 2026-09-06
 
 The name claim. Two verbs work; `0.1.0` remains what issue #12 scopes (D25).
