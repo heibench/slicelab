@@ -7,9 +7,18 @@ repos:
     hooks:
       # The staged index -- what a developer's commit actually contains.
       - id: gitleaks
+        # Aliased for the same reason the history scan is: both hooks have the id
+        # `gitleaks`, so `pre-commit run gitleaks` runs the pair and the aggregate
+        # exit code cannot say which fired. With an alias each can be run alone and
+        # required to reject a secret planted where that hook is supposed to look.
+        alias: gitleaks-staged
+        name: gitleaks (staged)
       # And the history. The hook above runs `gitleaks git --staged`, so on a fresh
       # checkout -- which is every CI run -- nothing is staged and it reads zero
-      # bytes and passes. A check that was handed nothing is not a check (org 2.4).
+      # bytes and passes. A check that was handed nothing is not a check (org 2.4),
+      # so the pair is not two scans: this one is what CI depends on, and the staged
+      # hook earns its place at commit time. Both are proved by effect, each against
+      # a secret planted where that hook is supposed to look.
       # Needs `fetch-depth: 0`, or there is no history here to scan.
       - id: gitleaks
         # An alias, so CI can run this hook ALONE and require it to reject a planted

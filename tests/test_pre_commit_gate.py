@@ -292,8 +292,20 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
         f"every CI step running {PROVER} is a self-test against a doctored config; "
         "nothing proves this repository's own hooks catch anything"
     )
-    assert any(f"{PROVER} {CONFIG.name}" in r for r in real), (
-        f"{PROVER} is run, but never against {CONFIG.name}: {[r.strip() for r in real]}"
+    # THE WHOLE INVOCATION, as with the repo scan above. This was `f"{PROVER}
+    # {CONFIG.name}" in r`, and appending `|| true` to it left the step reporting
+    # success over a config the self-test one line below declares unacceptable --
+    # with all nineteen assertions green, because the self-test invokes the prover
+    # inside an `if`, so the whole prove-the-prover apparatus stayed happy while the
+    # one invocation that adjudicates THIS repository's hooks adjudicated nothing.
+    # `|| echo` is named as a prior defeat in this function's docstring; it was
+    # closed for one step and not the other.
+    invocation = re.compile(
+        rf"\./{re.escape(PROVER)} {re.escape(CONFIG.name)} uvx pre-commit@[\d.]+"
+    )
+    assert any(invocation.fullmatch(r.strip()) for r in real), (
+        f"{PROVER} is never run against {CONFIG.name} as a bare, pinned command: "
+        f"{[r.strip() for r in real]}"
     )
     assert self_tests, (
         "nothing runs the prover against a broken configuration and requires it to "
@@ -331,6 +343,17 @@ def test_the_pre_commit_job_fetches_the_history_it_scans() -> None:
     assert checkout, "the pre-commit job does not check out the repository"
     assert checkout[0].get("with", {}).get("fetch-depth") == 0, (
         "the pre-commit job uses a shallow clone, so the history scan sees one commit"
+    )
+    # And NOTHING ELSE. `fetch-depth` was the only option anyone thought to pin, so
+    # one line beside it -- `sparse-checkout: scripts` -- left thirteen of seventy-two
+    # tracked paths on disk and every assertion here green. Cone mode keeps root-level
+    # files, so the config, the justfile and the prover all survived and every step
+    # still passed, over a tree with no `slicelab/` and no `tests/` in it. This is the
+    # effect the top-level `exclude:` test exists for, reached from the other file.
+    assert set(checkout[0].get("with", {})) == {"fetch-depth"}, (
+        "the checkout takes options beyond `fetch-depth`, and what is checked out "
+        "decides what the gate is allowed to see: "
+        f"with: {checkout[0].get('with')!r}"
     )
 
 
@@ -476,6 +499,17 @@ def test_no_gating_job_carries_an_environment_that_can_disable_a_hook() -> None:
     object to.
     """
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    # WORKFLOW level first. Every `workflow[...]` access in this file was
+    # `workflow["jobs"]`, so a top-level `env:` -- which every job inherits -- sat one
+    # scope above everything that looked. Measured: `SKIP:` there reported six of ten
+    # hooks Skipped and the job exited 0, and the prover and all three self-tests
+    # noticed nothing, because the six are not the ones it plants for.
+    # `defaults:` is the same class of inherited override and is refused with it.
+    for key in ("env", "defaults"):
+        assert key not in workflow, (
+            f"a workflow-level `{key}:` is inherited by every job, so one line there "
+            f"reaches inside all of them: {key}: {workflow[key]!r}"
+        )
     for name in workflow["jobs"]["ok"]["needs"]:
         job = workflow["jobs"][name]
         assert "env" not in job, (
@@ -514,6 +548,90 @@ def test_the_local_recipe_runs_the_version_ci_runs() -> None:
         assert line.startswith(PINNED_RUNNER), (
             f"the local hook recipe does not pin the runner CI pins: {line!r}"
         )
+
+
+def test_the_recipes_ci_invokes_still_run_what_they_claim() -> None:
+    """CI runs `just check` and `just test`; the recipes behind them were unpinned.
+
+    `test: uv run pytest -k "not pre_commit"` left `317 passed, 19 deselected` -- every
+    assertion in this file, the entire subject of this change, stops executing in CI
+    and CI stays green. `check: fmt-check` alone drops mypy and ruff the same way.
+
+    A guard whose own runner can be edited out in one line is the shape this whole
+    change is about, so it is pinned where the hook recipe already is.
+    """
+    lines = [
+        line.rstrip()
+        for line in (ROOT / "justfile").read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    recipes: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in lines:
+        if line and not line[0].isspace():
+            current = line.split(":")[0].strip() if ":" in line else None
+            if current is not None:
+                recipes[current] = [line.split(":", 1)[1].strip()]
+        elif line.strip() and current is not None:
+            recipes[current].append(line.strip())
+
+    assert recipes.get("test") == ["", "uv run pytest"], (
+        "the `test` recipe CI runs is not a plain, unfiltered pytest -- a `-k` or "
+        f"`--ignore` deselects the gate and CI stays green: {recipes.get('test')}"
+    )
+    assert recipes.get("check") == ["fmt-check lint typecheck"], (
+        "the `check` recipe CI runs no longer depends on all three of fmt-check, lint "
+        f"and typecheck: {recipes.get('check')}"
+    )
+
+
+def test_the_pull_request_trigger_keeps_no_branch_filter() -> None:
+    """The workflow explains why `pull_request:` carries no `branches:` filter.
+
+    A stacked pull request is based on its parent branch rather than on main, and
+    retargeting one fires `edited`, which is not a default activity type -- so a
+    `branches: [main]` filter means a retargeted PR gets no checks. That reasoning
+    lives in a comment, and a comment is not a check.
+
+    What happens downstream of "no checks ran" -- pending or green -- depends on branch
+    protection, which is configured outside this repository and is not asserted here.
+    The filter's absence is the part the repository owns.
+
+    (`on:` is YAML 1.1's boolean `True` after `safe_load`, which is why this looks for
+    both spellings rather than the obvious one.)
+    """
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    triggers = workflow.get("on", workflow.get(True))
+    assert triggers and "pull_request" in triggers, "CI does not run on pull requests"
+    on_pr = triggers["pull_request"] or {}
+    assert "branches" not in on_pr, (
+        "the pull_request trigger filters on branches, so a pull request based on "
+        f"anything else gets no checks: {on_pr['branches']!r}"
+    )
+
+
+def test_the_prover_plants_a_defect_for_every_hook_that_is_configured() -> None:
+    """Three of ten hooks were proved; the other seven were pinned for presence only.
+
+    One hook-level line each -- `exclude:`, `files:`, `stages: [manual]`,
+    `--exit-zero` -- took any of the seven out with every assertion green and the
+    prover still exiting 0, because a hook the prover never names cannot fail it.
+
+    Planting for all ten closes those four spellings at once, and this is what keeps
+    the two lists equal: a hook added to the configuration with no plant is as
+    invisible as one deleted from the prover, and neither shows up in a diff that only
+    touches one file.
+    """
+    declared = {str(hook.get("alias") or hook["id"]) for hook in _hooks()}
+    source = (ROOT / PROVER).read_text(encoding="utf-8")
+    listed = re.search(r"^hooks='([^']*)'", source, re.MULTILINE | re.DOTALL)
+    assert listed, f"{PROVER} declares no list of hooks to prove"
+    proved = set(listed.group(1).split())
+    assert proved == declared, (
+        f"the prover and the configuration disagree about which hooks exist. "
+        f"Configured and never proved: {sorted(declared - proved)}. "
+        f"Proved and not configured: {sorted(proved - declared)}"
+    )
 
 
 def test_the_repository_root_holds_nothing_stray() -> None:
