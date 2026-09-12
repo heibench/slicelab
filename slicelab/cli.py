@@ -248,7 +248,7 @@ def _presets(engine: str, datadir: str | None) -> int:
         # Established, not inferred: slicelab looked where this engine keeps its
         # configuration and there is none. Exit 4 rather than 2 -- `incomplete` says
         # "could not tell" and invites a retry that cannot help, where this is a
-        # fixable environment fault with a named remedy (D31, org 2.2).
+        # fixable environment fault with a named remedy (D29, org 2.2).
         print(
             render(
                 Outcome.ERROR,

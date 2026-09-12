@@ -3,7 +3,7 @@
 A fresh install answers `presets` with an error on stdout where JSON was expected.
 slicelab called that `incomplete` (2) -- *could not tell* -- when it can tell, and the
 answer is specific: installed, never configured. That is org contract 2.2's shape, and
-exit 4 is the code a CI job can branch on (D31).
+exit 4 is the code a CI job can branch on (D29).
 
 The hazard being guarded is the other direction. Reporting "not configured" because
 slicelab does not know where this engine keeps its configuration would put a guess
@@ -105,3 +105,39 @@ def test_each_adapter_declares_where_its_flatpak_keeps_configuration(spec: objec
     assert location is not None, f"{spec.name} declares no config location"  # type: ignore[attr-defined]
     assert location.flatpak, "the Flatpak location is the one that was measurable here"
     assert location.marker.endswith((".ini", ".conf")), location.marker
+
+
+def test_resolve_refuses_an_unconfigured_engine_too(tmp_path: Path, monkeypatch) -> None:
+    """D29's whole reason for existing: the two verbs must not disagree.
+
+    `presets`'s copy of this check is covered; `resolve`'s was not. Mutating it to
+    `if False:` left the entire suite green, so the clause existed and nothing held it
+    there -- which is how the two verbs came to disagree in the first place, the
+    condition #19 was filed to prevent.
+
+    In-process and engine-free: the check sits above `_name_map`, so stubbing
+    discovery is enough to reach it and no slicer is needed. That matters because
+    every CI runner is without one.
+    """
+    from slicelab import resolve as resolve_module
+    from slicelab.resolve import ResolveError
+
+    monkeypatch.setattr(resolve_module, "discover", lambda _spec: _found())
+    empty = tmp_path / "datadir"
+    empty.mkdir()
+    monkeypatch.setattr(
+        resolve_module,
+        "configuration_state",
+        lambda _spec, _found: ConfigState.ABSENT,
+    )
+    intent = tmp_path / "slice.toml"
+    intent.write_text(
+        "[prusaslicer.base]\n"
+        'printer-profile = "Original Prusa i3 MK3S & MK3S+"\n'
+        'print-profile = "0.20mm QUALITY @MK3"\n'
+        'material-profile = "Prusament PLA"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ResolveError, match="installed but not configured"):
+        resolve_module.resolve(intent, tmp_path / "out.ini")

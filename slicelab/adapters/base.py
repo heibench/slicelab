@@ -17,7 +17,7 @@ class ConfigLocation:
     an error on stdout rather than JSON. slicelab reported that as `incomplete` (2) --
     *could not tell* -- when it can tell, and the answer is specific: the engine is
     installed and not configured. That is an environment fault under org contract 2.2,
-    which is fixable and branchable, where 2 invites a retry that cannot help (D31).
+    which is fixable and branchable, where 2 invites a retry that cannot help (D29).
 
     **Established, never inferred from the engine's error prose.** Matching that prose
     would put engine strings outside `adapters/`, depend on wording upstream can change

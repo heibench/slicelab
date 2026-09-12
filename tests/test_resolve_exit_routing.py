@@ -222,8 +222,8 @@ def test_a_datadir_whose_home_cannot_be_determined_is_an_environment_fault(any_e
     )
 
 
-def test_an_unconfigured_engine_is_an_environment_fault(tmp_path: Path) -> None:
-    """4, from a fact rather than from the engine's error prose (D31).
+def test_an_unconfigured_engine_is_an_environment_fault(any_engine, tmp_path: Path) -> None:
+    """4, from a fact rather than from the engine's error prose (D29).
 
     `presets` met this first: a fresh install answers with an error on stdout where
     JSON was expected, and slicelab reported `incomplete` (2) -- could not tell -- when
@@ -232,6 +232,11 @@ def test_an_unconfigured_engine_is_an_environment_fault(tmp_path: Path) -> None:
 
     Driven through `--datadir`, which is the same check by the route a caller can
     actually reach: an empty directory is a real datadir with no configuration in it.
+
+    Takes `any_engine`. `_presets` discovers the engine BEFORE it reaches the config
+    check, so without one the absent-engine branch answers first and this fails rather
+    than skips -- on every CI runner, none of which installs a slicer. The test one
+    function above documents the same trap and takes the fixture for it.
     """
     intent = tmp_path / "slice.toml"
     intent.write_text(TRIPLE, encoding="utf-8")

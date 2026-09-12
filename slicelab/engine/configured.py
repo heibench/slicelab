@@ -22,6 +22,7 @@ code reserved for facts.
 from __future__ import annotations
 
 import os
+import stat
 import sys
 from enum import StrEnum, auto
 from pathlib import Path
@@ -123,10 +124,18 @@ def configuration_state(
     directory = where_configuration_should_be(spec, discovery, datadir=datadir)
     if directory is None:
         return ConfigState.UNDETERMINED
+    # `os.stat`, not `Path.is_file()`. On CPython 3.14 `is_file` became
+    # `os.path.isfile`, which swallows every OSError and answers False -- so a
+    # directory slicelab cannot READ came back "not configured" rather than "could not
+    # tell", and the comment below claimed the opposite. Measured: 3.11, 3.12 and 3.13
+    # all raise PermissionError here and 3.14 returns False, while `requires-python`
+    # admits all four and CI stops at 3.13, so the gate could not see it.
+    marker = directory / location.marker
     try:
-        return (
-            ConfigState.PRESENT if (directory / location.marker).is_file() else ConfigState.ABSENT
-        )
+        return ConfigState.PRESENT if stat.S_ISREG(os.stat(marker).st_mode) else ConfigState.ABSENT
+    except FileNotFoundError:
+        # Looked, and it is not there. The finding this function exists for.
+        return ConfigState.ABSENT
     except OSError:
         # A path slicelab cannot even stat establishes nothing about configuration.
         return ConfigState.UNDETERMINED

@@ -1072,7 +1072,10 @@ def test_the_import_boundary_test_is_not_vacuous() -> None:
 _KEY_SHAPED = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
 
 #: slicelab's own key-shaped terms under ``slicelab/engine/``, and the only ones
-#: allowed there. Thirteen entries, each a field or member this package defines.
+#: allowed there. Each entry is a name this package defines -- a field, an enum
+#: member, or an environment variable it reads. No count: one was written here by
+#: hand and the next entry falsified it, which is the maintenance this file is
+#: about. `len(ENGINE_PACKAGE_TERMS)` is the count, and it is not a claim.
 #:
 #: **A whitelist, not an exemption rule**, and that is the whole correction. Two
 #: earlier revisions tried to derive the exemption from the source: first "any
