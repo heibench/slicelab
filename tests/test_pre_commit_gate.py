@@ -1289,7 +1289,20 @@ def test_the_prover_plants_a_defect_for_every_hook_that_is_configured() -> None:
     # substitution or a `${hooks/ruff-format/}` filtering the list down walked past it
     # -- leaving six hooks proved by presence only, which is the state planting for all
     # ten closed.
-    assignments = re.findall(r"^hooks\s*[+:]?=", source, re.MULTILINE)
+    # Anchored to the start of a LINE, not to column 0, and allowing the declaration
+    # keywords. The first version of this was the tab finding one file over: an
+    # indented second assignment -- which is what a convenience override looks like,
+    # `if [ -n "${PROVE_FAST:-}" ]; then hooks='...'; fi` -- was counted by neither
+    # this nor the literal search above, and bash takes the last one. Measured: the
+    # trimmed prover then reports `ok:` over a `stages: [manual]` on a hook it no
+    # longer names, and all four CI self-tests still pass because they target hooks
+    # inside the trimmed list.
+    assignments = re.findall(
+        r"^[ \t]*(?:(?:declare|typeset|readonly|export|local)[ \t]+(?:-\w+[ \t]+)*)?"
+        r"hooks[ \t]*[+:]?=",
+        source,
+        re.MULTILINE,
+    )
     assert len(assignments) == 1, (
         f"{PROVER} assigns `hooks` {len(assignments)} times in some form; bash takes the last"
     )
