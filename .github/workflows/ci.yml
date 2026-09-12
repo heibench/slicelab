@@ -35,20 +35,26 @@ jobs:
       # resolve with no diff in this repository.
       - run: uvx pre-commit@4.2.0 run --all-files --show-diff-on-failure
 
-      # Prove each hook CATCHES, one at a time.
+      # Prove each hook CATCHES, one at a time, and that it EXISTS first.
       #
       # `tests/test_pre_commit_gate.py` reads this configuration, which keeps the
-      # suite offline but pins presence rather than effect: `gitleaks git` swapped
-      # for `gitleaks dir`, or `--maxkb` beside `--enforce-all`, leaves every
-      # assertion there green and the hook blind. This job has network and already
-      # runs the hooks, so it is the cheap place to close that.
+      # suite offline but pins presence rather than effect. This job has network and
+      # already runs the hooks, so it is the cheap place to close that.
       #
-      # ONE HOOK PER INVOCATION. An earlier version planted all three defects and
-      # read the aggregate exit code, which `pre-commit` sets to 1 if ANY hook
-      # fails -- so blinding the history scan alone left the step printing "rejected
-      # all three" and the job green. That is the defect this step exists to catch,
-      # inside the step itself.
-      - name: Each hook catches what it is named for
+      # ONE HOOK PER INVOCATION. An earlier version planted all three defects and read
+      # the aggregate exit code, which `pre-commit` sets to 1 if ANY hook fails -- so
+      # blinding the history scan alone left the step printing success.
+      #
+      # AND PROBE BEFORE ADJUDICATING. `pre-commit run <unknown-id>` also exits 1
+      # ("No hook with id ... in stage pre-commit"), so reading non-zero as "the hook
+      # rejected the plant" made deleting one `alias:` line -- or shipping an
+      # unparseable config, where nothing runs at all -- report three hooks catching
+      # and exit 0. That is D18's lesson about launch forms, in a different costume:
+      # an exit code is not evidence until you have established what it means here.
+      # Each hook is therefore run on the CLEAN repo first and required to pass, which
+      # is the only thing that distinguishes "this hook ran and found nothing" from
+      # "this hook does not exist".
+      - name: Each hook exists, runs, and catches what it is named for
         run: |
           set -euo pipefail
           scratch="$(mktemp -d)"
@@ -58,17 +64,31 @@ jobs:
           git init -q -b main .
           git config user.email ci@example.invalid
           git config user.name CI
+          echo 'clean' > clean.txt
+          git add -A && git commit -q -m 'a repository with nothing wrong with it'
+
+          hooks='gitleaks-history check-merge-conflict check-added-large-files'
+
+          # Probe: on a clean repo every hook must resolve and pass. A hook that does
+          # not exist fails here, so it can never be mistaken for one that caught
+          # something below.
+          for hook in $hooks; do
+            if ! uvx pre-commit@4.2.0 run "$hook" --all-files; then
+              echo "::error::$hook does not resolve or does not pass on a clean repository."
+              exit 1
+            fi
+          done
+          echo 'probe: all three hooks resolve and pass on a clean repository'
 
           head -c 2000000 /dev/urandom > big.bin
           printf 'a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> other\n' > conflicted.txt
           git add -A && git commit -q -m 'plant a large file and a conflict marker'
 
-          # A secret that lives only in history, so the staged scan cannot see it.
           # gitleaks allowlists canonical example keys such as AKIAIOSFODNN7EXAMPLE,
           # and its aws-access-token rule wants AKIA plus exactly sixteen characters
           # from its alphabet -- a shorter tail is not a finding and the hook reports
-          # clean, which is how the first version of this step passed for the wrong
-          # reason. base32 emits A-Z2-7, which is already within that alphabet.
+          # clean, which is how an earlier version of this step passed for the wrong
+          # reason. base32 emits A-Z2-7, already inside that alphabet.
           key="AKIA$(head -c 20 /dev/urandom | base32 | tr -d = | head -c 16)"
           test ${#key} -eq 20 || { echo "::error::planted key is ${#key} chars, not 20; gitleaks will not flag it"; exit 1; }
           printf 'aws_access_key_id = %s\n' "$key" > creds.txt
@@ -76,17 +96,12 @@ jobs:
           git rm -q creds.txt && git commit -q -m 'delete it again'
 
           failures=0
-          for pair in \
-            'gitleaks-history:a secret that survives only in history' \
-            'check-merge-conflict:a committed conflict marker' \
-            'check-added-large-files:a 2 MB tracked file'
-          do
-            hook="${pair%%:*}"; what="${pair#*:}"
+          for hook in $hooks; do
             if uvx pre-commit@4.2.0 run "$hook" --all-files; then
-              echo "::error::$hook passed $what. That hook is decorative."
+              echo "::error::$hook passed its planted defect. That hook is decorative."
               failures=$((failures + 1))
             else
-              echo "ok: $hook rejected $what"
+              echo "ok: $hook rejected its planted defect"
             fi
           done
           test "$failures" -eq 0 || exit 1

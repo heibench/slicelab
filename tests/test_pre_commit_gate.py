@@ -57,6 +57,13 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 #: The history scan's command, in full. Asserted exactly rather than by what it must
 #: not contain -- see `test_something_scans_history_and_not_only_the_staged_index`.
 HISTORY_SCAN_ENTRY = "gitleaks git --redact --verbose"
+
+#: The alias the CI proof step targets, and the runner it targets it with. The alias
+#: is in the CONFIG, not only in the script: `pre-commit run <unknown-id>` exits 1 just
+#: as a caught defect does, so deleting this line made the proof report three hooks
+#: catching while none ran.
+HISTORY_SCAN_ALIAS = "gitleaks-history"
+PINNED_RUNNER = "uvx pre-commit@"
 PYPROJECT = ROOT / "pyproject.toml"
 
 
@@ -125,6 +132,11 @@ def test_something_scans_history_and_not_only_the_staged_index() -> None:
         "deliberate, update HISTORY_SCAN_ENTRY and say why -- a flag added here can "
         "make it report a leak and pass anyway."
     )
+    assert history[0].get("alias") == HISTORY_SCAN_ALIAS, (
+        f"the history scan's alias changed to {history[0].get('alias')!r}. CI runs this "
+        "hook by that name, and `pre-commit run` on a name that does not exist exits 1 "
+        "exactly as a caught defect does."
+    )
     assert history[0].get("pass_filenames") is False, (
         "a history scan handed a file list is scanning the worktree, not the history"
     )
@@ -175,12 +187,16 @@ def test_ci_invokes_the_hooks_rather_than_mentioning_them() -> None:
     # inside a scratch repo it creates -- so a filter that merely looks for the
     # command passes on a tree where the real invocation has been replaced by an
     # echo and nothing checks this repository at all.
+    # The pinned invocation, not a substring. `echo 'pre-commit run --all-files
+    # (skipped)'` satisfied "contains pre-commit and contains run", and this
+    # repository's own tree would then never be scanned while CI reported success.
     here = [
         str(step.get("run", ""))
         for step in job["steps"]
-        if "pre-commit" in str(step.get("run", ""))
-        and " run" in str(step.get("run", ""))
+        if PINNED_RUNNER in str(step.get("run", ""))
+        and " run " in str(step.get("run", ""))
         and "mktemp" not in str(step.get("run", ""))
+        and not str(step.get("run", "")).strip().startswith("echo")
     ]
     assert here, (
         "no step runs pre-commit against this repository; every invocation is inside "
@@ -252,6 +268,13 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
         "the proof step does not run one hook per invocation, so a blind hook hides "
         "behind the other hooks' failures"
     )
+    # PROBE BEFORE ADJUDICATING. `pre-commit run <unknown-id>` exits 1 just as a
+    # caught defect does, so without a clean-repo probe, deleting one `alias:` line
+    # made the step report three hooks catching while none of them ran.
+    assert "does not resolve or does not pass on a clean repository" in script, (
+        "the proof step does not establish that each hook exists and runs before "
+        "reading a non-zero exit as proof it caught something"
+    )
     # And it must act on the tally. `exit 1` alone is not the property: the key-length
     # guard also exits 1, so that substring survives deleting the check that matters.
     assert 'test "$failures" -eq 0' in script, (
@@ -317,6 +340,37 @@ def test_the_aggregator_fails_when_pre_commit_does() -> None:
         f"and the aggregator is skipped rather than red: if: {ok.get('if')!r}"
     )
     assert not ok.get("continue-on-error"), "`ok` tolerates its own failure"
+    # And its STEPS. The job-level checks above were the ones this file learned to
+    # make for `pre-commit`, and `ok` -- the job branch protection actually requires
+    # -- did not get them. Both of these leave the condition correct and the gate
+    # inert: `continue-on-error` on the gate step makes the step fail and the job
+    # pass, and an extra clause like `&& github.event_name == 'push'` skips it on
+    # every pull request.
+    for step in ok["steps"]:
+        assert not step.get("continue-on-error"), (
+            f"a step in `ok` tolerates its own failure: {step.get('name') or step.get('run')}"
+        )
+    assert not set(re.findall(r"\b(github|env|inputs|vars)\.", condition)), (
+        "the gate is conditional on something other than the upstream results, so it "
+        f"can be skipped while those results are red: if: {condition!r}"
+    )
+
+
+def test_no_upstream_job_tolerates_its_own_failure() -> None:
+    """`continue-on-error` on any job `ok` waits for makes that job report success.
+
+    The condition compares `needs.<job>.result`, and a tolerated failure sets that to
+    `success`. So the aggregator is correct, the test above passes, and the job was
+    red. Org AGENTS.md 8.1 names this; it applies to every job in `needs:`, not only
+    to the one this change added.
+    """
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    tolerant = [
+        name
+        for name in workflow["jobs"]["ok"]["needs"]
+        if workflow["jobs"][name].get("continue-on-error")
+    ]
+    assert tolerant == [], f"{tolerant} report success whatever happens in them"
 
 
 @pytest.mark.parametrize("hook_id", ["trailing-whitespace", "end-of-file-fixer", "check-toml"])
