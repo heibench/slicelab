@@ -310,6 +310,7 @@ GATE_TESTS = frozenset(
         "test_the_repository_root_holds_nothing_stray",
         "test_the_tool_config_check_notices_a_gate_that_cannot_fail",
         "test_the_tool_config_check_proves_the_inventory_and_stub_checks_are_wired",
+        "test_the_tool_config_check_acts_on_its_own_self_test",
         "test_the_tool_config_check_still_rejects_a_real_file",
         "test_the_tool_config_check_still_rejects_a_real_tree",
     }
@@ -550,6 +551,11 @@ WEAKENINGS_FLOOR = 28
 #: natural path, with nothing objecting.
 REQUIRED_RULES_FLOOR = 6
 
+#: And for the inventory. Deleting a test, its declaration here, and the thing it
+#: guarded is one green diff otherwise -- measured on the matrix test and on the
+#: retargeted-PR test, each of which the workflow argues at length for.
+GATE_TESTS_FLOOR = 28
+
 
 def self_test() -> list[str]:
     """This script's own gate: it must pass a clean configuration and reject each bad one."""
@@ -589,6 +595,11 @@ def self_test() -> list[str]:
         ("the gate skipped", "5 passed, 28 skipped in 1.1s", 0),
         ("the gate xfailed", "5 passed, 28 xpassed in 1.1s", 0),
         ("the gate deselected", "no tests ran in 0.1s", 5),
+        # Each clause isolated. These two rows exist because every other row trips
+        # `returncode != 0` first, so the `\d+ passed` clause was never reached and
+        # deleting either one alone left the self-test green.
+        ("the gate erroring behind a clean-looking summary", "28 passed in 1.1s", 2),
+        ("the gate running nothing at exit 0", "no tests ran in 0.1s", 0),
         ("the gate failing", "27 passed, 1 failed in 1.1s", 1),
     ):
         if not gate_did_not_pass(summary, returncode):
@@ -631,6 +642,11 @@ def self_test() -> list[str]:
             f"only {len(REQUIRED_RULES)} required rule families: `select` is checked as a "
             "superset of this set, and `INTACT` derives its own select from it, so "
             "dropping one here shrinks the guard and its control together"
+        )
+    if len(GATE_TESTS) < GATE_TESTS_FLOOR:
+        failures.append(
+            f"only {len(GATE_TESTS)} declared gate tests: removing a test removes its "
+            "own declaration with it"
         )
     if len(WEAKENINGS) < WEAKENINGS_FLOOR:
         failures.append(

@@ -321,6 +321,17 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
         "fail, so the prover could stop proving anything and no one would know"
     )
     broken = self_tests[0]
+    # Each self-test must END IN `exit 1`. The step runs under `set -euo pipefail` and
+    # each block is `if <prover>; then echo "::error::..."; exit 1; fi` -- delete the
+    # `exit 1` and `echo` returns 0, so the step passes over a prover that accepted a
+    # configuration it must reject. That is the defect this function's own docstring
+    # names as a prior defeat, closed for the prover script and left open for the step
+    # that proves it. (`|| true` on the invocation is not the hole: it inverts the `if`
+    # and makes CI permanently red.)
+    assert broken.count("exit 1") >= 4, (
+        "a prover self-test prints `::error::` and does not fail the step, so that "
+        f"doctoring proves nothing: {broken.count('exit 1')} of 4 end in `exit 1`"
+    )
     # WHICH ARGUMENT IS DOCTORED. Three of these hand the prover a doctored pre-commit
     # config and the real `pyproject.toml`; the fourth is the other way round. Swapping
     # the fourth's two positionals leaves it passing the real config twice, which the
@@ -623,6 +634,21 @@ def test_the_local_recipe_runs_the_version_ci_runs() -> None:
         if line.startswith("export ")
     ]
     assert exports == [], f"the justfile exports into every recipe's environment: {exports}"
+    # And no `import`. Both allowlists above are built from this file alone, and a just
+    # `import` pulls settings in from another -- which has no `set `/`export ` prefix to
+    # match, no colon for the recipe parser to see, and may live under `scripts/`, which
+    # the root allowlist permits. Two lines made `just setup`, `just check` and
+    # `just test` echo their bodies and run none of them, at exit 0, over a live ruff
+    # error, a live type error and a failing test.
+    directives = [
+        line.strip()
+        for line in (ROOT / "justfile").read_text(encoding="utf-8").splitlines()
+        if re.match(r"\s*(import\??|!include)\s", line)
+    ]
+    assert directives == [], (
+        "the justfile pulls in another file, whose `set` and `export` lines neither "
+        f"allowlist here can see: {directives}"
+    )
     assert settings == ["set dotenv-load := false"], (
         "the justfile sets an interpreter-level option, and a pinned recipe body is "
         f"only worth what the shell running it does: {settings}"
@@ -1118,6 +1144,31 @@ def test_the_tool_config_check_proves_the_inventory_and_stub_checks_are_wired(
     assert done.returncode == 1, f"a gate of empty tests was accepted: {done.stdout}"
     assert "nothing in them that can fail" in done.stderr, (
         f"the emptied tests were not the finding: {done.stderr}"
+    )
+
+
+def test_the_tool_config_check_acts_on_its_own_self_test(tmp_path: Path) -> None:
+    """The self-test's verdict reaching `main()` is the last unexercised wiring.
+
+    `self_test()` is called in-process by the suite, so a broken predicate is caught
+    while pytest runs. But the whole point of that script is to hold the checks pytest
+    cannot hold, and `broken = self_test()[:0]` in `main()` costs it exactly that
+    independence with everything green.
+
+    So: a sandbox whose copy of the script has one predicate broken, which must be
+    refused by the script itself rather than by anything here.
+    """
+    sandbox = _replica_sandbox(tmp_path / "h", None)
+    script = sandbox / "scripts" / "check-tool-config.py"
+    source = script.read_text(encoding="utf-8")
+    blinded = source.replace('return f"{GATE_TEST}::" not in collected', "return False", 1)
+    assert blinded != source, "the predicate this test blinds is no longer there"
+    script.write_text(blinded, encoding="utf-8")
+
+    done = _adjudicate(sandbox)
+    assert done.returncode == 1, f"a script with a blind predicate was accepted: {done.stdout}"
+    assert "no longer detects" in done.stderr, (
+        f"the blinded predicate was not the finding: {done.stderr}"
     )
 
 
