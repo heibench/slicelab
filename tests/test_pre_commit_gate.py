@@ -1009,7 +1009,10 @@ def _replica_sandbox(tmp_path: Path, conftest: str | None) -> Path:
         "test_the_aggregator_fails_when_pre_commit_does",
     }
     stubs = "".join(
-        f"\n\ndef {name}() -> None:\n    pass\n"
+        # An assertion, not `pass`: the check refuses a declared test with nothing in
+        # it that can fail, and this stand-in has to satisfy the same rule the real
+        # gate does.
+        f"\n\ndef {name}() -> None:\n    assert _jobs()\n"
         for name in sorted(_checker().GATE_TESTS - implemented)
     )
     (sandbox / "tests" / "test_pre_commit_gate.py").write_text(

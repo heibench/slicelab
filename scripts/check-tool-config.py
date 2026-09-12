@@ -21,6 +21,7 @@ must reject. Probe before adjudicating, the same shape `prove-hooks-catch.sh` us
 
 from __future__ import annotations
 
+import ast
 import copy
 import re
 import shutil
@@ -46,8 +47,13 @@ REQUIRED_RULES = {"E", "F", "I", "UP", "B", "SIM"}
 #: `include` is here because an allowlist narrows: `include = ["slicelab/**"]` took
 #: `tests/` and `scripts/` out of both `just lint` and `just fmt-check` while leaving
 #: the prover's plants visible, so every instrument stayed green.
+#: `extend` is here because it points ruff at ANOTHER configuration file whose
+#: `exclude` is merged in -- a file that need not be called `ruff.toml`, so the
+#: nested-config check does not see it, and need not sit at the root, so the root
+#: allowlist does not either. One line took 51 of 62 files out of both `just lint`
+#: and `just fmt-check` with three live errors in the tree.
 #: An allowlist of absence, so adding one is a diff someone can object to.
-RUFF_SUBTRACTIONS = ("include", "exclude", "extend-exclude", "force-exclude")
+RUFF_SUBTRACTIONS = ("include", "exclude", "extend-exclude", "force-exclude", "extend")
 #: The same, for mypy -- which has strictly less behind it than ruff. No hook runs
 #: mypy and no workflow step does; `just typecheck` is the only invocation in the
 #: repository, so `exclude = ["slicelab/adapters/"]` drops four files and every
@@ -86,7 +92,13 @@ def problems(tool: dict[str, Any]) -> list[str]:
         )
     for key in RUFF_SUBTRACTIONS:
         if key in ruff:
-            found.append(f"[tool.ruff] {key} = {ruff[key]!r} -- ruff stops looking at those paths")
+            why = (
+                "it points ruff at another configuration file, whose exclusions are "
+                "merged in from a path nothing here reads"
+                if key == "extend"
+                else "ruff stops looking at those paths"
+            )
+            found.append(f"[tool.ruff] {key} = {ruff[key]!r} -- {why}")
     for key in RUFF_SUBTRACTIONS:
         if key in ruff.get("format", {}):
             found.append(
@@ -354,6 +366,35 @@ GATE_PLANTS: tuple[tuple[str, str, str, str], ...] = (
 )
 
 
+def gate_stub_problems(source: str) -> list[str]:
+    """Declared tests whose body cannot fail.
+
+    The inventory pins names, and a name is not an assertion. Replacing twenty-four of
+    the twenty-six bodies with `pass` leaves the listing identical, the count identical,
+    and this check reporting the gate intact -- over a tree with a retargeted-PR filter
+    and a shallow checkout planted in it. Worse than deleting a test, because the
+    allowlist then actively asserts the file still contains all of them.
+
+    Runtime is the only other signal (0.04s against 2.9s) and nothing reads it.
+
+    This closes `pass`, not `assert True`. The second is a strictly more deliberate
+    edit, and closing it would mean one planted defect per test.
+
+    Takes the source rather than reading it, so the self-test can hand it one it knows
+    the answer for.
+    """
+    hollow = sorted(
+        node.name
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in GATE_TESTS
+        and not any(isinstance(inner, ast.Assert | ast.Raise) for inner in ast.walk(node))
+    )
+    if hollow:
+        return [f"{GATE_TEST} keeps {hollow} by name with nothing in them that can fail"]
+    return []
+
+
 def gate_did_not_catch(output: str, returncode: int, must_catch: str) -> bool:
     """Whether a run of the gate against a deliberately broken workflow failed as it should.
 
@@ -473,6 +514,8 @@ def tree_problems() -> list[str]:
     # Every test it is supposed to contain, before asking whether any of them work.
     if inventory := gate_inventory_problems(collected.stdout):
         return inventory
+    if hollow := gate_stub_problems((ROOT / GATE_TEST).read_text(encoding="utf-8")):
+        return hollow
 
     # And it has to be ABLE TO FAIL. Everything above reads what a run reports.
     for label, before, after, must_catch in GATE_PLANTS:
@@ -490,6 +533,11 @@ def tree_problems() -> list[str]:
                 f"exit {returncode}, {output.strip().rsplit(chr(10), 1)[-1]!r}"
             )
     return found
+
+
+#: Ratchet floor for the number of self-tested weakenings. Raise it when checks are
+#: added; it exists so that removing one is loud.
+WEAKENINGS_FLOOR = 28
 
 
 def self_test() -> list[str]:
@@ -553,6 +601,24 @@ def self_test() -> list[str]:
         failures.append("no longer detects: a test deleted from the gate")
     if not gate_inventory_problems(f"{every}\n{GATE_TEST}::test_undeclared"):
         failures.append("no longer detects: a test added to the gate without being declared")
+
+    named = sorted(GATE_TESTS)[0]
+    if gate_stub_problems(f"def {named}():\n    assert True\n"):
+        failures.append("reports a test with an assertion in it as hollow")
+    if not gate_stub_problems(f"def {named}():\n    pass\n"):
+        failures.append("no longer detects: a declared test emptied to `pass`")
+
+    # Ratchets, not equalities: they fire when a check loses its proof and never when
+    # one is added. Trimming GATE_PLANTS back to a single lever reopened round 13's
+    # defect verbatim with every instrument green and the printed count unmoved, and
+    # WEAKENINGS is generated from the subtraction tuples, so removing a key removes
+    # its own self-test with it.
+    if len(GATE_PLANTS) < 3:
+        failures.append(f"only {len(GATE_PLANTS)} plants: a lever this gate defends lost its proof")
+    if len(WEAKENINGS) < WEAKENINGS_FLOOR:
+        failures.append(
+            f"only {len(WEAKENINGS)} weakenings: a configuration check lost its self-test"
+        )
     return failures
 
 
