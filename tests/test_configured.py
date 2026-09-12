@@ -157,8 +157,11 @@ def test_resolve_refuses_an_unconfigured_engine_too(tmp_path: Path, monkeypatch)
         encoding="utf-8",
     )
 
-    with pytest.raises(ResolveError, match="installed but not configured"):
+    with pytest.raises(ResolveError, match="installed but not configured") as raised:
         resolve_module.resolve(intent, tmp_path / "out.ini")
+    # Same branchable token `presets` prints. The two verbs agreeing is what D29
+    # exists for, and prose alone gives a consumer nothing to match on.
+    assert "reason = engine_has_no_configuration" in str(raised.value), str(raised.value)
 
 
 def test_a_directory_slicelab_cannot_read_is_not_reported_as_unconfigured(

@@ -258,6 +258,10 @@ def test_an_unconfigured_engine_is_an_environment_fault(any_engine, tmp_path: Pa
     assert done.returncode == 4, f"rc={done.returncode}\n{done.stdout}{done.stderr}"
     assert done.stderr.startswith("error"), done.stderr
     assert "not configured" in done.stderr, done.stderr
+    # The branchable token, not just the prose. §2.2 wants a field a consumer can
+    # branch on; deleting it from both verbs left 72 tests passing. `presets`' sibling
+    # reason is pinned the same way one file over (`test_presets.py`).
+    assert "reason = engine_has_no_configuration" in done.stderr, done.stderr
     assert str(empty) in done.stderr, (
         f"the report names a directory other than the one checked: {done.stderr}"
     )
