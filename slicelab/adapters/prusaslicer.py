@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from slicelab.adapters.base import EngineSpec, OptionProbe, PresetQuery
+from slicelab.adapters.base import ConfigLocation, EngineSpec, OptionProbe, PresetQuery
 
 
 def _options_from_help_fff(help_text: str, baseline: Mapping[str, str]) -> tuple[str, ...]:
@@ -150,6 +150,17 @@ SPEC = EngineSpec(
         "printhost_port",
         "printhost_user",
     ),
+    # Measured on this host: the Flatpak keeps configuration at
+    # ~/.var/app/com.prusa3d.PrusaSlicer/config/PrusaSlicer/, and `PrusaSlicer.ini` is
+    # written there once the engine has been configured. The directory itself is not
+    # the question -- the Flatpak runtime creates one before the engine has ever run.
+    #
+    # Only the Flatpak path is declared, because only the Flatpak is installed here.
+    # The others are left `None` deliberately: slicelab would be asserting a location
+    # nobody checked, and `configured.py` treats an undeclared platform as "could not
+    # tell" rather than "not configured". Filling them in is a measurement, not a
+    # lookup, and belongs to whoever has that install (#19).
+    config_location=ConfigLocation(marker="PrusaSlicer.ini", flatpak="PrusaSlicer"),
     readback_flag="--save",
     # Measured 2026-09-10 across seven boolean options. `1` and `0` are the only two
     # spellings that mean the same thing everywhere: =1 resolved true and =0 resolved
