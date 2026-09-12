@@ -1112,9 +1112,16 @@ ENGINE_PACKAGE_TERMS = frozenset(
         "digest_of",
         "exit_status",
         # The XDG base-directory spec's own variable names. Neither is a config key
-        # on either engine -- checked against PrusaSlicer 2.9.6's 381-key dump and
-        # OrcaSlicer 2.4.2's 639-key one, with `layer_height` as the control that the
-        # comparison finds anything at all.
+        # on either engine. Checked against a bare `--save` from PrusaSlicer 2.9.6 and
+        # a bare `--export-settings` from OrcaSlicer 2.4.2 -- the same two dumps D30's
+        # table calls the baseline readback -- with `layer_height` as the control that
+        # the comparison finds anything at all.
+        #
+        # No key counts here. The first version of this comment quoted two, and both
+        # were the wrong configuration's: a credential-loaded PrusaSlicer dump and a
+        # profile-loaded Orca one, in the same hunk that deleted a hand-written count
+        # for exactly that reason. The counts live in D30's table, where a command
+        # produces them.
         "xdg_cache_home",
         "xdg_config_home",
     }

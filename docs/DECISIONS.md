@@ -982,10 +982,16 @@ first copy to drift would be wrong about a path nobody re-measured.
 
 **The third state is not in `ConfigState`.** This entry names one — a datadir that
 exists and carries no vendor bundle, producing G3's `{"printer_models": ""}`. That
-case is real and is already refused, by `presets`' own `PresetsVerdict.EMPTY`: "the
-bundle is present but no models are installed". Modelling it a second time in
-`ConfigState` would mean two places deciding the same thing, and the two would
-disagree the first time one changed. `ConfigState` answers only what a directory can
+case is real and is already refused. G3's payload is `{"printer_models": ""}`, and
+`adjudicate` answers **`MALFORMED`** for it -- `'printer_models' is str, not a list` --
+deliberately, because `presets.py` keeps `""` and `[]` apart: "conflating them would
+hide a schema change behind an empty result". `EMPTY` is the neighbouring verdict, for
+a well-formed but empty list. An earlier draft of this paragraph named `EMPTY`, having
+read a docstring instead of running `adjudicate`; a docstring is not a measurement, and
+the docstring in question is itself wrong (see below).
+
+Modelling the state a second time in `ConfigState` would mean two places deciding one
+thing, and the two would disagree the first time one changed. `ConfigState` answers only what a directory can
 tell you — configured, not configured, or could-not-tell — and the inventory's
 emptiness is the adjudication `presets` already performs on the answer.
 

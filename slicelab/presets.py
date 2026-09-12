@@ -55,10 +55,14 @@ def adjudicate(stdout: str, root_key: str) -> Enumeration:
     * ``unparseable`` -- a datadir with no configuration at all makes
       PrusaSlicer 2.9.6 write a log line to **stdout** instead of JSON
       (reproduced 2026-09-06).
-    * ``empty`` -- the bundle is present but no models are installed, giving
-      ``{"printer_models": ""}`` (``notes/critique.md`` G3; exercised here with
-      a synthetic payload, not reproduced against a real engine).
-    * ``malformed`` -- the key is absent or is not a list.
+    * ``empty`` -- the key is a well-formed but empty list, ``[]``. The engine
+      enumerated and found nothing.
+    * ``malformed`` -- the key is absent, or is not a list. **This is where G3
+      lands**: a vendor bundle with no installed models answers
+      ``{"printer_models": ""}``, and ``""`` is a str, not a list. The two are kept
+      apart a few lines below on purpose, and this list said the opposite for long
+      enough that a numbered decision copied it (``notes/critique.md`` G3; exercised
+      with a synthetic payload, not reproduced against a real engine).
 
     The exit code is deliberately not an input. It is 1 on success (V5).
     """

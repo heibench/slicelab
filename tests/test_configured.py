@@ -13,6 +13,7 @@ platform must answer `UNDETERMINED` and change nothing.
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -158,3 +159,34 @@ def test_resolve_refuses_an_unconfigured_engine_too(tmp_path: Path, monkeypatch)
 
     with pytest.raises(ResolveError, match="installed but not configured"):
         resolve_module.resolve(intent, tmp_path / "out.ini")
+
+
+def test_a_directory_slicelab_cannot_read_is_not_reported_as_unconfigured(
+    tmp_path: Path,
+) -> None:
+    """The dangerous direction: a fabricated environment fault about a working machine.
+
+    `Path.is_file()` became `os.path.isfile` in CPython 3.14, which swallows every
+    `OSError` and answers False. So a datadir that IS configured but that slicelab
+    cannot traverse read as `absent`, and the verb told the author to configure an
+    engine that already was. Measured: 3.11, 3.12 and 3.13 raise `PermissionError`
+    there and 3.14 does not, while `requires-python` admits all four and the CI matrix
+    stops at 3.13 -- so the gate could not see it, and this test is the only thing that
+    can.
+
+    Both halves are pinned, because either reinstates it: reverting to `is_file()`, and
+    turning the `OSError` guard into `ABSENT`.
+    """
+    datadir = tmp_path / "configured-but-unreadable"
+    datadir.mkdir()
+    (datadir / "PrusaSlicer.ini").write_text("[x]\n", encoding="utf-8")
+    datadir.chmod(0o000)
+    try:
+        if os.access(datadir / "PrusaSlicer.ini", os.R_OK):  # pragma: no cover - root
+            pytest.skip("this user can read inside a mode-000 directory")
+        assert (
+            configuration_state(PRUSASLICER, _found(), datadir=str(datadir))
+            is ConfigState.UNDETERMINED
+        ), "a directory slicelab cannot read was reported as an unconfigured engine"
+    finally:
+        datadir.chmod(0o700)
