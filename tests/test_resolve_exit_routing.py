@@ -220,3 +220,34 @@ def test_a_datadir_whose_home_cannot_be_determined_is_an_environment_fault(any_e
     assert "--datadir" in done.stderr, (
         "this passed on the absent-engine branch, not on the path expansion: " + done.stderr
     )
+
+
+def test_an_unconfigured_engine_is_an_environment_fault(tmp_path: Path) -> None:
+    """4, from a fact rather than from the engine's error prose (D31).
+
+    `presets` met this first: a fresh install answers with an error on stdout where
+    JSON was expected, and slicelab reported `incomplete` (2) -- could not tell -- when
+    it can tell. `resolve` inherited the same ambiguity when it shipped, because #19
+    was meant to land with or before it and did not.
+
+    Driven through `--datadir`, which is the same check by the route a caller can
+    actually reach: an empty directory is a real datadir with no configuration in it.
+    """
+    intent = tmp_path / "slice.toml"
+    intent.write_text(TRIPLE, encoding="utf-8")
+    empty = tmp_path / "empty-datadir"
+    empty.mkdir()
+
+    done = subprocess.run(
+        [sys.executable, "-m", "slicelab", "presets", "prusaslicer", "--datadir", str(empty)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 4, f"rc={done.returncode}\n{done.stdout}{done.stderr}"
+    assert done.stderr.startswith("error"), done.stderr
+    assert "not configured" in done.stderr, done.stderr
+    assert str(empty) in done.stderr, (
+        f"the report names a directory other than the one checked: {done.stderr}"
+    )
+    assert "Traceback" not in done.stderr

@@ -1393,3 +1393,55 @@ engine's stderr means it refused the request", that engine's refusals become
 `refused` (1) and this stays the answer for every engine that has not measured one.
 The classification would live on the adapter, never in `resolve.py` or `readback.py`
 — D26's boundary is what keeps an engine's diagnostics out of the core.
+
+## D33 — an installed-but-unconfigured engine is an environment fault (4), established from a directory
+
+A freshly installed slicer has no configuration. Asking it to enumerate presets gets an
+error on stdout where JSON was expected, and slicelab reported `incomplete` (2):
+
+```console
+$ slicelab presets prusaslicer          # fresh install, nothing configured
+incomplete: prusaslicer: unparseable
+  stdout is not JSON (Expecting ',' delimiter); it begins
+  "[...] [error]   Configuration wasn't found. Check your 'datadir' value."
+$ echo $?
+2
+```
+
+Exit 2 says *slicelab could not tell*. But it can tell, and the answer is specific: the
+engine is installed and has never been configured. Org contract 2.2 lists that with "an
+engine that will not start" — a fixable condition in the environment, not an
+indeterminate result about the request. Exit 2 also invites a retry that cannot change
+the answer, while **4 is branchable**: a CI job can tell "configure the engine" from
+"the engine's output confused me".
+
+**Established from the filesystem, never from the engine's error prose.** Matching the
+prose was the cheap option and was rejected three times over: it would put engine
+strings outside `adapters/`, which `test_names_confined.py` forbids; it would depend on
+wording upstream can change without notice; and it would answer differently under
+another locale. Looking for the directory answers the same question from a fact.
+
+**The `UNDETERMINED` state is the load-bearing part.** An adapter declares where its
+engine keeps configuration *per launch form*, because a Flatpak install reads
+`~/.var/app/<app-id>/config/` while the same machine's PATH install reads
+`$XDG_CONFIG_HOME` — and this project's development machine has both. Where no location
+is declared for the form in hand, slicelab answers "could not tell" and the verb keeps
+whatever behaviour it had. Reporting "not configured" because slicelab does not know
+where to look would be org contract 2.3's substitution wearing the exit code reserved
+for facts, and it would turn every unmeasured engine into a permanent exit 4.
+
+Only the Flatpak locations are declared today, for both engines, because only Flatpaks
+are installed on the machine that measured them. The other three fields per engine are
+`None` deliberately: filling them in is a measurement, not a lookup.
+
+**The marker is a file, not the directory.** The Flatpak runtime creates a config
+directory before the engine has ever run, so testing for the directory would report
+every fresh install as configured — this check inverted.
+
+`presets` and `resolve` both apply it. #19 said it should land with or before `resolve`;
+it did not, so for one release the two verbs disagreed about what a missing
+configuration means.
+
+*Supersedes:* if an engine ever reports its own configuration state machine-readably,
+asking it beats inspecting its directories, and the adapter's declared location becomes
+the fallback rather than the source.

@@ -27,6 +27,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **An engine that is installed but has never been configured is now an environment
+  fault (`4`), not `incomplete` (`2`)**. A fresh install answers `presets` with an error
+  where JSON was expected; slicelab said "could not tell" when it can tell. Established
+  by looking for the engine's configuration, never by matching its error prose — and an
+  engine or platform whose location nobody has measured stays "could not tell" rather
+  than being reported absent (D33). `resolve` applies the same check.
+
 - The `secret_keys`, `bool_words` and `readback_flag` an engine needs are declared
   per adapter rather than assumed. An engine that has not declared one is refused
   rather than guessed for.

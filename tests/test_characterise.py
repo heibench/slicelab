@@ -1108,8 +1108,12 @@ ENGINE_PACKAGE_TERMS = frozenset(
         # `Identity` and `Completed`.
         "digest_of",
         "exit_status",
-        # The XDG base-directory spec's own variable name.
+        # The XDG base-directory spec's own variable names. Neither is a config key
+        # on either engine -- checked against PrusaSlicer 2.9.6's 381-key dump and
+        # OrcaSlicer 2.4.2's 639-key one, with `layer_height` as the control that the
+        # comparison finds anything at all.
         "xdg_cache_home",
+        "xdg_config_home",
     }
 )
 

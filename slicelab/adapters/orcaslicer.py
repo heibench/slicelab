@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from slicelab.adapters.base import EngineSpec, OptionProbe
+from slicelab.adapters.base import ConfigLocation, EngineSpec, OptionProbe
 
 
 def _options_from_settings_keys(listing: str, baseline: Mapping[str, str]) -> tuple[str, ...]:
@@ -101,6 +101,10 @@ SPEC = EngineSpec(
     # and the requested key is the only one that moved. Under a profile the dump is
     # larger and the count varies by profile -- 626 for V11's Creality triple, 639
     # for an Artillery one -- so the figure is stated with what it counts.
+    # Measured on this host: ~/.var/app/com.orcaslicer.OrcaSlicer/config/OrcaSlicer/,
+    # with `OrcaSlicer.conf` written once configured. Same reasoning as PrusaSlicer's:
+    # only the form that is installed here is declared.
+    config_location=ConfigLocation(marker="OrcaSlicer.conf", flatpak="OrcaSlicer"),
     readback_flag="--export-settings",
     option_probe=PROBE,
 )
