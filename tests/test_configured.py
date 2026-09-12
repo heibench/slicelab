@@ -13,6 +13,7 @@ platform must answer `UNDETERMINED` and change nothing.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -85,11 +86,27 @@ def test_an_empty_datadir_override_is_left_to_the_engine() -> None:
 
 
 def test_a_datadir_whose_home_cannot_be_resolved_establishes_nothing() -> None:
-    """`~nosuchuser/...` raises rather than resolving; that is not a finding about
-    configuration, and it must not become one."""
+    """A path slicelab cannot resolve is not a finding about configuration.
+
+    Only reachable where `expanduser` actually refuses. POSIX raises `RuntimeError`
+    for a `~user` it cannot look up; Windows expands the same string to a plausible
+    path under the profile root and raises nothing, so there is no unresolvable input
+    to feed the branch and the run takes the ordinary "named a directory that is not
+    there" route instead. Asserting the POSIX answer unconditionally reddened the
+    Windows leg, which is the leg that exists to catch exactly this.
+    """
+    unresolvable = "~nosuchuser99/x"
+    try:
+        Path(unresolvable).expanduser()
+    except (RuntimeError, ValueError):
+        pass
+    else:
+        pytest.skip(
+            f"{sys.platform} resolves {unresolvable!r} without raising, so this "
+            "branch cannot be reached here"
+        )
     assert (
-        configuration_state(PRUSASLICER, _found(), datadir="~nosuchuser99/x")
-        is ConfigState.UNDETERMINED
+        configuration_state(PRUSASLICER, _found(), datadir=unresolvable) is ConfigState.UNDETERMINED
     )
 
 
