@@ -170,9 +170,13 @@ def test_a_directory_slicelab_cannot_read_is_not_reported_as_unconfigured(
     `OSError` and answers False. So a datadir that IS configured but that slicelab
     cannot traverse read as `absent`, and the verb told the author to configure an
     engine that already was. Measured: 3.11, 3.12 and 3.13 raise `PermissionError`
-    there and 3.14 does not, while `requires-python` admits all four and the CI matrix
-    stops at 3.13 -- so the gate could not see it, and this test is the only thing that
-    can.
+    there and 3.14 does not, while `requires-python` admits all four.
+
+    On 3.11-3.13 this test passes whether the fix is present or not: `is_file()` raises
+    `PermissionError`, the `OSError` guard converts it to `UNDETERMINED`, and that is
+    the right answer by a different route. So the interpreter is half the test, and the
+    CI matrix had to grow `3.14` for the gate to be able to see the defect at all --
+    it stopped at 3.13, which is why this shipped untested twice.
 
     Both halves are pinned, because either reinstates it: reverting to `is_file()`, and
     turning the `OSError` guard into `ABSENT`.
@@ -190,3 +194,37 @@ def test_a_directory_slicelab_cannot_read_is_not_reported_as_unconfigured(
         ), "a directory slicelab cannot read was reported as an unconfigured engine"
     finally:
         datadir.chmod(0o700)
+
+
+def test_a_relative_xdg_config_home_is_ignored(monkeypatch) -> None:
+    """The basedir spec says a relative `XDG_CONFIG_HOME` "MUST be ignored".
+
+    Unreachable today: no adapter declares an `xdg` location, so the branch returns
+    before the environment is read. It is tested anyway because this change invites
+    contributors to fill those fields in for a PATH install, and the guard would then
+    be load-bearing on the first host with a relative value set — looking for the
+    engine's configuration wherever the user happened to be standing, which is the
+    defect `launch._scratch_roots` is written about.
+
+    `launch` and `characterise` each have the same guard and each test it; this is the
+    third place that reads an XDG variable and the only one that did not.
+    """
+    xdg_engine = replace(
+        PRUSASLICER,
+        config_location=ConfigLocation(marker="PrusaSlicer.ini", xdg="PrusaSlicer"),
+    )
+    found = _found(LaunchKind.PATH)
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relative-config")
+    ignored = where_configuration_should_be(xdg_engine, found)
+    assert ignored is not None
+    assert not str(ignored).startswith("relative-config"), (
+        f"a relative XDG_CONFIG_HOME was honoured, so slicelab looks for the engine's "
+        f"configuration relative to the working directory: {ignored}"
+    )
+    assert ignored == Path.home() / ".config" / "PrusaSlicer"
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(Path.home() / "xdg-absolute"))
+    assert where_configuration_should_be(xdg_engine, found) == (
+        Path.home() / "xdg-absolute" / "PrusaSlicer"
+    ), "an absolute XDG_CONFIG_HOME was ignored, which is the opposite defect"

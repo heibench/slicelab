@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+ROOT = Path(__file__).resolve().parent.parent
+
 TRIPLE = """[prusaslicer.base]
 printer-profile = "Original Prusa i3 MK3S & MK3S+"
 print-profile = "0.20mm QUALITY @MK3"
@@ -33,6 +35,7 @@ def _resolve(intent: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=120,
+        cwd=ROOT,
     )
 
 
@@ -101,6 +104,7 @@ def test_a_path_that_is_not_a_file_is_an_environment_fault(argument: str) -> Non
         capture_output=True,
         text=True,
         timeout=120,
+        cwd=ROOT,
     )
     assert done.returncode == 4, f"rc={done.returncode}\n{done.stdout}{done.stderr}"
     assert done.stderr.startswith("error"), done.stderr
@@ -208,6 +212,7 @@ def test_a_datadir_whose_home_cannot_be_determined_is_an_environment_fault(any_e
         capture_output=True,
         text=True,
         timeout=120,
+        cwd=ROOT,
     )
     assert done.returncode == 4, f"rc={done.returncode}\n{done.stdout}{done.stderr}"
     assert done.stderr.startswith("error"), done.stderr
@@ -248,6 +253,7 @@ def test_an_unconfigured_engine_is_an_environment_fault(any_engine, tmp_path: Pa
         capture_output=True,
         text=True,
         timeout=120,
+        cwd=ROOT,
     )
     assert done.returncode == 4, f"rc={done.returncode}\n{done.stdout}{done.stderr}"
     assert done.stderr.startswith("error"), done.stderr

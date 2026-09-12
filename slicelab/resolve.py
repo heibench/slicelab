@@ -127,7 +127,7 @@ def resolve(intent_path: Path, sidecar: Path) -> Resolved:
         raise ResolveError(
             f"{spec.name} is installed but not configured: no configuration at "
             f"{where_configuration_should_be(spec, found)}. Run the engine once to "
-            "create one"
+            "create one. reason = engine_has_no_configuration"
         )
 
     name_map = _name_map(spec, found)
