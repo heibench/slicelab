@@ -66,7 +66,6 @@ HISTORY_SCAN_ENTRY = "gitleaks git --redact --verbose"
 #: as a caught defect does, so deleting this line made the proof report three hooks
 #: catching while none ran.
 HISTORY_SCAN_ALIAS = "gitleaks-history"
-PINNED_RUNNER = "uvx pre-commit@"
 
 #: The script CI runs to prove each hook catches, and that CI also runs against
 #: broken configurations to prove the script still notices.
@@ -333,13 +332,21 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
     # deleting that one's `exit 1`, or the whole block, was green, and it is the only
     # guard on the coverage check the prover gained at the same time. A count that has
     # to be maintained by hand beside the thing it counts is a claim needing evidence.
-    # Derived from the INVOCATIONS, not from the sentence beside them. Counting
+    # Derived from the `if` ITSELF, not from the command inside it. Counting
     # `::error::the prover passed` counted a hand-written phrase: a sixth self-test
     # worded "the prover accepted", or the fifth reworded while tidying messages, is
     # not counted, so its missing `exit 1` is not noticed -- and the fifth block is the
     # only guard on the prover's coverage loop. One rewording restored the defect this
     # threshold was derived to close.
-    declared = len(re.findall(rf"(?m)^\s*if\s+\S+.*{re.escape(PINNED_RUNNER)}", broken))
+    #
+    # Then counting the invocation required the runner literal on the SAME PHYSICAL LINE
+    # as the `if`, which a `\` continuation breaks -- and the line in question is the
+    # longest in the workflow, over the repo's own limit, beside four the author did
+    # wrap. Hoisting the runner into a variable, the idiom the prover script itself
+    # uses, drove the count to 0 and made the whole assertion vacuous, so all seven
+    # `exit 1` lines could go. Over-counting is the safe direction: an unrelated `if`
+    # added here makes CI red rather than lowering the bar.
+    declared = len(re.findall(r"(?m)^\s*if\b", broken))
     assert broken.count("exit 1") >= declared, (
         "a prover self-test prints `::error::` and does not fail the step, so that "
         f"doctoring proves nothing: {broken.count('exit 1')} of {declared} end in `exit 1`"

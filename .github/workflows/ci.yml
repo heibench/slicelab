@@ -91,7 +91,8 @@ jobs:
           # OTHER file. This one doctors `pyproject.toml`, so that `cp` is pinned by
           # consequence.
           sed 's/^select = .*/select = []/' pyproject.toml > "$doctored"
-          if ./scripts/prove-hooks-catch.sh .pre-commit-config.yaml "$doctored" uvx pre-commit@4.2.0; then
+          if ./scripts/prove-hooks-catch.sh .pre-commit-config.yaml "$doctored" \
+            uvx pre-commit@4.2.0; then
             echo "::error::the prover passed a blinded ruff configuration."
             exit 1
           fi
