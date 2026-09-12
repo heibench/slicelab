@@ -37,7 +37,7 @@ jobs:
 
       # Prove each hook exists, runs, and catches what it is named for.
       - name: Each hook catches what it is named for
-        run: ./scripts/prove-hooks-catch.sh .pre-commit-config.yaml uvx pre-commit@4.2.0
+        run: ./scripts/prove-hooks-catch.sh .pre-commit-config.yaml pyproject.toml uvx pre-commit@4.2.0
 
       # And prove the prover. Four review rounds defeated the pytest guards around
       # that script one spelling at a time -- an `exit 1` deleted beneath an
@@ -55,7 +55,7 @@ jobs:
           trap 'rm -f "$doctored"' EXIT
 
           grep -v 'alias: gitleaks-history' .pre-commit-config.yaml > "$doctored"
-          if ./scripts/prove-hooks-catch.sh "$doctored" uvx pre-commit@4.2.0; then
+          if ./scripts/prove-hooks-catch.sh "$doctored" pyproject.toml uvx pre-commit@4.2.0; then
             echo "::error::the prover passed a hook that does not exist."
             exit 1
           fi
@@ -63,7 +63,7 @@ jobs:
 
           sed 's|entry: gitleaks git --redact --verbose|entry: gitleaks dir --redact --verbose|' \
             .pre-commit-config.yaml > "$doctored"
-          if ./scripts/prove-hooks-catch.sh "$doctored" uvx pre-commit@4.2.0; then
+          if ./scripts/prove-hooks-catch.sh "$doctored" pyproject.toml uvx pre-commit@4.2.0; then
             echo "::error::the prover passed a blind history scan."
             exit 1
           fi
@@ -77,11 +77,25 @@ jobs:
           # without looking when the repository is not mid-merge, which every CI run
           # is, so deleting `--assume-in-merge` blinds it.
           sed '/--assume-in-merge/d' .pre-commit-config.yaml > "$doctored"
-          if ./scripts/prove-hooks-catch.sh "$doctored" uvx pre-commit@4.2.0; then
+          if ./scripts/prove-hooks-catch.sh "$doctored" pyproject.toml uvx pre-commit@4.2.0; then
             echo "::error::the prover passed a merge-conflict check that cannot fail."
             exit 1
           fi
           echo 'ok: the prover rejected a blind merge-conflict check'
+
+          # A fourth, aimed at the project configuration rather than the hook
+          # configuration. `[tool.ruff]` decides what the `ruff-check` hook enforces,
+          # and the prover reads it only because it copies this file into its scratch
+          # repository -- one line, whose deletion left every hook still catching and
+          # all three doctorings above still failing, because they all doctor the
+          # OTHER file. This one doctors `pyproject.toml`, so that `cp` is pinned by
+          # consequence.
+          sed 's/^select = .*/select = []/' pyproject.toml > "$doctored"
+          if ./scripts/prove-hooks-catch.sh .pre-commit-config.yaml "$doctored" uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed a blinded ruff configuration."
+            exit 1
+          fi
+          echo 'ok: the prover rejected a blinded ruff configuration'
 
   check:
     name: Check

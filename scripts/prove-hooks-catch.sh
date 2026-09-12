@@ -15,13 +15,20 @@
 # `pre-commit run <unknown-id>` also exits 1, so a non-zero exit is not evidence of a
 # catch until the hook has been shown to exist and pass on a clean tree.
 #
-# Usage: prove-hooks-catch.sh <config> [runner...]
+# Usage: prove-hooks-catch.sh <config> <pyproject> [runner...]
 #   exit 0 — every hook resolved, passed clean, and rejected its own planted defect
 #   exit 1 — some hook is missing, or passed a defect it is named for
+#
+# `<pyproject>` is an argument rather than a fixed path so CI can hand this a doctored
+# one and require the run to fail. It was a hardcoded `cp` of the repository's own
+# file, and deleting that one line left every hook still catching, this script still
+# exiting 0, and all three self-tests still red -- because every one of them doctors
+# the pre-commit config, which was still being copied.
 set -euo pipefail
 
-config="${1:?usage: prove-hooks-catch.sh <config> [runner...]}"
-shift
+config="${1:?usage: prove-hooks-catch.sh <config> <pyproject> [runner...]}"
+pyproject="${2:?usage: prove-hooks-catch.sh <config> <pyproject> [runner...]}"
+shift 2
 runner=("${@:-pre-commit}")
 
 # `gitleaks-staged` is adjudicated on its own below: its plant has to be staged and
@@ -38,7 +45,7 @@ cp "$config" "$scratch/.pre-commit-config.yaml"
 # `ruff-check` hook in the real tree while this script went on printing
 # `ok: ruff-check rejected its planted defect`. A hook is only proved under the
 # configuration it actually runs with.
-cp "$(dirname "$(realpath "$0")")/../pyproject.toml" "$scratch/pyproject.toml"
+cp "$pyproject" "$scratch/pyproject.toml"
 cd "$scratch"
 git init -q -b main .
 git config user.email ci@example.invalid

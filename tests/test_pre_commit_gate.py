@@ -308,7 +308,8 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
     # `|| echo` is named as a prior defeat in this function's docstring; it was
     # closed for one step and not the other.
     invocation = re.compile(
-        rf"\./{re.escape(PROVER)} {re.escape(CONFIG.name)} uvx pre-commit@[\d.]+"
+        rf"\./{re.escape(PROVER)} {re.escape(CONFIG.name)} {re.escape(PYPROJECT.name)} "
+        rf"uvx pre-commit@[\d.]+"
     )
     assert any(invocation.fullmatch(r.strip()) for r in real), (
         f"{PROVER} is never run against {CONFIG.name} as a bare, pinned command: "
@@ -329,6 +330,12 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
         # `check-merge-conflict` returns 0 without looking when the repository is not
         # mid-merge, so deleting `--assume-in-merge` blinds it in every CI run.
         ("assume-in-merge", "a merge-conflict check that returns before it looks"),
+        # A FOURTH, aimed at the project configuration rather than the hook
+        # configuration. The prover reads `[tool.ruff]` only because it copies
+        # `pyproject.toml` into its scratch repository, and deleting that one line left
+        # every hook still catching with all three doctorings above still failing --
+        # they all doctor the other file.
+        ("select = []", "a ruff configuration that enforces nothing"),
     ):
         assert doctoring in broken, f"the prover is never tested against {what}"
 
@@ -634,6 +641,20 @@ def test_the_recipes_ci_invokes_still_run_what_they_claim() -> None:
         [sys.executable, str(ROOT / TOOL_CONFIG_CHECK)], capture_output=True, text=True
     )
     assert done.returncode == 0, done.stderr
+    # AND THE THREE `check` DEPENDS ON. `check` was pinned to name them and their
+    # bodies were not, so `uv run mypy slicelab/ tests/ || true` left `just check` at
+    # exit 0 over a real type error -- and no pre-commit hook runs mypy, so that recipe
+    # is the only mypy invocation in the repository. Org AGENTS.md 8.1 verbatim, one
+    # layer below where this change closed it. `lint` has the `ruff-check` hook as a
+    # backstop in CI; `typecheck` has nothing.
+    for name, body in (
+        ("fmt-check", "uv run ruff format --check ."),
+        ("lint", "uv run ruff check ."),
+        ("typecheck", "uv run mypy slicelab/ tests/"),
+    ):
+        assert recipes.get(name) == ["", body], (
+            f"the `{name}` recipe `just check` depends on is not {body!r}: {recipes.get(name)}"
+        )
     assert recipes.get("setup") == ["", "uv sync --locked"], (
         f"the `setup` recipe CI runs no longer fails on a stale lockfile: {recipes.get('setup')}"
     )
