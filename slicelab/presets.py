@@ -29,7 +29,14 @@ class PresetsVerdict(StrEnum):
     """Parsed, but the root key is missing or is not a list."""
 
     EMPTY = "empty"
-    """Parsed and correctly shaped, and contains nothing. G3."""
+    """Parsed, correctly shaped, and an empty list.
+
+    **Not G3.** G3's payload is ``{"printer_models": ""}``, and ``""`` is a str where a
+    list was promised, so it lands in :attr:`MALFORMED` -- deliberately, because
+    conflating the two would hide a schema change behind an empty result. This line
+    said "contains nothing. G3" for long enough that a numbered decision was written
+    from it, by reading this docstring instead of running ``adjudicate``.
+    """
 
     UNSUPPORTED = "unsupported"
     """This engine has no preset-enumeration verb at all."""

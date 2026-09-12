@@ -111,8 +111,10 @@ def configuration_state(
 
     `datadir` is the caller's override, taken as given: the author named a directory
     and that is the one that decides. An override slicelab was handed but could not
-    resolve is not this function's finding to make -- the caller has already refused
-    such a path before reaching here.
+    resolve is not this function's finding to make -- it answers `UNDETERMINED` and
+    lets the caller's own refusal handle it. (`cli._presets` asks this question BEFORE
+    it expands the path, so "the caller has already refused" -- which this comment
+    used to say -- had the order backwards.)
     """
     location = spec.config_location
     if location is None:
