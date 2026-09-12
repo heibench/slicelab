@@ -699,10 +699,7 @@ def test_the_recipes_ci_invokes_still_run_what_they_claim() -> None:
     # would recurse without end. Calling `problems()` directly asks the same question
     # about the same file and terminates. The tree half comes from `just check`, which
     # CI is required to invoke two tests down.
-    spec = importlib.util.spec_from_file_location("check_tool_config", ROOT / TOOL_CONFIG_CHECK)
-    assert spec and spec.loader
-    checker = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(checker)
+    checker = _checker()
     assert checker.self_test() == [], checker.self_test()
     weakened = checker.problems(tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"])
     assert weakened == [], f"pyproject.toml weakens a check that is otherwise gated: {weakened}"
@@ -926,10 +923,19 @@ def test_the_tool_config_check_still_rejects_a_real_tree(tmp_path: Path) -> None
     )
 
 
-#: A workflow whose `check` job does NOT tolerate its own failure, and a gate that says
-#: so. The tool-config check doctors the first and requires the second to notice, so a
-#: replica needs both -- and the gate here is a stand-in rather than a copy of this
-#: file, which is what keeps the nesting finite.
+def _checker() -> Any:
+    """The tool-configuration check, loaded as a module.
+
+    Not as a subprocess: it runs the gate suite, and this file is that gate.
+    """
+    spec = importlib.util.spec_from_file_location("check_tool_config", ROOT / TOOL_CONFIG_CHECK)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: A workflow carrying every string the check's plants doctor, none of them yet broken.
 _REPLICA_WORKFLOW = """\
 name: CI
 on:
@@ -939,20 +945,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: just check
+  ok:
+    runs-on: ubuntu-latest
+    needs: [check]
+    if: always()
+    steps:
+      - name: Fail unless every upstream job succeeded
+        if: needs.check.result != 'success'
+        run: exit 1
 """
 
-_REPLICA_GATE = """\
+#: The three assertions the check's plants require, and a stub for every other name the
+#: inventory declares. A stand-in rather than a copy of this file: a copy would build
+#: its own replica, without end.
+_REPLICA_GATE_HEAD = """\
 from pathlib import Path
 
 import yaml
 
+WORKFLOW = Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml"
+
+
+def _jobs():
+    return yaml.safe_load(WORKFLOW.read_text())["jobs"]
+
 
 def test_no_upstream_job_tolerates_its_own_failure() -> None:
-    workflow = yaml.safe_load(
-        (Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml").read_text()
-    )
-    for name, job in workflow["jobs"].items():
+    for name, job in _jobs().items():
         assert not job.get("continue-on-error"), name
+        for step in job.get("steps", []):
+            assert not step.get("continue-on-error"), f"{name}: {step}"
+
+
+def test_the_aggregator_fails_when_pre_commit_does() -> None:
+    gate = [s for s in _jobs()["ok"]["steps"] if "result" in str(s.get("if", ""))]
+    assert gate, "no gate step"
+    assert gate[0].get("run", "").strip() == "exit 1", gate[0]
 """
 
 #: Four lines that make every assertion in a gate file inert while the run reports
@@ -976,7 +1004,17 @@ def _replica_sandbox(tmp_path: Path, conftest: str | None) -> Path:
     (sandbox / ".github" / "workflows").mkdir(parents=True)
     (sandbox / ".github" / "workflows" / "ci.yml").write_text(_REPLICA_WORKFLOW, encoding="utf-8")
     (sandbox / "tests").mkdir()
-    (sandbox / "tests" / "test_pre_commit_gate.py").write_text(_REPLICA_GATE, encoding="utf-8")
+    implemented = {
+        "test_no_upstream_job_tolerates_its_own_failure",
+        "test_the_aggregator_fails_when_pre_commit_does",
+    }
+    stubs = "".join(
+        f"\n\ndef {name}() -> None:\n    pass\n"
+        for name in sorted(_checker().GATE_TESTS - implemented)
+    )
+    (sandbox / "tests" / "test_pre_commit_gate.py").write_text(
+        _REPLICA_GATE_HEAD + stubs, encoding="utf-8"
+    )
     if conftest is not None:
         (sandbox / "tests" / "conftest.py").write_text(conftest, encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=sandbox, check=True, capture_output=True)
@@ -987,19 +1025,16 @@ def test_the_tool_config_check_notices_a_gate_that_cannot_fail(tmp_path: Path) -
     """Everything else reads what a run REPORTS. This reads what it can still catch.
 
     Four lines of `pytest_runtest_makereport` rewrite the outcome before the session
-    counts it, so the gate runs, collects, and reports 28 passed at exit 0 over a
-    workflow whose `check` job tolerates its own failure -- with ruff clean, mypy clean
-    and this check printing success. `[project.entry-points.pytest11]` registers the
-    same hook from an installed module, one table above anything `problems()` reads, so
+    counts it, so the gate runs, collects, and reports everything passing at exit 0 over
+    a workflow whose `check` job tolerates its own failure -- with ruff clean, mypy clean
+    and the check printing success. `[project.entry-points.pytest11]` registers the same
+    hook from an installed module, one table above anything `problems()` reads, so
     refusing it in `tests/conftest.py` would close one spelling of two.
 
-    So the check plants a defect in a replica and requires the gate to notice -- the
-    instrument the rest of this change already uses. What is proved here is that it is
-    still WIRED: the predicate is self-tested one file over, and replacing the call
-    would otherwise leave everything green.
-
-    The replica's gate is a stand-in rather than a copy of this file. A copy would build
-    its own replica, without end.
+    So the check plants defects in a replica and requires the gate to notice them by
+    name -- the instrument the rest of this change already uses. What is proved here is
+    that those plants are still WIRED: the predicates are self-tested one file over, and
+    replacing the calls would otherwise leave everything green.
     """
     lying = _replica_sandbox(tmp_path / "d", _A_GATE_THAT_CANNOT_FAIL)
     done = _adjudicate(lying)
@@ -1014,6 +1049,34 @@ def test_the_tool_config_check_notices_a_gate_that_cannot_fail(tmp_path: Path) -
     done = _adjudicate(honest)
     assert done.returncode == 0, (
         f"a replica with nothing wrong with it was rejected: {done.stdout}{done.stderr}"
+    )
+
+
+def test_the_matrix_covers_every_python_this_project_claims() -> None:
+    """The workflow argues at length that 3.14 "is not optional cover" and nothing pins it.
+
+    That argument was written because a real defect existed only on 3.14 and the matrix
+    stopped at 3.13, so the test for it could not fail in the gate. Reducing the matrix
+    to `["3.11"]` today leaves every assertion here green -- a comment is not a check.
+
+    Pinned against the classifiers rather than a literal list, so the two cannot drift:
+    claiming support for an interpreter nothing runs on is the same defect from the
+    other side.
+    """
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    tested = {
+        str(version)
+        for job in workflow["jobs"].values()
+        for version in job.get("strategy", {}).get("matrix", {}).get("python-version", [])
+    }
+    claimed = {
+        line.rsplit(" :: ", 1)[-1]
+        for line in tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["classifiers"]
+        if line.startswith("Programming Language :: Python :: 3.")
+    }
+    assert tested == claimed, (
+        f"the test matrix and the declared interpreters disagree. Claimed and untested: "
+        f"{sorted(claimed - tested)}. Tested and unclaimed: {sorted(tested - claimed)}"
     )
 
 

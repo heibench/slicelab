@@ -48,6 +48,12 @@ REQUIRED_RULES = {"E", "F", "I", "UP", "B", "SIM"}
 #: the prover's plants visible, so every instrument stayed green.
 #: An allowlist of absence, so adding one is a diff someone can object to.
 RUFF_SUBTRACTIONS = ("include", "exclude", "extend-exclude", "force-exclude")
+#: The same, for mypy -- which has strictly less behind it than ruff. No hook runs
+#: mypy and no workflow step does; `just typecheck` is the only invocation in the
+#: repository, so `exclude = ["slicelab/adapters/"]` drops four files and every
+#: instrument stays green.
+MYPY_SUBTRACTIONS = ("exclude", "follow_imports", "ignore_missing_imports")
+
 RUFF_LINT_SUBTRACTIONS = (
     "ignore",
     "extend-ignore",
@@ -81,6 +87,12 @@ def problems(tool: dict[str, Any]) -> list[str]:
     for key in RUFF_SUBTRACTIONS:
         if key in ruff:
             found.append(f"[tool.ruff] {key} = {ruff[key]!r} -- ruff stops looking at those paths")
+    for key in RUFF_SUBTRACTIONS:
+        if key in ruff.get("format", {}):
+            found.append(
+                f"[tool.ruff.format] {key} = {ruff['format'][key]!r} -- the formatter "
+                "stops looking at those paths"
+            )
     for key in RUFF_LINT_SUBTRACTIONS:
         if key in ruff["lint"]:
             found.append(
@@ -89,6 +101,12 @@ def problems(tool: dict[str, Any]) -> list[str]:
             )
 
     mypy = tool["mypy"]
+    for key in MYPY_SUBTRACTIONS:
+        if key in mypy:
+            found.append(
+                f"[tool.mypy] {key} = {mypy[key]!r} -- `just typecheck` stops looking, "
+                "and it is the only thing that runs mypy"
+            )
     if mypy.get("ignore_errors"):
         found.append("[tool.mypy] ignore_errors is set -- `just typecheck` reports nothing")
     # `disable_error_code` reaches the same place quietly: with `["return-value"]` set,
@@ -152,6 +170,11 @@ WEAKENINGS: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
         ("[tool.ruff.lint] " + k, _weaken(("ruff", "lint"), k, ["F401"]))
         for k in RUFF_LINT_SUBTRACTIONS
     ),
+    *(
+        ("[tool.ruff.format] " + k, _weaken(("ruff",), "format", {k: ["slicelab"]}))
+        for k in RUFF_SUBTRACTIONS
+    ),
+    *(("[tool.mypy] " + k, _weaken(("mypy",), k, ["slicelab/"])) for k in MYPY_SUBTRACTIONS),
     ("mypy ignores every error", _weaken(("mypy",), "ignore_errors", True)),
     ("mypy disables an error code", _weaken(("mypy",), "disable_error_code", ["return-value"])),
     (
@@ -238,13 +261,100 @@ def gate_did_not_pass(summary: str, returncode: int) -> bool:
     return bool(re.search(r"\b\d+ (skipped|xfailed|xpassed|deselected|failed|error)", summary))
 
 
-#: The gate assertion the replica run below must trip. Naming it, rather than taking
-#: any failure, is what distinguishes "the gate caught the planted defect" from "the
-#: gate errored for an unrelated reason".
-GATE_MUST_CATCH = "test_no_upstream_job_tolerates_its_own_failure"
+#: Every test the gate file is expected to contain.
+#:
+#: The replica below plants defects and requires the gate to notice them, which proves
+#: the tests those defects belong to are alive. It says nothing about the rest: deleting
+#: twenty-eight of twenty-nine tests and keeping only the named one left `just check`
+#: and the whole suite green. Nothing else in this repository adjudicates `ci.yml`, so a
+#: deleted assertion there has nothing behind it.
+#:
+#: An allowlist, like the repository root's: removing a test means removing a line here,
+#: in a diff someone can object to.
+GATE_TESTS = frozenset(
+    {
+        "test_ci_invokes_the_hooks_rather_than_mentioning_them",
+        "test_ci_invokes_the_recipes_this_file_pins",
+        "test_every_hook_repository_is_pinned_to_an_immutable_revision",
+        "test_large_file_check_looks_at_every_file_not_just_the_new_ones",
+        "test_merge_conflict_check_looks_outside_an_active_merge",
+        "test_no_gating_job_carries_an_environment_that_can_disable_a_hook",
+        "test_no_top_level_filter_hides_the_tree_from_every_hook",
+        "test_no_upstream_job_tolerates_its_own_failure",
+        "test_something_scans_history_and_not_only_the_staged_index",
+        "test_the_aggregator_fails_when_pre_commit_does",
+        "test_the_config_parses_and_has_hooks",
+        "test_the_hook_and_the_project_agree_on_one_ruff_version",
+        "test_the_hooks_are_proved_to_catch_not_merely_to_be_configured",
+        "test_the_hooks_that_were_already_right_are_still_there",
+        "test_the_lint_hook_is_not_the_deprecated_alias",
+        "test_the_local_recipe_runs_the_version_ci_runs",
+        "test_the_matrix_covers_every_python_this_project_claims",
+        "test_the_pre_commit_job_fetches_the_history_it_scans",
+        "test_the_pre_commit_job_is_not_disabled_or_tolerated",
+        "test_the_prover_plants_a_defect_for_every_hook_that_is_configured",
+        "test_the_pull_request_trigger_keeps_no_branch_filter",
+        "test_the_recipes_ci_invokes_still_run_what_they_claim",
+        "test_the_repository_root_holds_nothing_stray",
+        "test_the_tool_config_check_notices_a_gate_that_cannot_fail",
+        "test_the_tool_config_check_still_rejects_a_real_file",
+        "test_the_tool_config_check_still_rejects_a_real_tree",
+    }
+)
 
 
-def gate_did_not_catch(output: str, returncode: int) -> bool:
+def gate_inventory_problems(collected: str) -> list[str]:
+    """Which of the gate's tests are gone, and which arrived without being declared.
+
+    Takes the collect-only output rather than reading it, so the self-test can hand it
+    a listing it knows the answer for.
+    """
+    seen = {
+        node.split("::")[-1].split("[")[0]
+        for node in re.findall(rf"{re.escape(GATE_TEST)}::[^\s]+", collected)
+    }
+    found = []
+    if missing := sorted(GATE_TESTS - seen):
+        found.append(f"{GATE_TEST} no longer contains {missing}")
+    if extra := sorted(seen - GATE_TESTS):
+        found.append(f"{GATE_TEST} contains undeclared tests {extra}; add them to GATE_TESTS")
+    return found
+
+
+#: One doctoring per lever the gate defends, each with the test that must catch it.
+#:
+#: A single plant proves a single assertion is alive. `test_no_upstream_job_tolerates_
+#: its_own_failure` has two halves -- job-level and step-level `continue-on-error` --
+#: and deleting the second half while planting a step-level one left everything green,
+#: with the test count unchanged at twenty-nine, so the inventory above does not cover
+#: it either. And `test_the_aggregator_fails_when_pre_commit_does` guards the only
+#: thing that makes `ok` fail; deleting it and turning `run: exit 1` into an echo left
+#: `just check` and all 359 tests green.
+#:
+#: Two doctorings of the same lever are one doctoring twice. These are three levers.
+GATE_PLANTS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "a `check` job that tolerates its own failure",
+        "  check:\n",
+        "  check:\n    continue-on-error: true\n",
+        "test_no_upstream_job_tolerates_its_own_failure",
+    ),
+    (
+        "a `check` STEP that tolerates its own failure",
+        "      - run: just check\n",
+        "      - run: just check\n        continue-on-error: true\n",
+        "test_no_upstream_job_tolerates_its_own_failure",
+    ),
+    (
+        "an aggregator that reports instead of failing",
+        "        run: exit 1\n",
+        "        run: echo 'an upstream job failed'\n",
+        "test_the_aggregator_fails_when_pre_commit_does",
+    ),
+)
+
+
+def gate_did_not_catch(output: str, returncode: int, must_catch: str) -> bool:
     """Whether a run of the gate against a deliberately broken workflow failed as it should.
 
     `gate_did_not_pass` requires the gate to RUN. It cannot require the gate to be ABLE
@@ -269,7 +379,7 @@ def gate_did_not_catch(output: str, returncode: int) -> bool:
     instrument that does is the one the rest of this change already uses -- plant a
     defect and require the detector to notice.
     """
-    return returncode == 0 or GATE_MUST_CATCH not in output
+    return returncode == 0 or must_catch not in output
 
 
 def _replica(destination: Path) -> None:
@@ -288,24 +398,31 @@ def _replica(destination: Path) -> None:
         subprocess.run(["git", *command], cwd=destination, check=True, capture_output=True)
 
 
-def gate_catches_a_planted_defect() -> tuple[str, int]:
-    """Run the gate against a replica whose workflow tolerates a failing `check` job.
+def gate_catches_a_planted_defect(before: str, after: str) -> tuple[str, int]:
+    """Run the gate against a replica whose workflow carries one planted defect.
 
     A replica rather than this tree, because the defect has to be planted somewhere the
     gate will read, and `just check` must not mutate the repository it is checking. The
     lie travels with the replica -- `tests/conftest.py` is tracked and an entry-point
-    plugin is installed -- which is exactly why this catches both.
+    plugin is installed -- which is why this catches both spellings.
+
+    Raises if the doctoring does not apply. A plant that failed to apply is otherwise
+    indistinguishable from one the gate survived, and it would be reported against the
+    gate: renaming the `check` job is legal, leaves the gate correct, and used to print
+    "the gate can no longer fail".
     """
     with tempfile.TemporaryDirectory() as scratch:
         replica = Path(scratch)
         _replica(replica)
         workflow = replica / ".github" / "workflows" / "ci.yml"
-        workflow.write_text(
-            workflow.read_text(encoding="utf-8").replace(
-                "  check:\n", "  check:\n    continue-on-error: true\n", 1
-            ),
-            encoding="utf-8",
-        )
+        original = workflow.read_text(encoding="utf-8")
+        doctored = original.replace(before, after, 1)
+        if doctored == original:
+            raise RuntimeError(
+                f"the planted defect did not apply to ci.yml: {before!r} is not in it. "
+                "This says nothing about the gate"
+            )
+        workflow.write_text(doctored, encoding="utf-8")
         done = subprocess.run(
             [sys.executable, "-m", "pytest", GATE_TEST, "-q", "-p", "no:cacheprovider"],
             cwd=replica,
@@ -353,14 +470,25 @@ def tree_problems() -> list[str]:
     if gate_did_not_pass(summary, ran.returncode):
         return [f"{GATE_TEST} is collected but does not run and pass: {summary!r}"]
 
+    # Every test it is supposed to contain, before asking whether any of them work.
+    if inventory := gate_inventory_problems(collected.stdout):
+        return inventory
+
     # And it has to be ABLE TO FAIL. Everything above reads what a run reports.
-    output, returncode = gate_catches_a_planted_defect()
-    if gate_did_not_catch(output, returncode):
-        found.append(
-            f"{GATE_TEST} does not catch a `check` job that tolerates its own failure, "
-            f"so it can no longer fail: exit {returncode}, "
-            f"{output.strip().rsplit(chr(10), 1)[-1]!r}"
-        )
+    for label, before, after, must_catch in GATE_PLANTS:
+        try:
+            output, returncode = gate_catches_a_planted_defect(before, after)
+        except RuntimeError as unplantable:
+            # Could not tell, and said so, rather than reporting the gate as broken.
+            # A legal rename of the `check` job leaves the gate correct and this plant
+            # inapplicable, and the two must not look the same (org 2.2).
+            found.append(f"cannot prove the gate catches {label}: {unplantable}")
+            continue
+        if gate_did_not_catch(output, returncode, must_catch):
+            found.append(
+                f"{GATE_TEST} does not catch {label} -- {must_catch} is gone or inert: "
+                f"exit {returncode}, {output.strip().rsplit(chr(10), 1)[-1]!r}"
+            )
     return found
 
 
@@ -406,14 +534,25 @@ def self_test() -> list[str]:
     ):
         if not gate_did_not_pass(summary, returncode):
             failures.append(f"no longer detects: {label}")
-    if gate_did_not_catch(f"FAILED {GATE_TEST}::{GATE_MUST_CATCH}\n1 failed, 27 passed", 1):
+    named = next(iter(sorted(GATE_TESTS)))
+    if gate_did_not_catch(f"FAILED {GATE_TEST}::{named}\n1 failed, 27 passed", 1, named):
         failures.append("reports a gate that DID catch the planted defect as unable to fail")
     for label, output, returncode in (
         ("a gate that reports everything as passing", "28 passed in 1.3s", 0),
         ("a gate that failed for an unrelated reason", f"FAILED {GATE_TEST}::test_other", 1),
     ):
-        if not gate_did_not_catch(output, returncode):
+        if not gate_did_not_catch(output, returncode, named):
             failures.append(f"no longer detects: {label}")
+    if not GATE_PLANTS:
+        failures.append("there are no defects to plant, so the gate is proved against nothing")
+    # And the inventory, probe then adjudicate.
+    every = "\n".join(f"{GATE_TEST}::{name}" for name in sorted(GATE_TESTS))
+    if gate_inventory_problems(every):
+        failures.append("reports a complete listing of the gate's tests as incomplete")
+    if not gate_inventory_problems(every.split("\n", 1)[1]):
+        failures.append("no longer detects: a test deleted from the gate")
+    if not gate_inventory_problems(f"{every}\n{GATE_TEST}::test_undeclared"):
+        failures.append("no longer detects: a test added to the gate without being declared")
     return failures
 
 
