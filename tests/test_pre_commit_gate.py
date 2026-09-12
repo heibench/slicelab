@@ -663,7 +663,12 @@ def test_the_local_recipe_runs_the_version_ci_runs() -> None:
     settings = [
         line.strip()
         for line in (ROOT / "justfile").read_text(encoding="utf-8").splitlines()
-        if line.startswith("set ")
+        # `\s`, not a literal space. `just` accepts a TAB in that position, and
+        # `set\tshell := ["bash", "-c", "true;"]` was invisible to this allowlist --
+        # every recipe body echoed and none run, both CI steps at exit 0, nothing in
+        # the repository red. One character, reaching the exact defect the assertion
+        # below describes. The `import` guard three lines down already anchors this way.
+        if re.match(r"set\s", line)
     ]
     # `export` is not a `set ` line, and it sets the environment of every recipe body.
     # `export PYTEST_ADDOPTS := "--ignore=tests/test_usage_exit_64.py"` dropped six
@@ -673,7 +678,10 @@ def test_the_local_recipe_runs_the_version_ci_runs() -> None:
     exports = [
         line.strip()
         for line in (ROOT / "justfile").read_text(encoding="utf-8").splitlines()
-        if line.startswith("export ")
+        # Same tab. `export\tPYTEST_ADDOPTS := "--ignore=..."` dropped 94 tests with
+        # everything green -- `just check` only catches the spelling that targets the
+        # gate file itself, because that is the one file it re-runs.
+        if re.match(r"export\s", line)
     ]
     assert exports == [], f"the justfile exports into every recipe's environment: {exports}"
     # And no `import`. Both allowlists above are built from this file alone, and a just
@@ -1275,6 +1283,15 @@ def test_the_prover_plants_a_defect_for_every_hook_that_is_configured() -> None:
     assert len(listed) == 1, (
         f"{PROVER} assigns `hooks=` {len(listed)} times; bash takes the last and this "
         "takes the first"
+    )
+    # And exactly one assignment of any shape. The line above counts single-quoted
+    # literals, not what `$hooks` holds when the loops read it, so a command
+    # substitution or a `${hooks/ruff-format/}` filtering the list down walked past it
+    # -- leaving six hooks proved by presence only, which is the state planting for all
+    # ten closed.
+    assignments = re.findall(r"^hooks\s*[+:]?=", source, re.MULTILINE)
+    assert len(assignments) == 1, (
+        f"{PROVER} assigns `hooks` {len(assignments)} times in some form; bash takes the last"
     )
     proved = set(listed[0].split())
     assert proved == declared, (
