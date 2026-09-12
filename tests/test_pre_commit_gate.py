@@ -328,9 +328,15 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
     # names as a prior defeat, closed for the prover script and left open for the step
     # that proves it. (`|| true` on the invocation is not the hole: it inverts the `if`
     # and makes CI permanently red.)
-    assert broken.count("exit 1") >= 4, (
+    # DERIVED, not a literal. This said `>= 4` about five things: it was written when
+    # there were four self-tests, and the fifth was added without raising it -- so
+    # deleting that one's `exit 1`, or the whole block, was green, and it is the only
+    # guard on the coverage check the prover gained at the same time. A count that has
+    # to be maintained by hand beside the thing it counts is a claim needing evidence.
+    declared = broken.count("::error::the prover passed")
+    assert broken.count("exit 1") >= declared, (
         "a prover self-test prints `::error::` and does not fail the step, so that "
-        f"doctoring proves nothing: {broken.count('exit 1')} of 4 end in `exit 1`"
+        f"doctoring proves nothing: {broken.count('exit 1')} of {declared} end in `exit 1`"
     )
     # WHICH ARGUMENT IS DOCTORED. Three of these hand the prover a doctored pre-commit
     # config and the real `pyproject.toml`; the fourth is the other way round. Swapping
@@ -362,6 +368,11 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
         # every hook still catching with all three doctorings above still failing --
         # they all doctor the other file.
         ("select = []", "a ruff configuration that enforces nothing"),
+        # A FIFTH, aimed at the prover's own loops rather than at either configuration
+        # it reads. A use-site trim leaves the `hooks` declaration intact, so both
+        # assignment anchors and the set-equality check stay green, and each of the
+        # four doctorings above targets a hook that remains inside the trimmed list.
+        ("${hooks/check-added-large-files/}", "a loop that skips a hook it lists"),
     ):
         assert doctoring in broken, f"the prover is never tested against {what}"
 
