@@ -27,7 +27,16 @@ cd "$scratch"
 git init -q -b main .
 git config user.email ci@example.invalid
 git config user.name CI
+# Under the same directory names the real tree uses, not at the root. A path-scoped
+# `exclude:` or `files:` -- one line above `repos:` -- blinds every file-based hook
+# over the whole source tree, and a prover that plants everything at the root cannot
+# see it: the plants stay visible, every hook still catches, and the config that
+# hides slicelab/ and tests/ from the gate proves out clean. Mirroring the layout
+# makes a path filter fail here, by effect rather than by spelling.
+mkdir -p slicelab tests
 echo clean > clean.txt
+echo clean > slicelab/clean.py
+echo clean > tests/clean.py
 git add -A && git commit -q -m 'a repository with nothing wrong with it'
 
 # Probe. Bare commands under `set -e`: no accumulator to forget to increment, no `||`
@@ -38,8 +47,8 @@ for hook in $hooks; do
 done
 echo 'probe: every hook resolves and passes on a clean repository'
 
-head -c 2000000 /dev/urandom > big.bin
-printf 'a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> other\n' > conflicted.txt
+head -c 2000000 /dev/urandom > slicelab/big.bin
+printf 'a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> other\n' > tests/conflicted.txt
 git add -A && git commit -q -m 'plant a large file and a conflict marker'
 
 # gitleaks allowlists canonical example keys such as AKIAIOSFODNN7EXAMPLE, and its
@@ -47,9 +56,9 @@ git add -A && git commit -q -m 'plant a large file and a conflict marker'
 # base32 emits A-Z2-7, already inside it.
 key="AKIA$(head -c 20 /dev/urandom | base32 | tr -d = | head -c 16)"
 test ${#key} -eq 20 || { echo "::error::planted key is ${#key} chars, not 20"; exit 1; }
-printf 'aws_access_key_id = %s\n' "$key" > creds.txt
-git add creds.txt && git commit -q -m 'plant a secret'
-git rm -q creds.txt && git commit -q -m 'delete it again'
+printf 'aws_access_key_id = %s\n' "$key" > slicelab/creds.txt
+git add slicelab/creds.txt && git commit -q -m 'plant a secret'
+git rm -q slicelab/creds.txt && git commit -q -m 'delete it again'
 
 # Adjudicate. Also bare under `set -e`, inverted: a hook that PASSES its plant is the
 # failure, and `!` makes that the script's failure too. No accumulator here either --

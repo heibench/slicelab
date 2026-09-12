@@ -69,6 +69,20 @@ jobs:
           fi
           echo 'ok: the prover rejected a blind history scan'
 
+          # A third, aimed at a hook that is NOT the history scan. The two above both
+          # break `gitleaks-history`, so they are one doctoring twice: trimming the
+          # prover's own list of hooks down to that one left both of them still
+          # failing, and the two hooks whose misconfiguration started all of this
+          # lost their proof with nothing noticing. `check-merge-conflict` returns 0
+          # without looking when the repository is not mid-merge, which every CI run
+          # is, so deleting `--assume-in-merge` blinds it.
+          sed '/--assume-in-merge/d' .pre-commit-config.yaml > "$doctored"
+          if ./scripts/prove-hooks-catch.sh "$doctored" uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed a merge-conflict check that cannot fail."
+            exit 1
+          fi
+          echo 'ok: the prover rejected a blind merge-conflict check'
+
   check:
     name: Check
     runs-on: ubuntu-latest

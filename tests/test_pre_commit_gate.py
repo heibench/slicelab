@@ -72,6 +72,20 @@ PROVER = "scripts/prove-hooks-catch.sh"
 PYPROJECT = ROOT / "pyproject.toml"
 
 
+def _shell(step: dict[str, Any]) -> str:
+    """A step's `run:` with its comment lines removed.
+
+    Every assertion below looks for a command inside a shell body, and a `#` line
+    explaining why that command is there satisfies a substring check for it just as
+    well. Measured: replacing `sed '/--assume-in-merge/d'` with a sed that matches
+    nothing left this file green, because the comment above it still said
+    `--assume-in-merge`. A guard defeated by its own rationale.
+    """
+    return "\n".join(
+        line for line in str(step.get("run", "")).splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def _config() -> dict[str, Any]:
     return yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
 
@@ -192,32 +206,29 @@ def test_ci_invokes_the_hooks_rather_than_mentioning_them() -> None:
     # inside a scratch repo it creates -- so a filter that merely looks for the
     # command passes on a tree where the real invocation has been replaced by an
     # echo and nothing checks this repository at all.
-    # The pinned invocation, not a substring. `echo 'pre-commit run --all-files
-    # (skipped)'` satisfied "contains pre-commit and contains run", and this
-    # repository's own tree would then never be scanned while CI reported success.
-    here = [
-        str(step.get("run", ""))
-        for step in job["steps"]
-        if PINNED_RUNNER in str(step.get("run", ""))
-        and " run " in str(step.get("run", ""))
-        and "mktemp" not in str(step.get("run", ""))
-        and not str(step.get("run", "")).strip().startswith("echo")
-    ]
-    # `|| true` on the one step that scans THIS repository leaves every assertion in
-    # this file green and nothing scanning the tree. Same for `; true` and `|| :`.
-    for step in job["steps"]:
-        command = str(step.get("run", ""))
-        if PINNED_RUNNER not in command:
-            continue
-        for swallow in ("|| true", "|| :", "; true", "|| exit 0"):
-            assert swallow not in command, (
-                f"a pre-commit invocation swallows its own failure with {swallow!r}: "
-                f"{command.strip()[:80]}"
-            )
+    # THE WHOLE INVOCATION, not a substring of it and not a denylist of swallows.
+    #
+    # This is the only step that ever looks at this repository's tree -- the prover
+    # and its self-tests both work inside a scratch directory and cannot see it. It
+    # was guarded by "contains the pinned runner, and contains none of `|| true`,
+    # `|| :`, `; true`, `|| exit 0`", and three one-line edits walked past that with
+    # all sixteen tests green:
+    #
+    #   - dropping `--all-files`, which makes `pre-commit` scan the staged diff. On a
+    #     clean checkout that is nothing, so nine of ten hooks report Skipped and the
+    #     step exits 0. That is section 2.4 in one word: a check handed nothing.
+    #   - `|| echo skipped`, which is not in the list -- and `|| echo` is named as a
+    #     prior defeat in this function's own docstring two screens down.
+    #   - naming a single hook id, so one hook runs and the rest never do.
+    #
+    # A denylist has to guess the next spelling. `fullmatch` does not: anything
+    # appended, removed or substituted fails it.
+    scan = re.compile(r"uvx pre-commit@[\d.]+ run --all-files --show-diff-on-failure")
+    here = [r for r in (_shell(s).strip() for s in job["steps"]) if scan.fullmatch(r)]
     assert here, (
-        "no step runs pre-commit against this repository; every invocation is inside "
-        f"a scratch directory. The job's run steps are "
-        f"{[str(s.get('run', ''))[:60] for s in job['steps'] if s.get('run')]}"
+        "no step runs the pinned `pre-commit ... --all-files` against this repository, "
+        "so nothing scans the tree this gate exists to gate. The job's run steps are "
+        f"{[str(s.get('run', ''))[:70] for s in job['steps'] if s.get('run')]}"
     )
 
 
@@ -267,7 +278,7 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
     requiring it to notice. Weakening the prover fails there, whatever the spelling.
     """
     _, job = _pre_commit_job()
-    runs = [str(step.get("run", "")) for step in job["steps"]]
+    runs = [_shell(step) for step in job["steps"]]
 
     assert (ROOT / PROVER).is_file(), f"{PROVER} is referenced by CI and not in the tree"
 
@@ -292,6 +303,13 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
     for doctoring, what in (
         ("alias: gitleaks-history", "a hook that does not exist"),
         ("gitleaks dir", "a blind history scan"),
+        # A THIRD, aimed at a different hook. The first two both break
+        # `gitleaks-history`, so they are one doctoring twice: neither notices the
+        # prover's own subject list being trimmed, and trimming it to one hook left
+        # this file at sixteen passed with both self-tests still exiting 1.
+        # `check-merge-conflict` returns 0 without looking when the repository is not
+        # mid-merge, so deleting `--assume-in-merge` blinds it in every CI run.
+        ("assume-in-merge", "a merge-conflict check that returns before it looks"),
     ):
         assert doctoring in broken, f"the prover is never tested against {what}"
 
@@ -334,13 +352,29 @@ def test_the_aggregator_fails_when_pre_commit_does() -> None:
     assert gate, "`ok` has no step that fails on an upstream job's result"
     condition = str(gate[0]["if"])
 
-    # Whole names, not substrings: `test` occurs inside `test-windows`, so a
-    # condition naming only the latter satisfies a substring check for both.
-    named = set(re.findall(r"needs(?:\.|\[')([A-Za-z0-9_-]+)", condition))
+    # EVERY job in the workflow, not every job in `needs:`. Comparing the condition
+    # against `needs:` is symmetric in the wrong direction -- it catches a job that is
+    # waited for and not required, and says nothing about one that is neither. Both
+    # measured green before this line: deleting `pre-commit` from `needs:` AND from
+    # the condition restored verbatim the defect this change was written to fix, and
+    # adding a fourth job whose only step is `exit 1` left `ok` green beside it. Org
+    # AGENTS.md 8.1 says every OTHER job, and that is what this now reads.
+    assert set(ok["needs"]) == set(workflow["jobs"]) - {"ok"}, (
+        "`ok` does not wait for every job: "
+        f"{sorted(set(workflow['jobs']) - {'ok'} - set(ok['needs']))} feed nothing, and "
+        f"{sorted(set(ok['needs']) - set(workflow['jobs']))} are waited for and do not exist"
+    )
+    # Whole names, and the CLAUSE SHAPE around each one. `test` occurs inside
+    # `test-windows`, so a condition naming only the latter satisfies a substring check
+    # for both -- and extracting bare names let one clause be rewritten to
+    # `== 'failure'`, which keeps the name present and stops counting `skipped` and
+    # `cancelled` for that job. Both are what section 8.1 is about.
+    named = set(re.findall(r"needs(?:\.|\[')([A-Za-z0-9_-]+)'?\]?\.result != 'success'", condition))
     missing = sorted(set(ok["needs"]) - named)
     assert missing == [], (
-        f"`ok` waits for {missing} and does not require them to succeed; a job listed "
-        "in needs: but absent from the condition can be red while ok is green"
+        f"`ok` waits for {missing} and does not require each to SUCCEED; a job absent "
+        "from the condition -- or named in a clause that only counts `failure` -- can "
+        f"be red, skipped or cancelled while ok is green: if: {condition!r}"
     )
     # And the step has to DO something about it. Changing `run: exit 1` to an echo
     # leaves the condition correct, this test green, and `ok` passing with every
@@ -409,10 +443,77 @@ def test_no_upstream_job_tolerates_its_own_failure() -> None:
             )
 
 
+def test_no_top_level_filter_hides_the_tree_from_every_hook() -> None:
+    """One line above `repos:` blinds every file-based hook at once.
+
+        exclude: ^(slicelab|tests|docs|notes|scripts)/
+
+    leaves this file at sixteen passed, the prover at exit 0, and both CI self-tests
+    still failing their doctored configs -- while a committed 2 MB binary and a
+    committed conflict marker both scan clean. The proof apparatus cannot see it
+    because the prover plants its defects in a scratch repository; the plants now sit
+    under the same directory names this excludes, which closes the hook-level spelling
+    by effect. This closes the top-level one by shape, which no plant can reach.
+    """
+    config = _config()
+    for key in ("exclude", "files"):
+        assert key not in config, (
+            f"a top-level `{key}:` decides what EVERY file-based hook is allowed to "
+            f"see, so one line disables the whole gate: {key}: {config[key]!r}"
+        )
+
+
+def test_no_gating_job_carries_an_environment_that_can_disable_a_hook() -> None:
+    """`SKIP` is pre-commit's own documented off switch, and it is one line of YAML.
+
+        env:
+          SKIP: trailing-whitespace,end-of-file-fixer,check-yaml,check-toml
+
+    on the job leaves every assertion here green and those four hooks unrun. The
+    prover covers only the three hooks it plants defects for, so the rest go quiet.
+    An allowlist rather than a check for `SKIP`, because the next off switch will have
+    a different name: adding an `env:` here means adding it in a diff someone can
+    object to.
+    """
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    for name in workflow["jobs"]["ok"]["needs"]:
+        job = workflow["jobs"][name]
+        assert "env" not in job, (
+            f"the `{name}` job sets environment variables, which is how a hook is "
+            f"turned off without touching its configuration: env: {job['env']!r}"
+        )
+        for step in job.get("steps", []):
+            assert "env" not in step, (
+                f"a step in `{name}` sets environment variables: "
+                f"{step.get('name') or step.get('run')} -- env: {step['env']!r}"
+            )
+
+
 @pytest.mark.parametrize("hook_id", ["trailing-whitespace", "end-of-file-fixer", "check-toml"])
 def test_the_hooks_that_were_already_right_are_still_there(hook_id: str) -> None:
     """Correcting three of them is not a licence to lose the rest."""
     assert _hook(hook_id)
+
+
+def test_the_local_recipe_runs_the_version_ci_runs() -> None:
+    """`just hooks` and CI must resolve the same hooks.
+
+    CI pins the runner because an unpinned one can change how hooks resolve with no
+    diff in this repository. The same applies to the recipe a developer runs before
+    pushing: an unpinned local runner means the tree can pass here and fail there, or
+    the reverse, with nothing in the diff to explain it. This is the divergence
+    `test_the_hook_and_the_project_agree_on_one_ruff_version` prevents one layer down.
+    """
+    recipe = [
+        line.strip()
+        for line in (ROOT / "justfile").read_text(encoding="utf-8").splitlines()
+        if "pre-commit" in line and not line.lstrip().startswith("#")
+    ]
+    assert recipe, "no justfile recipe runs the hooks"
+    for line in recipe:
+        assert line.startswith(PINNED_RUNNER), (
+            f"the local hook recipe does not pin the runner CI pins: {line!r}"
+        )
 
 
 def test_the_repository_root_holds_nothing_stray() -> None:

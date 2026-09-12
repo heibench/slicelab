@@ -56,8 +56,11 @@ test-engine:
     SLICELAB_REQUIRE_ENGINE=1 uv run pytest
 
 # Run every pre-commit hook against the whole tree
+# Pinned to the version CI runs. An unpinned runner can resolve hooks differently
+# with no diff here, which is the local/CI divergence the ruff version pin exists
+# one layer down to prevent.
 hooks:
-    pre-commit run --all-files
+    uvx pre-commit@4.2.0 run --all-files
 
 # Remove build and tool caches
 clean:
