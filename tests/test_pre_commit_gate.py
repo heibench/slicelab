@@ -381,9 +381,17 @@ def test_the_pre_commit_job_fetches_the_history_it_scans() -> None:
     )
     checkout = [s for s in job["steps"] if "actions/checkout" in str(s.get("uses", ""))]
     assert checkout, "the pre-commit job does not check out the repository"
-    assert checkout[0].get("with", {}).get("fetch-depth") == 0, (
-        "the pre-commit job uses a shallow clone, so the history scan sees one commit"
-    )
+    # EVERY checkout in this job, not the first. The key allowlist one test down says
+    # a checkout may carry nothing but `fetch-depth`; it says nothing about the value,
+    # and nothing at all about a checkout carrying no `with:`. So a second, bare
+    # checkout here satisfied both -- and `git fetch --depth=1` truncates an
+    # already-complete clone (measured: 5 commits down to 1, `shallow` file present),
+    # so the history hook this line exists for scans one commit and passes forever.
+    for step in checkout:
+        assert step.get("with", {}).get("fetch-depth") == 0, (
+            "a checkout in the pre-commit job is shallow, so the history scan sees one "
+            f"commit: with: {step.get('with')!r}"
+        )
     # And NOTHING ELSE. `fetch-depth` was the only option anyone thought to pin, so
     # one line beside it -- `sparse-checkout: scripts` -- left thirteen of seventy-two
     # tracked paths on disk and every assertion here green. Cone mode keeps root-level
@@ -734,6 +742,18 @@ def test_the_recipes_ci_invokes_still_run_what_they_claim() -> None:
         if line and not line[0].isspace():
             current = line.split(":")[0].strip() if ":" in line else None
             if current is not None:
+                # `just` refuses a plain duplicate but ACCEPTS a platform-attributed
+                # pair and picks by host. A `[linux]` copy first and the pinned
+                # `[windows]` copy second left this reading the pinned body while CI's
+                # ubuntu runner ran the other one -- `just check` at exit 0 with no
+                # ruff, no mypy and no configuration check, and `- run: just check`
+                # still sitting in the workflow. It also mis-fires the other way round,
+                # so refusing the repeat is right in both directions.
+                assert current not in recipes, (
+                    f"the justfile defines `{current}` twice -- `just` picks by "
+                    "platform attribute and this reads the last one, so the recipe CI "
+                    "runs need not be the one pinned here"
+                )
                 recipes[current] = [line.split(":", 1)[1].strip()]
         elif line.strip() and current is not None:
             recipes[current].append(line.strip())
@@ -1150,6 +1170,17 @@ def test_the_matrix_covers_every_python_this_project_claims() -> None:
         for job in workflow["jobs"].values()
         for version in job.get("strategy", {}).get("matrix", {}).get("python-version", [])
     }
+    # Minus whatever `exclude:` drops. GitHub applies it on partial match, so one line
+    # removes the 3.14 job this workflow argues at length is not optional cover, with
+    # the classifiers left claiming an interpreter nothing runs on -- the drift this
+    # test exists to prevent, reached from the sibling key. (`include:` is conservative
+    # in the safe direction: a version added only that way fails the equality.)
+    tested -= {
+        str(combination["python-version"])
+        for job in workflow["jobs"].values()
+        for combination in job.get("strategy", {}).get("matrix", {}).get("exclude", [])
+        if "python-version" in combination
+    }
     claimed = {
         line.rsplit(" :: ", 1)[-1]
         for line in tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["classifiers"]
@@ -1236,9 +1267,16 @@ def test_the_prover_plants_a_defect_for_every_hook_that_is_configured() -> None:
     """
     declared = {str(hook.get("alias") or hook["id"]) for hook in _hooks()}
     source = (ROOT / PROVER).read_text(encoding="utf-8")
-    listed = re.search(r"^hooks='([^']*)'", source, re.MULTILINE | re.DOTALL)
-    assert listed, f"{PROVER} declares no list of hooks to prove"
-    proved = set(listed.group(1).split())
+    # EXACTLY ONE assignment. This took the first match and bash takes the last, so a
+    # second `hooks='...'` line trimming the list to the four hooks the CI self-tests
+    # happen to target passed everything -- which is the state planting for all ten
+    # closed.
+    listed = re.findall(r"^hooks='([^']*)'", source, re.MULTILINE | re.DOTALL)
+    assert len(listed) == 1, (
+        f"{PROVER} assigns `hooks=` {len(listed)} times; bash takes the last and this "
+        "takes the first"
+    )
+    proved = set(listed[0].split())
     assert proved == declared, (
         f"the prover and the configuration disagree about which hooks exist. "
         f"Configured and never proved: {sorted(declared - proved)}. "
