@@ -987,8 +987,9 @@ case is real and is already refused. G3's payload is `{"printer_models": ""}`, a
 deliberately, because `presets.py` keeps `""` and `[]` apart: "conflating them would
 hide a schema change behind an empty result". `EMPTY` is the neighbouring verdict, for
 a well-formed but empty list. An earlier draft of this paragraph named `EMPTY`, having
-read a docstring instead of running `adjudicate`; a docstring is not a measurement, and
-the docstring in question is itself wrong (see below).
+read a docstring instead of running `adjudicate`; a docstring is not a measurement. The
+docstring in question was itself wrong, which is how the draft went wrong, and it is
+corrected on this branch.
 
 Modelling the state a second time in `ConfigState` would mean two places deciding one
 thing, and the two would disagree the first time one changed. `ConfigState` answers only what a directory can
