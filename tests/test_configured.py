@@ -208,7 +208,17 @@ def test_a_relative_xdg_config_home_is_ignored(monkeypatch) -> None:
 
     `launch` and `characterise` each have the same guard and each test it; this is the
     third place that reads an XDG variable and the only one that did not.
+
+    POSIX only, and the second platform assumption this change shipped -- the first
+    was a `~user` input that raises on POSIX and expands silently on Windows. The
+    dispatch in `where_configuration_should_be` is by launch form and then platform,
+    so on win32 the APPDATA branch answers before XDG is ever read.
     """
+    if sys.platform == "win32":
+        pytest.skip(
+            "the XDG branch is unreachable on win32: `where_configuration_should_be` "
+            "dispatches to the APPDATA branch first, by design"
+        )
     xdg_engine = replace(
         PRUSASLICER,
         config_location=ConfigLocation(marker="PrusaSlicer.ini", xdg="PrusaSlicer"),
