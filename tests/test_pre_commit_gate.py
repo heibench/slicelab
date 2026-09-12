@@ -592,6 +592,23 @@ def test_no_gating_job_carries_an_environment_that_can_disable_a_hook() -> None:
                     f"a step in `{name}` writes to `${lever}`, which reaches every "
                     f"later step: {step.get('name') or step.get('run')}"
                 )
+            # EVERY checkout, not the first one of the `pre-commit` job. What is
+            # checked out decides what all of this adjudicates, and `ref:` is a
+            # documented `actions/checkout` input -- one line points `just check`,
+            # `just test` and the configuration check at a commit the pull request does
+            # not contain. The existing guard reads `checkout[0]` of one job, so a
+            # SECOND checkout inside that same job walks past it: a re-clone into the
+            # workspace (`clean` defaults true) leaves the hooks and the prover
+            # adjudicating main's tree.
+            #
+            # `<=`, not `==`: the `check` and `test` checkouts legitimately carry no
+            # `with:` at all.
+            if "actions/checkout" in str(step.get("uses", "")):
+                assert set(step.get("with", {})) <= {"fetch-depth"}, (
+                    f"a checkout in `{name}` takes options beyond `fetch-depth`, and "
+                    f"what is checked out decides what the gate sees: "
+                    f"with: {step.get('with')!r}"
+                )
             # And no local action. `.github` is a whole allowed segment in the root
             # allowlist, and a composite action's own steps take `env:` and `shell:` --
             # both refused here -- and can write those environment files. Factoring the
