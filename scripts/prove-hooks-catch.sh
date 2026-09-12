@@ -61,8 +61,11 @@ echo 'probe: every hook resolves and passes on a clean repository'
 # One plant per hook, each named for the hook it is for.
 head -c 2000000 /dev/urandom > slicelab/big.bin
 printf 'a\n<<<<<<< HEAD\nb\n=======\nc\n>>>>>>> other\n' > tests/conflicted.txt
-printf 'x = 1   \n' > slicelab/trailing.py
-printf 'y = 2' > slicelab/noeol.py
+# Not `.py`. On `.py` these two are also what `ruff-format` reformats, so it
+# reported catching with its own plant removed -- a hook proved by someone else's
+# defect. Each plant now reaches only the hook it is named for.
+printf 'x = 1   \n' > slicelab/trailing.txt
+printf 'y = 2' > slicelab/noeol.txt
 printf 'a: [1, 2\n' > slicelab/broken.yaml
 printf 'a = [1, 2\n' > slicelab/broken.toml
 printf 'import os\n' > slicelab/unused.py

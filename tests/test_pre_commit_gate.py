@@ -588,6 +588,12 @@ def test_the_recipes_ci_invokes_still_run_what_they_claim() -> None:
         "the `check` recipe CI runs no longer depends on all three of fmt-check, lint "
         f"and typecheck: {recipes.get('check')}"
     )
+    # `--locked` is the third of these, and the justfile calls it load-bearing rather
+    # than tidiness: plain `uv sync` reconciles a stale lock and rewrites it at exit 0
+    # with no diagnostic, so the committed lockfile is never tested.
+    assert recipes.get("setup") == ["", "uv sync --locked"], (
+        f"the `setup` recipe CI runs no longer fails on a stale lockfile: {recipes.get('setup')}"
+    )
 
 
 def test_the_pull_request_trigger_keeps_no_branch_filter() -> None:
@@ -608,11 +614,59 @@ def test_the_pull_request_trigger_keeps_no_branch_filter() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     triggers = workflow.get("on", workflow.get(True))
     assert triggers and "pull_request" in triggers, "CI does not run on pull requests"
+    # NO options at all, not merely no `branches:`. `paths-ignore: ['**']` and
+    # `types: [labeled]` reach the same place -- no checks ran -- and both left every
+    # assertion here green. The `ok` job's own comment leans on this trigger having no
+    # path filtering, so what is pinned is the whole mapping being empty.
     on_pr = triggers["pull_request"] or {}
-    assert "branches" not in on_pr, (
-        "the pull_request trigger filters on branches, so a pull request based on "
-        f"anything else gets no checks: {on_pr['branches']!r}"
+    assert on_pr == {}, (
+        "the pull_request trigger takes options, and every one of them decides which "
+        f"pull requests get checked at all: pull_request: {on_pr!r}"
     )
+
+
+@pytest.mark.parametrize("recipe", ["check", "test"])
+def test_ci_invokes_the_recipes_this_file_pins(recipe: str) -> None:
+    """Pinning what a recipe does is worth nothing if nothing runs it.
+
+    The test above asserts `test` is a plain `uv run pytest` and `check` depends on
+    all three of fmt-check, lint and typecheck. Its docstring opens "CI runs
+    `just check` and `just test`" -- a premise asserted nowhere. Five ways past it,
+    each leaving this file green: either step replaced with an echo, either step given
+    `|| true`, either step deleted, and either job removed entirely from `jobs:`,
+    `needs:` and the `ok` condition together -- which keeps the needs/jobs equality
+    satisfied, because the job is gone from both sides.
+
+    Deleting the `test` job is the severe one: the whole pytest suite, this file
+    included, stops running in CI while `ok` reports success. That is the org
+    AGENTS.md 8.1 incident verbatim, one job over from where this change closed it.
+
+    Bare equality rather than a substring, so `just test || true` fails it too.
+    """
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    runs = [
+        _shell(step).strip() for job in workflow["jobs"].values() for step in job.get("steps", [])
+    ]
+    assert f"just {recipe}" in runs, (
+        f"no CI step runs `just {recipe}` as a bare command, so the recipe this file "
+        f"pins is never invoked: {runs}"
+    )
+
+
+def test_every_hook_repository_is_pinned_to_an_immutable_revision() -> None:
+    """`rev: v8.27.2` -> `rev: master` leaves every assertion here green.
+
+    The workflow pins its runner because an unpinned one can change how hooks resolve
+    with no diff in this repository. A `rev:` on a moving branch is the same failure
+    one layer down, and worse: the hook's code changes under a green CI run with
+    nothing in the history to point at.
+    """
+    for repo in _config()["repos"]:
+        rev = str(repo["rev"])
+        assert re.fullmatch(r"v?\d[\w.\-]*|[0-9a-f]{40}", rev), (
+            f"{repo['repo']} is pinned to {rev!r}, which can move under a green run. "
+            "Use a version tag or a full commit sha"
+        )
 
 
 def test_the_prover_plants_a_defect_for_every_hook_that_is_configured() -> None:
