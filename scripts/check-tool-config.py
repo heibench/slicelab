@@ -367,14 +367,15 @@ GATE_PLANTS: tuple[tuple[str, str, str, str], ...] = (
         "test_the_aggregator_fails_when_pre_commit_does",
     ),
     # A fourth lever: the measurement that proves each prover self-test can fail the
-    # step. It is four statements inside a test whose other assertions all pass
-    # without it, so
-    # neither the inventory (a name) nor `gate_stub_problems` (one assertion anywhere
-    # in the body) sees it go -- deleting it, or inverting its platform guard by one
-    # character, left `just check` and all 363 tests green over a self-test whose
-    # `exit 1` was deleted. THE LAST doctoring in that step, so the enumeration's
-    # upper bound is pinned with it: an off-by-one in `range(1, invocations + 1)` is
-    # green against any earlier one.
+    # step. It is four statements inside a test whose other assertions all pass without
+    # it, so neither the inventory (which pins a name) nor `gate_stub_problems` (which
+    # wants one assertion anywhere in the body) sees it go. Deleting it, or inverting
+    # its platform guard by one character, left `just check` and the whole suite green
+    # over a prover self-test whose `exit 1` had been deleted.
+    #
+    # THE LAST doctoring in that step, so the enumeration's upper bound is pinned with
+    # it: an off-by-one in `range(1, invocations + 1)` is green against any earlier one,
+    # and measured red against this one.
     (
         "a prover self-test that prints its error and passes anyway",
         'plants reach."\n            exit 1\n',
@@ -387,8 +388,8 @@ GATE_PLANTS: tuple[tuple[str, str, str, str], ...] = (
 def gate_stub_problems(source: str) -> list[str]:
     """Declared tests whose body cannot fail.
 
-    The inventory pins names, and a name is not an assertion. Replacing twenty-four of
-    the twenty-six bodies with `pass` leaves the listing identical, the count identical,
+    The inventory pins names, and a name is not an assertion. Replacing all but two of
+    the declared bodies with `pass` left the listing identical, the count identical,
     and this check reporting the gate intact -- over a tree with a retargeted-PR filter
     and a shallow checkout planted in it. Worse than deleting a test, because the
     allowlist then actively asserts the file still contains all of them.

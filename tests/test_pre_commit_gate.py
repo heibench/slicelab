@@ -363,10 +363,11 @@ def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
             f"{unguarded} of the {invocations} prover invocations in this step do not "
             "fail it: that doctoring prints its `::error::` and proves nothing"
         )
-    # WHICH ARGUMENT IS DOCTORED. Three of these hand the prover a doctored pre-commit
-    # config and the real `pyproject.toml`; the fourth is the other way round. Swapping
-    # the fourth's two positionals leaves it passing the real config twice, which the
-    # prover rejects for the wrong reason and every assertion here still allows.
+    # WHICH ARGUMENT IS DOCTORED. Most of these hand the prover a doctored pre-commit
+    # config and the real `pyproject.toml`; at least one is the other way round.
+    # Swapping that one's two positionals leaves it passing the real config twice, which
+    # the prover rejects for the wrong reason and every assertion here still allows.
+    # Floors rather than counts, so adding a doctoring needs no edit here.
     doctored_hooks = len(
         re.findall(rf'\./{re.escape(PROVER)} "\$doctored" {re.escape(PYPROJECT.name)} ', broken)
     )
@@ -970,7 +971,7 @@ def test_ci_invokes_the_recipes_this_file_pins(recipe: str) -> None:
     """Pinning what a recipe does is worth nothing if nothing runs it.
 
     The test above asserts `test` is a plain `uv run pytest` and `check` depends on
-    all three of fmt-check, lint and typecheck. Its docstring opens "CI runs
+    every recipe it names. Its docstring opens "CI runs
     `just check` and `just test`" -- a premise asserted nowhere. Five ways past it,
     each leaving this file green: either step replaced with an echo, either step given
     `|| true`, either step deleted, and either job removed entirely from `jobs:`,
@@ -1019,7 +1020,8 @@ def test_the_tool_config_check_still_rejects_a_real_file(tmp_path: Path) -> None
     """Its self-test proves `problems()` works. Nothing proved it is still WIRED UP.
 
     The suite asserts the script exits 0 on this repository, and the script asserts it
-    still detects sixteen weakened configurations. Between those two is one line reading
+    still detects every weakened configuration it declares. Between those two is one
+    line reading
     the real file, and severing it satisfies both:
 
         found = problems({**tomllib.loads(...)["tool"], **INTACT})
