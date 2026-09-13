@@ -16,6 +16,128 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  pre-commit:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The whole history, because the `gitleaks (history)` hook scans it. The
+          # default shallow clone gives it one commit, which it passes -- a check
+          # handed nothing (org 2.4). This is the line that makes that hook mean
+          # something.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      # Pinned, like ruff and the lockfile. An unpinned runner can change how hooks
+      # resolve with no diff in this repository.
+      - run: uvx pre-commit@4.2.0 run --all-files --show-diff-on-failure
+
+      # Prove each hook exists, runs, and catches what it is named for.
+      - name: Each hook catches what it is named for
+        run: ./scripts/prove-hooks-catch.sh .pre-commit-config.yaml pyproject.toml uvx pre-commit@4.2.0
+
+      # And prove the prover. Four review rounds defeated the pytest guards around
+      # that script one spelling at a time -- an `exit 1` deleted beneath an
+      # `::error::` that fails nothing, an accumulator that stopped being
+      # incremented, `|| echo` added where `|| true` was rejected, `set +e` inserted
+      # above the loop. Every one left a blind hook reported as catching.
+      #
+      # Guessing shell semantics from a substring is the wrong instrument. This runs
+      # the prover against configurations that are deliberately broken and requires it
+      # to notice, so weakening the prover fails here whatever the spelling.
+      - name: The prover fails on a config it should reject
+        run: |
+          set -euo pipefail
+          doctored="$(mktemp)"
+          trap 'rm -f "$doctored"' EXIT
+
+          grep -v 'alias: gitleaks-history' .pre-commit-config.yaml > "$doctored"
+          if ./scripts/prove-hooks-catch.sh "$doctored" pyproject.toml uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed a hook that does not exist."
+            exit 1
+          fi
+          echo 'ok: the prover rejected a hook that does not exist'
+
+          sed 's|entry: gitleaks git --redact --verbose|entry: gitleaks dir --redact --verbose|' \
+            .pre-commit-config.yaml > "$doctored"
+          if ./scripts/prove-hooks-catch.sh "$doctored" pyproject.toml uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed a blind history scan."
+            exit 1
+          fi
+          echo 'ok: the prover rejected a blind history scan'
+
+          # A third, aimed at a hook that is NOT the history scan. The two above both
+          # break `gitleaks-history`, so they are one doctoring twice: trimming the
+          # prover's own list of hooks down to that one left both of them still
+          # failing, and the two hooks whose misconfiguration started all of this
+          # lost their proof with nothing noticing. `check-merge-conflict` returns 0
+          # without looking when the repository is not mid-merge, which every CI run
+          # is, so deleting `--assume-in-merge` blinds it.
+          sed '/--assume-in-merge/d' .pre-commit-config.yaml > "$doctored"
+          if ./scripts/prove-hooks-catch.sh "$doctored" pyproject.toml uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed a merge-conflict check that cannot fail."
+            exit 1
+          fi
+          echo 'ok: the prover rejected a blind merge-conflict check'
+
+          # A fourth, aimed at the project configuration rather than the hook
+          # configuration. `[tool.ruff]` decides what the `ruff-check` hook enforces,
+          # and the prover reads it only because it copies this file into its scratch
+          # repository -- one line, whose deletion left every hook still catching and
+          # all three doctorings above still failing, because they all doctor the
+          # OTHER file. This one doctors `pyproject.toml`, so that `cp` is pinned by
+          # consequence.
+          sed 's/^select = .*/select = []/' pyproject.toml > "$doctored"
+          if ./scripts/prove-hooks-catch.sh .pre-commit-config.yaml "$doctored" \
+            uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed a blinded ruff configuration."
+            exit 1
+          fi
+          echo 'ok: the prover rejected a blinded ruff configuration'
+
+          # A fifth, aimed at the prover's own loops rather than at either
+          # configuration it reads. A USE-SITE trim leaves the `hooks` assignment
+          # intact, so the suite's set-equality check stays green, and all four
+          # doctorings above target hooks that remain inside the trimmed list.
+          trimmed="$(mktemp)"
+          sed 's|for hook in \$hooks; do|for hook in ${hooks/check-added-large-files/}; do|' \
+            scripts/prove-hooks-catch.sh > "$trimmed"
+          chmod +x "$trimmed"
+          if "$trimmed" .pre-commit-config.yaml pyproject.toml uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed without adjudicating every hook it lists."
+            exit 1
+          fi
+          rm -f "$trimmed"
+          echo 'ok: the prover rejected a loop that skipped a hook'
+
+          # A sixth, aimed at WHERE the prover plants rather than at what it runs. The
+          # plants sit under the real tree's directory names so a path filter scoped to
+          # one hook fails by effect; moving them to the root left every instrument
+          # green with that hook blind.
+          sed 's#^        args: \[--enforce-all\]$#&\n        exclude: ^(slicelab|tests)/#' \
+            .pre-commit-config.yaml > "$doctored"
+          if ./scripts/prove-hooks-catch.sh "$doctored" pyproject.toml uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed a hook that cannot see the source tree."
+            exit 1
+          fi
+          echo 'ok: the prover rejected a path-scoped blinding of one hook'
+
+          # A seventh, aimed at plant INDEPENDENCE. `ruff-format` reformats any badly
+          # formatted `.py`, so while two neighbouring plants were `.py` files it
+          # reported catching with its own plant removed -- a hook proved by someone
+          # else's defect. Blinding it to its own plant alone is clean only if the
+          # other plants no longer reach it.
+          sed 's#^      - id: ruff-format$#&\n        exclude: ^slicelab/misformatted\.py$#' \
+            .pre-commit-config.yaml > "$doctored"
+          if ./scripts/prove-hooks-catch.sh "$doctored" pyproject.toml uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed a hook that only its neighbours' plants reach."
+            exit 1
+          fi
+          echo 'ok: the prover rejected a hook proved by another hook''s plant'
+
   check:
     name: Check
     runs-on: ubuntu-latest
@@ -67,7 +189,7 @@ jobs:
   ok:
     name: ok
     if: always()
-    needs: [check, test]
+    needs: [pre-commit, check, test]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -79,8 +201,16 @@ jobs:
       # The tolerant form is right for a workflow with path filtering, where jobs
       # skip legitimately on a docs-only change. This one has none, so a skipped job
       # here is always a defect.
+      #
+      # Every job in `needs:` must also be named HERE. Listing a job in `needs:`
+      # only makes `ok` wait for it -- the `if` is what makes it count. `pre-commit`
+      # was added to one and not the other, so `ok` went green while a failing hook
+      # sat red beside it, in the change whose subject was checks that cannot fail.
+      # `needs['pre-commit']`, not `needs.pre-commit`: the hyphen needs the index
+      # form and the dotted one is a syntax error.
       - name: Fail unless every upstream job succeeded
         if: >-
+          needs['pre-commit'].result != 'success' ||
           needs.check.result != 'success' ||
           needs.test.result != 'success'
         run: exit 1
