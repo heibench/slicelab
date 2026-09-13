@@ -345,7 +345,8 @@ def gate_inventory_problems(collected: str) -> list[str]:
 #: thing that makes `ok` fail; deleting it and turning `run: exit 1` into an echo left
 #: `just check` and all 359 tests green.
 #:
-#: Two doctorings of the same lever are one doctoring twice. These are three levers.
+#: Two doctorings of the same lever are one doctoring twice. The entries below are the
+#: levers; this line deliberately does not count them.
 GATE_PLANTS: tuple[tuple[str, str, str, str], ...] = (
     (
         "a `check` job that tolerates its own failure",
@@ -366,7 +367,8 @@ GATE_PLANTS: tuple[tuple[str, str, str, str], ...] = (
         "test_the_aggregator_fails_when_pre_commit_does",
     ),
     # A fourth lever: the measurement that proves each prover self-test can fail the
-    # step. It is four lines inside a test that has nineteen other assertions, so
+    # step. It is four statements inside a test whose other assertions all pass
+    # without it, so
     # neither the inventory (a name) nor `gate_stub_problems` (one assertion anywhere
     # in the body) sees it go -- deleting it, or inverting its platform guard by one
     # character, left `just check` and all 363 tests green over a self-test whose

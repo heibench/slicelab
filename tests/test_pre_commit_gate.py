@@ -1183,7 +1183,7 @@ jobs:
         run: exit 1
 """
 
-#: The three assertions the check's plants require, and a stub for every other name the
+#: The assertions the check's plants require, and a stub for every other name the
 #: inventory declares. A stand-in rather than a copy of this file: a copy would build
 #: its own replica, without end.
 _REPLICA_GATE_HEAD = """\
