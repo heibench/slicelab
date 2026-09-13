@@ -1165,6 +1165,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: just check
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          if ./scripts/prove-hooks-catch.sh "$doctored" pyproject.toml uvx pre-commit@4.2.0; then
+            echo "::error::the prover passed a hook that only its neighbours' plants reach."
+            exit 1
+          fi
   ok:
     runs-on: ubuntu-latest
     needs: [check]
@@ -1201,6 +1209,12 @@ def test_the_aggregator_fails_when_pre_commit_does() -> None:
     gate = [s for s in _jobs()["ok"]["steps"] if "result" in str(s.get("if", ""))]
     assert gate, "no gate step"
     assert gate[0].get("run", "").strip() == "exit 1", gate[0]
+
+
+def test_the_hooks_are_proved_to_catch_not_merely_to_be_configured() -> None:
+    step = [s for s in _jobs()["pre-commit"]["steps"] if "prover passed" in str(s.get("run"))]
+    assert step, "no prover self-test step"
+    assert "exit 1" in step[0]["run"], step[0]["run"]
 """
 
 #: Four lines that make every assertion in a gate file inert while the run reports
@@ -1229,6 +1243,7 @@ def _replica_sandbox(
     implemented = {
         "test_no_upstream_job_tolerates_its_own_failure",
         "test_the_aggregator_fails_when_pre_commit_does",
+        "test_the_hooks_are_proved_to_catch_not_merely_to_be_configured",
     }
     stubs = "".join(
         # An assertion, not `pass`: the check refuses a declared test with nothing in

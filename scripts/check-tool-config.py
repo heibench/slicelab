@@ -365,6 +365,20 @@ GATE_PLANTS: tuple[tuple[str, str, str, str], ...] = (
         "        run: echo 'an upstream job failed'\n",
         "test_the_aggregator_fails_when_pre_commit_does",
     ),
+    # A fourth lever: the measurement that proves each prover self-test can fail the
+    # step. It is four lines inside a test that has nineteen other assertions, so
+    # neither the inventory (a name) nor `gate_stub_problems` (one assertion anywhere
+    # in the body) sees it go -- deleting it, or inverting its platform guard by one
+    # character, left `just check` and all 363 tests green over a self-test whose
+    # `exit 1` was deleted. THE LAST doctoring in that step, so the enumeration's
+    # upper bound is pinned with it: an off-by-one in `range(1, invocations + 1)` is
+    # green against any earlier one.
+    (
+        "a prover self-test that prints its error and passes anyway",
+        'plants reach."\n            exit 1\n',
+        'plants reach."\n',
+        "test_the_hooks_are_proved_to_catch_not_merely_to_be_configured",
+    ),
 )
 
 
@@ -635,7 +649,7 @@ def self_test() -> list[str]:
     # defect verbatim with every instrument green and the printed count unmoved, and
     # WEAKENINGS is generated from the subtraction tuples, so removing a key removes
     # its own self-test with it.
-    if len(GATE_PLANTS) < 3:
+    if len(GATE_PLANTS) < 4:
         failures.append(f"only {len(GATE_PLANTS)} plants: a lever this gate defends lost its proof")
     if len(REQUIRED_RULES) < REQUIRED_RULES_FLOOR:
         failures.append(
