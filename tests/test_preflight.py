@@ -14,7 +14,7 @@ import pytest
 
 from slicelab.adapters import ORCASLICER, PRUSASLICER, REGISTRY
 from slicelab.intent import Intent
-from slicelab.preflight import PreflightError, preflight, render
+from slicelab.preflight import PreflightError, _check_base, preflight, render
 
 TRIPLE = {
     "printer-profile": "Original Prusa i3 MK3S & MK3S+",
@@ -70,15 +70,21 @@ def test_an_unknown_base_key_is_refused_and_says_what_the_engine_uses() -> None:
 
 
 def test_an_adapter_that_has_not_declared_its_base_is_refused_not_guessed_for() -> None:
-    """Orca addresses presets by file path and its `[base]` is undecided.
+    """An undeclared `[base]` is refused, never filled in from a neighbouring engine.
 
     Falling back to PrusaSlicer's three flags would assume a mapping that does not
     exist -- degrading to a neighbouring answer, which org contract section 3 calls
     a could-not-tell rather than a success.
+
+    Asserted against a SYNTHETIC spec. OrcaSlicer used to be the example, because its
+    `[base]` was undecided; #6 decided it (`machine`/`process`/`filament`, loaded by
+    path). Re-pointing the test at the next undeclared adapter would make it go green
+    again the day that one is decided, and the property has nothing to do with which
+    engines happen to be unfinished today.
     """
-    assert ORCASLICER.base_keys == ()
+    undeclared = replace(PRUSASLICER, name="unfinished", base_keys=())
     with pytest.raises(PreflightError, match="has not declared"):
-        preflight(intent(engine="orcaslicer"))
+        _check_base(intent(engine="prusaslicer"), undeclared)
 
 
 def test_a_boolean_is_refused_for_an_engine_whose_spelling_is_unmeasured(

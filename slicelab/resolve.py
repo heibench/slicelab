@@ -110,10 +110,15 @@ class Resolved:
         return self.adjudication.outcome
 
 
-def resolve(intent_path: Path, sidecar: Path) -> Resolved:
+def resolve(intent_path: Path, sidecar: Path | None = None) -> Resolved:
     """Ask the engine what it would resolve, and adjudicate the answer."""
     intent = read_intent(intent_path)
     spec = preflight(intent)
+    # Defaulted HERE, not by the caller, because the engine decides the extension and
+    # the engine is not known until the intent has been read. `cli` chose
+    # `.readback.ini` for every engine, which named OrcaSlicer's JSON dump an ini.
+    if sidecar is None:
+        sidecar = intent_path.with_suffix(spec.readback_suffix)
     found = discover(spec)
     if found.form is None:
         raise ResolveError(f"no usable {spec.name} on this machine")
@@ -139,10 +144,32 @@ def resolve(intent_path: Path, sidecar: Path) -> Resolved:
     # author's git tree and is the reason the destination is not the staging path.
     with tempfile.TemporaryDirectory(prefix="slicelab-readback-") as staging:
         plan = plan_resolve(intent, spec, sidecar, Path(staging) / "readback")
-        completed = run(argv_for(found.form, plan.argv, plan.paths))
+        completed = run(
+            argv_for(found.form, plan.argv, plan.paths),
+            capture=(spec.run_record.name,) if spec.run_record else (),
+        )
         text = _artifact(completed, plan.staged, spec, intent)
-        readback = redact(text, spec.secret_keys)
-        adjudication = diff(plan.requested, _parse(text), name_map)
+        try:
+            # `redact` INSIDE the guard, because it reads the dump first and so reaches
+            # the duplicate-key detector before `_parse` does. With it one line above,
+            # a repeated key left the `ValueError` unrouted: exit 1 with a traceback,
+            # which is `refused` -- slicelab asserting it established the intent cannot
+            # be honoured -- over a run where the engine answered, and `Traceback` where
+            # D14 requires the outcome word. `RedactionError` is not a `ValueError`, so
+            # it still reaches the `error` handler it belongs to.
+            readback = redact(text, spec)
+            resolved_keys = _parse(text, spec)
+        except ValueError as unreadable:
+            # The dump exists and slicelab cannot read it unambiguously. `incomplete`,
+            # not `error`: the engine ran and answered, so this establishes nothing
+            # about the machine -- and not `sliced`, because adjudicating against a
+            # mapping that silently dropped a key is the false green this whole module
+            # exists to refuse.
+            raise ResolveIncomplete(
+                f"{spec.name} wrote a configuration slicelab cannot read without "
+                f"guessing: {unreadable}"
+            ) from unreadable
+        adjudication = diff(plan.requested, resolved_keys, name_map)
         _promote(readback, plan.destination)
 
     return Resolved(adjudication=adjudication, readback=readback, sidecar=plan.destination)
@@ -308,6 +335,21 @@ def _artifact(completed, staged: Path, spec: EngineSpec, intent: Intent) -> str:
     except OSError as exc:  # pragma: no cover - staging is slicelab's own directory
         raise ResolveError(f"cannot examine the dump {spec.name} was asked for: {exc}") from exc
 
+    record = _run_record(completed, spec)
+    if record is not None:
+        code, message = record
+        if code not in (0, None):
+            # The ENGINE's code, not the shell's. 2.4.2 truncates its internal code to
+            # a byte on the way out -- `-3` arrives as 253 -- so reporting the shell
+            # status attributes to the engine a number it never chose. Raised before
+            # the artifact gate because the engine has already said why, in its own
+            # words, and D28 is that discarding those leaves the author with nothing
+            # to act on.
+            raise ResolveIncomplete(
+                f"{spec.name} reported {code} and wrote no usable configuration, "
+                f"so there is nothing to adjudicate: {message or _diagnosis(completed)}"
+            )
+
     if not wrote_something:
         # The engine ran and produced no configuration. Whether that is the request's
         # fault or the machine's is not readable from the exit status, so slicelab
@@ -337,6 +379,23 @@ def _artifact(completed, staged: Path, spec: EngineSpec, intent: Intent) -> str:
         raise ResolveError(f"cannot read the dump {spec.name} wrote: {exc}") from exc
 
 
+def _run_record(completed, spec: EngineSpec) -> tuple[int | None, str] | None:
+    """What the engine said about its own run, or `None` if it said nothing.
+
+    `None` covers two cases that are the same for a caller and different for a
+    reader: an engine that writes no such file at all, and an engine that writes one
+    and did not this time. The second is the one V13 is about -- with a path it was
+    not granted, 2.4.2 exits 0, writes no settings and no record, and says nothing on
+    either stream, so the only honest reading is that slicelab could not tell.
+    """
+    if spec.run_record is None:
+        return None
+    for stray in completed.stray_files:
+        if stray.name == spec.run_record.name and stray.text is not None:
+            return spec.run_record.read(stray.text)
+    return None
+
+
 def _diagnosis(completed) -> str:
     """The engine's own account of why, or a statement that it gave none.
 
@@ -363,8 +422,9 @@ def _diagnosis(completed) -> str:
     return "it said nothing on either stream"
 
 
-def _parse(text: str) -> Mapping[str, str]:
-    """The engine's dump as a mapping. Parsed from the ORIGINAL, not the redacted copy.
+def _parse(text: str, spec: EngineSpec) -> Mapping[str, str]:
+    """The engine's dump as a mapping, READ BY THE ADAPTER. From the ORIGINAL, not the
+    redacted copy.
 
     A redacted value is `<redacted>`, and diffing against that would report a
     credential the author set as coerced -- slicelab's own removal surfacing as a
@@ -375,10 +435,19 @@ def _parse(text: str) -> Mapping[str, str]:
     credential-bearing CLI option at all -- 416 spellings, none of them. The day an
     engine grows one, this line is what stops the report blaming the engine for
     slicelab's own removal.
+
+    **The parsing itself is the adapter's.** This function used to split on `" = "`
+    and skip `#` and `[` -- PrusaSlicer's ini, written out in a core module. Handing
+    OrcaSlicer's `--export-settings` JSON to it produced an empty mapping, so every
+    authored override came back `absent` at exit 2 on a run the engine had honoured
+    exactly: a false red, from the core having assumed one engine's file format.
+
+    `test_names_confined.py` could not have caught it. Its rule is that a non-prose
+    literal must be declared vocabulary, and `" = "` contains a space, so it is prose;
+    `"#"` and `"["` contain no alphanumerics, so they carry no concept. The format
+    assumption was structural rather than lexical, which is the gap D1's clause is
+    really about -- and the reason the clause is answered by moving the reader rather
+    than by observing that no engine key appears here.
     """
-    resolved: dict[str, str] = {}
-    for line in text.splitlines():
-        key, separator, value = line.partition(" = ")
-        if separator and not key.startswith(("#", "[")):
-            resolved[key.strip()] = value
-    return resolved
+    assert spec.read_readback is not None  # `plan_resolve` refuses a spec without one
+    return spec.read_readback(text)

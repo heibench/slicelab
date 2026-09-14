@@ -1111,6 +1111,12 @@ ENGINE_PACKAGE_TERMS = frozenset(
         # `Identity` and `Completed`.
         "digest_of",
         "exit_status",
+        # D20's own word for what an engine left in the working directory slicelab
+        # gave it. slicelab's term, not an engine's -- checked against both installed
+        # engines' real key universes before being declared: zero matches for
+        # `stray_files` in PrusaSlicer 2.9.6's dump or OrcaSlicer 2.4.2's, with
+        # `layer_height` as the control that the comparison finds anything at all.
+        "stray_files",
         # The XDG base-directory spec's own variable names. Neither is a config key
         # on either engine. Checked against a bare `--save` from PrusaSlicer 2.9.6 and
         # a bare `--export-settings` from OrcaSlicer 2.4.2 -- the same two dumps D30's
@@ -1265,7 +1271,8 @@ def _live_vocabulary(spec: EngineSpec, tmp_path: Path) -> tuple[tuple[str, ...],
     run(argv_for(found.form, (f"{spec.readback_flag}={sidecar}",), (str(sidecar),)), timeout=90.0)
     if not sidecar.exists() or sidecar.stat().st_size == 0:
         pytest.skip(f"{spec.name} wrote no readback for a request with nothing set")
-    baseline = probe.read_config(sidecar.read_text(encoding="utf-8", errors="replace"))
+    assert spec.read_readback is not None
+    baseline = spec.read_readback(sidecar.read_text(encoding="utf-8", errors="replace"))
     listing = ""
     if probe.enumerate_argv:
         completed = run(argv_for(found.form, probe.enumerate_argv, ()), timeout=90.0)

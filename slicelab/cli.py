@@ -346,7 +346,15 @@ def _resolve(intent_path: Path, readback: Path | None) -> int:
         # read an intent and found it wanting, over a path it never opened. An
         # unrouted exception still exits, which is what makes the wrong one invisible
         # to any test that checks only "it failed".
-        destination = readback or intent_path.with_suffix(".readback.ini")
+        # The validity check only. WHICH suffix is the engine's, and the engine is not
+        # known until `resolve` has read the intent -- so the default is chosen there
+        # and comes back on `Resolved.sidecar`. `with_suffix` raises ValueError on a
+        # path with an empty name (`.`, `/`, `""` are all of them), which is the check
+        # this line is really making, and it stays here because it is the one that
+        # decides this exit code.
+        if readback is None:
+            intent_path.with_suffix(".probe")
+        destination = readback
     except ValueError as bad_path:
         print(
             render(Outcome.ERROR, f"{intent_path} is not a file slicelab can read: {bad_path}"),

@@ -7,13 +7,14 @@ argv it produces was measured against the real engine and that measurement is in
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from slicelab.adapters import PRUSASLICER
 from slicelab.intent import Intent
-from slicelab.plan import plan_resolve
+from slicelab.plan import PlanError, plan_resolve
 
 TRIPLE = {
     "printer-profile": "Original Prusa i3 MK3S & MK3S+",
@@ -158,3 +159,16 @@ def test_the_engine_is_never_granted_the_author_s_path(tmp_path: Path) -> None:
     assert plan.paths == frozenset({str(staged.resolve())})
     assert str(sidecar.resolve()) not in plan.paths
     assert str(sidecar.resolve()) not in " ".join(plan.argv)
+
+
+def test_an_engine_whose_dump_slicelab_cannot_read_is_refused_before_the_run() -> None:
+    """A dump slicelab cannot read is a dump it cannot diff.
+
+    Separate from `readback_flag`, because an engine can have a measured way to WRITE
+    its configuration and no measured way to read one back. Refused here rather than
+    after the run, for the same reason the flag is: finding out afterwards reports a
+    slicelab gap as though the engine had produced something wrong.
+    """
+    spec = replace(PRUSASLICER, read_readback=None)
+    with pytest.raises(PlanError, match="no measured way to read"):
+        plan_resolve(intent(), spec, Path("out.ini"), Path("staged.ini"))

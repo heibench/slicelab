@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from slicelab.adapters import ORCASLICER
 from slicelab.engine.characterise import MapEntry, ProbeOutcome, Tracking
 from slicelab.readback import diff
 from slicelab.status import KeyStatus, Outcome
@@ -280,3 +281,29 @@ def test_an_absence_does_not_hide_an_established_disagreement() -> None:
     assert r.verdicts[0].status is KeyStatus.ABSENT
     assert "solid_infill_extruder" in reason
     assert "infill_extruder" in reason and "came back different" in reason
+
+
+def test_a_settings_dump_that_repeats_a_key_is_refused_rather_than_guessed_at() -> None:
+    """JSON permits a repeated key and `json.loads` keeps the last one silently.
+
+    `#6`: `wipe_tower_x` appearing as both `15.000` and `15` means a naive parse loses
+    one without a word, and which survives is an artifact of file order rather than
+    anything the engine stated. A readback diff against that reports `applied` or
+    `coerced` depending on nothing the author can see.
+
+    Not reproduced on 2.4.2 -- a 616-key bare dump and a 634-key configured one both
+    parse with zero repeats -- which is exactly why this refuses instead of resolving.
+    With no measured case saying which value the engine meant, picking one would be a
+    guess about behaviour no engine has shown.
+    """
+    assert ORCASLICER.read_readback is not None
+    with pytest.raises(ValueError, match="repeats wipe_tower_x"):
+        ORCASLICER.read_readback('{"wipe_tower_x": "15.000", "wipe_tower_x": "15"}')
+
+
+def test_a_settings_dump_with_no_repeats_parses() -> None:
+    """A guard on the guard: the detection must not be red on every ordinary dump."""
+    assert ORCASLICER.read_readback is not None
+    parsed = ORCASLICER.read_readback('{"wipe_tower_x": ["15"], "wall_loops": "2"}')
+    assert parsed["wall_loops"] == "2"
+    assert parsed["wipe_tower_x"] == '["15"]'

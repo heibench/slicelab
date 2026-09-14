@@ -6,7 +6,14 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-__all__ = ["ConfigLocation", "EngineSpec", "OptionProbe", "PresetQuery"]
+__all__ = [
+    "BaseInvocation",
+    "ConfigLocation",
+    "EngineSpec",
+    "OptionProbe",
+    "PresetQuery",
+    "RunRecord",
+]
 
 
 @dataclass(frozen=True)
@@ -50,6 +57,46 @@ class ConfigLocation:
 
     windows: str | None = None
     """Relative to ``%APPDATA%``."""
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    """An engine's own account of how a run went, written beside its output.
+
+    Separate from the process exit status because the two disagree. OrcaSlicer 2.4.2
+    reports its internal code in this file and lets the shell see that code truncated
+    to a byte: an internal ``-3`` arrives as ``253``, and ``-5`` as ``251``. A caller
+    reading only the shell status is reading a number the engine did not choose.
+
+    ``None`` on a spec means this engine writes no such file, and the exit status is
+    all there is. It is not a gap to fill in later -- PrusaSlicer genuinely writes
+    nothing of the kind.
+    """
+
+    name: str
+    """The file, relative to the working directory the engine was given."""
+
+    read: Callable[[str], tuple[int | None, str]]
+    """Its text -> (the engine's own code, its own message).
+
+    ``None`` for the code where the record exists but does not state one, which is a
+    different fact from a record that is absent. The absent case never reaches here.
+    """
+
+
+@dataclass(frozen=True)
+class BaseInvocation:
+    """How one engine is told which presets to load, and what that touches on disk."""
+
+    argv: tuple[str, ...]
+    paths: frozenset[str] = frozenset()
+    """Host paths this invocation reads, for a sandboxed engine to be granted (D19).
+
+    Empty for an engine that addresses presets by name. Non-empty for one that
+    addresses them by path, which is the difference this class exists to carry: a
+    profile slicelab never granted surfaces as an *engine* error about a file the
+    author can see, which is a fault slicelab caused reported as one the engine found.
+    """
 
 
 @dataclass(frozen=True)
@@ -129,15 +176,6 @@ class OptionProbe:
     keys of its own settings dump.
     """
 
-    read_config: Callable[[str], Mapping[str, str]]
-    """The text of a readback artifact -> key/value pairs.
-
-    Takes text rather than a path on purpose. Whether the artifact exists and is
-    non-empty is D7's question, it is asked about every engine alike, and the
-    driver asks it -- so an adapter cannot answer ``{}`` for a file that was never
-    written and have the caller read that as "nothing moved".
-    """
-
     enumerate_argv: tuple[str, ...] = ()
     """Argv that makes this engine list its options, or ``()`` if it will not.
 
@@ -211,6 +249,89 @@ class EngineSpec:
 
     `None` means the emission form is unmeasured for this engine, and planning
     refuses rather than composing an argv nobody has run.
+    """
+
+    read_readback: Callable[[str], Mapping[str, str]] | None = None
+    """The text of this engine's readback -> key/value pairs, or `None` if unmeasured.
+
+    Takes text rather than a path on purpose. Whether the artifact exists and is
+    non-empty is D7's question, it is asked about every engine alike, and the driver
+    asks it -- so an adapter cannot answer ``{}`` for a file that was never written
+    and have the caller read that as "nothing moved".
+
+    Beside `readback_flag` rather than on `OptionProbe`, where it used to live. The
+    probe needed it first, but it is a property of the engine's readback FORMAT: one
+    writes an ini and the other writes JSON, and `resolve` has to read the result
+    whether or not anything was ever probed. While it sat on the probe, `resolve`
+    parsed the dump itself with `key = value` and a `#` comment rule -- PrusaSlicer's
+    ini format, in a core module, where `test_names_confined.py` cannot see it because
+    `" = "` contains a space and is therefore prose. That is D1's clause being decided
+    by default, and it is why this field is here.
+    """
+
+    readback_suffix: str = ".readback.ini"
+    """What slicelab names the promoted readback when the author names nothing.
+
+    PrusaSlicer writes an ini and OrcaSlicer writes JSON, so one default is wrong for
+    one of them: a Sovol triple resolved to a 625-key JSON document in a file called
+    `slice.readback.ini`. Harmless to slicelab, which never reads it back by
+    extension, and wrong for every other thing that looks at a file -- an editor, a
+    diff viewer, a reviewer.
+
+    It defaults to the ini spelling rather than being required, because the suffix is
+    cosmetic and an adapter that forgets it produces a badly-named file rather than a
+    wrong answer. `cli.py` is outside `test_names_confined.py`'s scan -- it is argparse
+    plumbing, and scanning it flags a dozen of slicelab's own verb names -- which is
+    why this one sat there unnoticed while three real assumptions were being moved.
+    """
+
+    run_record: RunRecord | None = None
+    """Where this engine states its own outcome, or `None` if it states none.
+
+    V13: a missing record is `incomplete` -- slicelab could not tell -- and never a
+    verdict inferred from the shell status. That matters most where the shell status
+    is the most reassuring: with a path it was not granted, 2.4.2 exits **0**, writes
+    no settings, writes no record, and says nothing on either stream.
+    """
+
+    redact_readback: Callable[[str, tuple[str, ...]], str] | None = None
+    """Replace the values of the named keys in this engine's readback, in ITS format.
+
+    The policy stays in `redact.py` -- which keys, what marker, the refusal when
+    nobody has measured them, and the check that nothing else moved. Only the
+    substitution is here, because only the adapter knows whether the dump is an ini
+    or JSON.
+
+    It used to be entirely in the core, splitting each line on `" = "`. Handed
+    OrcaSlicer's `--export-settings` JSON that removes nothing and reports the file
+    clean -- and Orca's dump does carry credentials: measured on 2.4.2, a machine
+    profile with upload configured resolves to a dump carrying every key on
+    `ORCASLICER.secret_keys` in cleartext, verbatim -- `print_host_webui` among them,
+    which carries `http://user:pass@host/` because that field has no separate
+    credential input. A promoted readback would have
+    carried every one of them into the directory the README says you commit, under a
+    field naming which keys had been removed.
+
+    `None` means unmeasured, and a non-empty `secret_keys` with no redactor is
+    refused rather than written.
+    """
+
+    compose_base: Callable[[Mapping[str, str]], BaseInvocation] | None = None
+    """The authored `[<engine>.base]` table -> the argv that loads those presets.
+
+    `None` means the core's own `--<key>=<value>` composition is used, which is what
+    every engine addressing presets by name needs.
+
+    This exists because OrcaSlicer does not. It has no `--printer-profile`; it takes
+    `--load-settings` with file *paths*, repeatably -- measured on 2.4.2: two
+    `--load-settings` flags are both honoured, and the resolved dump carries the
+    process profile's `layer_height` and the machine's `printer_settings_id`. A core
+    that can only emit one flag per key is a core that assumes PrusaSlicer's
+    addressing model, which is exactly what D1's supersede clause asks about.
+
+    Returning the argv AND the paths together, rather than letting the caller derive
+    the paths from the values, keeps the two from disagreeing: the adapter is the only
+    thing that knows which of its base values are paths at all.
     """
 
     bool_words: tuple[str, str] | None = None

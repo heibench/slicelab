@@ -31,6 +31,61 @@ is the fatal risk.
 logic leaking into `readback.py`, the core has no reason to exist and slicelab
 splits into two per-engine tools sharing only the lock schema and the status enum.
 
+### Adjudicated: the clause does not fire (2026-09-13, #6)
+
+`resolve` drives OrcaSlicer 2.4.2 end to end against a stock Sovol triple — exit 0,
+`sliced`, one authored override reported `applied` — with `readback.py` unchanged and
+containing no engine's vocabulary. The core survives, so slicelab does not split.
+
+That is the verdict, and it was not free. **Three engine-specific assumptions had
+leaked into core modules, and `test_names_confined.py` could not see any of them**,
+because its rule is lexical — a non-prose literal must be declared vocabulary — and
+all three were structural:
+
+* `resolve._parse` split each line on `" = "` and skipped `#` and `[`. That is
+  PrusaSlicer's ini. Handed Orca's `--export-settings` JSON it returns an empty
+  mapping, so every authored override comes back `absent` at exit 2 on a run the
+  engine honoured exactly.
+* `plan_resolve` composed `--<key>=<value>`, one flag per key — how an engine that
+  addresses presets **by name** is driven. Orca has no such flag; it repeats
+  `--load-settings` with file paths.
+* `redact` split lines the same way, and that one writes a file. Orca's readback
+  carries credentials: measured on 2.4.2, a machine profile with upload configured
+  resolves to a dump holding every key on `ORCASLICER.secret_keys` verbatim. The ini
+  redactor removes none of them from JSON and returns a record saying so — an honest
+  empty list, about a file that still holds every one of them.
+
+  The list itself was wrong on the first attempt, and the way it was wrong is the
+  point. It was built by name-matching against PrusaSlicer's, which cannot find a key
+  PrusaSlicer does not have — and `print_host_webui` is one, holding
+  `http://user:pass@host/` because Orca's Device UI field has no separate credential
+  input. The verification could not catch that: it proves the DECLARED list was
+  applied and says nothing about the list being complete. What establishes the list is
+  the engine's own G-code footer, which strips exactly the seven and keeps
+  `host_type`, `printhost_authorization_type`, `printhost_ssl_ignore_revoke` and
+  `bbl_use_printhost`.
+
+  **Re-derive that footer comparison on every OrcaSlicer bump.** It is the only thing
+  that finds a key nobody knew about, and the test guarding the list cannot do it:
+  2.4.2 emits a host-family key only when the loaded profile SETS it, so a test can
+  only see the keys its own profile writes. That test is a regression guard — it sets every declared host key
+  in its own profile, refuses to run if any declared name is one the profile does not
+  make the engine emit, and fails if a name is dropped from either list — and an earlier version of this paragraph claimed it forced a decision on
+  future engine keys, which is the same assumed-complete mistake one level up from the
+  one that shipped a credential.
+
+`" = "` contains a space, so the boundary test reads it as prose; `"#"` and `"["`
+contain no alphanumerics, so they carry no concept. **A lexical guard cannot see a
+format assumption**, which is the real lesson of this issue and the reason the clause
+was worth keeping until a second engine existed to test it. Each moved to the adapter
+behind a declared field, and `redact` gained a check rather than a second branch: it
+reads its own output back through the adapter's reader and refuses unless every secret
+key reads as the marker and every other key is unchanged.
+
+A fourth sat in `cli.py`, which is deliberately outside the boundary scan as argparse
+plumbing: every engine's readback was named `.readback.ini`, so a 625-key JSON
+document was written to a file claiming to be an ini.
+
 ## D2 — The core normalized vocabulary is EMPTY in v0.1.0
 
 Authored keys are the engine's own native names under an engine-namespaced table.
@@ -458,6 +513,21 @@ as a translation. This is the one fix applied on copy.
 
 Sweeping is the fix; recording `engine_run.stray_files` is the honesty. Cleaning up
 and hiding evidence are the same action without the field.
+
+**Both halves are implemented (2026-09-13, #6/#25).** #23 landed the sweep; the record
+had nothing behind it until now, which #25 filed rather than papering over — the field
+needed somewhere to live and no verb emitted a run record yet. `Completed.stray_files`
+carries name, size and sha256 for everything the engine left, taken before the sweep,
+plus the text of any file the caller named as one it can interpret.
+
+The file that proves the point is the same file the engine states its outcome in.
+OrcaSlicer writes `result.json` into its working directory on **every** run, success
+and failure alike, and it carries the engine's real return code — which the shell
+never sees, because 2.4.2 truncates it to a byte: an internal `-3` arrives as 253 and
+`-5` as 251. So the same sweep that tidied the directory was destroying the run's only
+accurate diagnosis. `resolve` now reads that record where an engine writes one and
+reports the engine's own code and words; a missing record stays `incomplete` and is
+never inferred from the shell status ([V13]).
 
 ### Written, then not implemented, for the life of the code (2026-09-06)
 
