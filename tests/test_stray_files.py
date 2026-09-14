@@ -20,6 +20,8 @@ from __future__ import annotations
 import hashlib
 import sys
 
+import pytest
+
 from slicelab.engine.launch import run
 
 
@@ -70,8 +72,15 @@ def test_files_in_subdirectories_are_reported_too() -> None:
         "(d / 'deep.bin').write_bytes(b'x' * 7)\n"
     )
     completed = run([sys.executable, "-c", script], timeout=60.0)
-    assert [s.name for s in completed.stray_files] == ["cache/inner/deep.bin"]
-    assert completed.stray_files[0].size == 7
+    by_name = {s.name: s for s in completed.stray_files}
+    assert by_name["cache/inner/deep.bin"].size == 7
+
+    # The directories are recorded too, at size -1. An engine that made a directory
+    # left something, and an inventory that lists only the leaves cannot say whether
+    # the tree was the engine's or slicelab's.
+    assert sorted(by_name) == ["cache", "cache/inner", "cache/inner/deep.bin"]
+    assert by_name["cache"].size == -1
+    assert by_name["cache"].digest == ""
 
 
 def test_the_caller_who_owns_the_directory_is_not_inventoried(tmp_path) -> None:
@@ -84,3 +93,46 @@ def test_the_caller_who_owns_the_directory_is_not_inventoried(tmp_path) -> None:
     completed = run(_writer("theirs.txt"), cwd=tmp_path, timeout=60.0)
     assert completed.stray_files == ()
     assert (tmp_path / "theirs.txt").is_file()
+
+
+def test_a_symlink_is_not_followed_out_of_the_scratch_directory(tmp_path) -> None:
+    """Its target's size and digest are not the engine's to be attributed.
+
+    `is_file()` follows links, so a link the engine left pointing at `/etc/hostname`
+    was recorded with that file's size and digest as though the engine had written it.
+    An inventory is evidence; evidence about the wrong file is worse than none.
+    """
+    outside = tmp_path / "outside.txt"
+    outside.write_text("not the engine's", encoding="utf-8")
+    script = f"import os; os.symlink({str(outside)!r}, 'pointer')"
+    completed = run([sys.executable, "-c", script], timeout=60.0)
+
+    assert [s.name for s in completed.stray_files] == ["pointer"]
+    left = completed.stray_files[0]
+    assert left.size == -1, "the link was followed and its target measured"
+    assert left.digest == ""
+    assert outside.read_text(encoding="utf-8") == "not the engine's"
+
+
+def test_something_that_is_not_a_regular_file_is_recorded_rather_than_swept() -> None:
+    """A FIFO would block a reader, and skipping it reported the directory clean."""
+    script = "import os; os.mkfifo('pipe')"
+    completed = run([sys.executable, "-c", script], timeout=60.0)
+    if completed.exit_status != 0:  # pragma: no cover - no mkfifo on this platform
+        pytest.skip("this platform has no mkfifo")
+    assert [s.name for s in completed.stray_files] == ["pipe"]
+    assert completed.stray_files[0].size == -1
+
+
+def test_a_captured_file_is_read_and_an_uncaptured_one_is_only_hashed() -> None:
+    """`text` is `None` for everything the caller did not name, and that is the point.
+
+    The digest is streamed, so a stray file is never read whole unless someone asked
+    for it: measured before this, a 256 MiB stray file grew slicelab's own RSS by
+    227 MiB on a run that had no interest in it.
+    """
+    completed = run(_writer("result.json", "big.bin"), capture=("result.json",), timeout=60.0)
+    by_name = {s.name: s for s in completed.stray_files}
+    assert by_name["result.json"].text == "result.json" * 3
+    assert by_name["big.bin"].text is None
+    assert by_name["big.bin"].digest, "an uncaptured file is still hashed"

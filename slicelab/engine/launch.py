@@ -10,6 +10,7 @@ import contextlib
 import hashlib
 import os
 import signal
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass, field, replace
@@ -28,7 +29,24 @@ class StrayFile:
     """Relative to the run's working directory, with `/` separators on every platform."""
 
     size: int
-    digest: str
+    """Bytes, or `-1` where slicelab could not measure it.
+
+    `-1` covers an entry that could not be read and one that is not a regular file at
+    all. Both are recorded rather than dropped, because "the engine left a FIFO here"
+    is a finding and an empty inventory would report the directory clean.
+    """
+
+    digest: str = ""
+    """sha256 of the contents, or `""` where there are no contents to hash.
+
+    A name and a size do not tell a reader whether the `result.json` in two runs was
+    the same `result.json`. The digest is what makes the record checkable rather than
+    merely present.
+
+    Streamed rather than read whole: this runs on every invocation, and `read_bytes`
+    on a stray file grew slicelab's own RSS by 227 MiB for a 256 MiB file. No slicer
+    does that today, and `run` is the shared path for all of them.
+    """
 
     text: str | None = None
     """The file's contents, for a name the caller asked to capture, else `None`.
@@ -41,12 +59,6 @@ class StrayFile:
     interpret. OrcaSlicer's `result.json` carries the engine's real return code, and
     the directory holding it is destroyed a moment later -- so it is read then or not
     at all.
-    """
-    """sha256 of the contents, or `""` if the file could not be read.
-
-    A name and a size do not tell a reader whether the `result.json` in two runs was
-    the same `result.json`. The digest is what makes the record checkable rather than
-    merely present, and it is cheap: these files are small and there are a handful.
     """
 
 
@@ -158,7 +170,7 @@ def run(
 
 
 def _inventory(scratch: Path, capture: tuple[str, ...]) -> tuple[StrayFile, ...]:
-    """Everything under `scratch`, by name, size and digest.
+    """Every entry under `scratch`, by name, and by size and digest where it has them.
 
     Never raises. This runs on the way out of every invocation including failed and
     timed-out ones, and an inventory that could fail would turn a recorded run into a
@@ -168,22 +180,33 @@ def _inventory(scratch: Path, capture: tuple[str, ...]) -> tuple[StrayFile, ...]
     """
     found: list[StrayFile] = []
     for path in sorted(scratch.rglob("*")):
-        if not path.is_file():
-            continue
         name = path.relative_to(scratch).as_posix()
+
+        # `lstat`, and a regular-file test that does not follow links. `is_file()`
+        # follows, so a symlink the engine left pointing outside the scratch directory
+        # was recorded with its TARGET's size and digest, attributed to the engine --
+        # measured against `/etc/hostname`. And anything not a regular file was skipped
+        # entirely, so a FIFO, a dangling link or a directory the engine made were
+        # swept with the inventory reporting the run clean.
         try:
-            data = path.read_bytes()
+            info = path.lstat()
         except OSError:
-            found.append(StrayFile(name=name, size=-1, digest=""))
+            found.append(StrayFile(name=name, size=-1))
             continue
-        found.append(
-            StrayFile(
-                name=name,
-                size=len(data),
-                digest=hashlib.sha256(data).hexdigest(),
-                text=data.decode("utf-8", errors="replace") if name in capture else None,
+        if not stat.S_ISREG(info.st_mode):
+            found.append(StrayFile(name=name, size=-1))
+            continue
+
+        try:
+            with path.open("rb") as handle:
+                digest = hashlib.file_digest(handle, "sha256").hexdigest()
+            captured = (
+                path.read_text(encoding="utf-8", errors="replace") if name in capture else None
             )
-        )
+        except OSError:
+            found.append(StrayFile(name=name, size=-1))
+            continue
+        found.append(StrayFile(name=name, size=info.st_size, digest=digest, text=captured))
     return tuple(found)
 
 
