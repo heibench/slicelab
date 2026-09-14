@@ -305,9 +305,10 @@ class EngineSpec:
     It used to be entirely in the core, splitting each line on `" = "`. Handed
     OrcaSlicer's `--export-settings` JSON that removes nothing and reports the file
     clean -- and Orca's dump does carry credentials: measured on 2.4.2, a machine
-    profile with upload configured resolves to a dump carrying `print_host`,
-    `printhost_apikey`, `printhost_password`, `printhost_user`, `printhost_port` and
-    `printhost_cafile` in cleartext, all six verbatim. A promoted readback would have
+    profile with upload configured resolves to a dump carrying every key on
+    `ORCASLICER.secret_keys` in cleartext, verbatim -- `print_host_webui` among them,
+    which carries `http://user:pass@host/` because that field has no separate
+    credential input. A promoted readback would have
     carried every one of them into the directory the README says you commit, under a
     field naming which keys had been removed.
 

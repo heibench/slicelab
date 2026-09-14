@@ -254,3 +254,85 @@ def test_a_prusaslicer_triple_is_refused_with_a_reason_not_silently_wrong(
     assert "-3" in done.stderr, f"the engine's own code is not reported: {done.stderr}"
     assert "not found" in done.stderr, f"the engine's own words are not carried: {done.stderr}"
     assert not list(tmp_path.glob("*.readback.*")), "a refused run promoted a readback"
+
+
+#: Host-family keys 2.4.2 carries into a settings dump that are NOT credentials.
+#: Each states how the printer is reached rather than a secret for reaching it, and
+#: each is a decision: the engine's own G-code footer KEEPS these and strips the seven
+#: on `ORCASLICER.secret_keys`. Adding a name here is a claim that the engine does not
+#: treat it as sensitive, made in a diff someone can object to.
+NOT_CREDENTIALS = frozenset(
+    {
+        "host_type",
+        "printhost_authorization_type",
+        "printhost_ssl_ignore_revoke",
+        "bbl_use_printhost",
+    }
+)
+
+
+def test_every_host_family_key_this_engine_emits_is_declared_one_way_or_the_other(
+    seeded: dict[str, str], tmp_path: Path
+) -> None:
+    """The guard that was missing, and the reason a credential shipped.
+
+    `secret_keys` was built by name-matching against PrusaSlicer's list, which cannot
+    find a key PrusaSlicer does not have -- and `print_host_webui` is one. It reached
+    the promoted sidecar in cleartext, carrying `http://user:pass@host/`, under a field
+    naming which keys had been removed. The redaction check could not catch it either:
+    it proves the DECLARED list was applied and says nothing about the list being
+    complete.
+
+    So the engine is asked instead. Every key it emits whose name is in the host family
+    must be declared a credential or declared not one; a new one in a future release
+    forces the decision rather than defaulting to "not a secret".
+
+    Deliberately name-shaped rather than derived from the G-code footer, which is the
+    stronger criterion and needs a slice. This is the cheap guard that runs on every
+    engine-backed run; the footer comparison is what established the list once.
+    """
+    profiles = _profiles()
+    configured = tmp_path / "machine.json"
+    configured.write_text(
+        json.dumps(
+            {
+                **json.loads(profiles["machine"].read_text(encoding="utf-8")),
+                # Sentinels, not credentials. Nothing here reaches a network: the
+                # engine resolves a configuration and writes it to a file.
+                "print_host": "http://slicelab.invalid/",
+                "print_host_webui": "http://slicelab:slicelab@webui.invalid/",
+                "printhost_apikey": "SLICELABNOTAREALKEY",
+                "printhost_user": "slicelab",
+                "printhost_password": "SLICELABNOTAREALPASSWORD",
+                "printhost_port": "8080",
+                "printhost_cafile": "/slicelab/invalid/ca.pem",
+                "printhost_authorization_type": "key",
+                "host_type": "octoprint",
+            }
+        ),
+        encoding="utf-8",
+    )
+    intent = _intent(tmp_path, {**profiles, "machine": configured})
+    done = _resolve(intent, seeded)
+    assert done.returncode == 3, f"{done.stdout}\n{done.stderr}"
+
+    dump = json.loads((tmp_path / "slice.readback.json").read_text(encoding="utf-8"))
+    family = {
+        key
+        for key in dump
+        if key.startswith(("print_host", "printhost_")) or key in NOT_CREDENTIALS
+    }
+    undecided = sorted(family - set(ORCASLICER.secret_keys or ()) - NOT_CREDENTIALS)
+    assert undecided == [], (
+        f"{undecided} reach this engine's readback and are neither declared "
+        "credential-bearing nor declared safe. A host-family key that nobody decided "
+        "about defaults to being written out, which is how `print_host_webui` shipped."
+    )
+
+    # And the declared ones are actually gone from the promoted file.
+    for key in ORCASLICER.secret_keys or ():
+        if key in dump:
+            assert dump[key] == "<redacted>", f"{key} survived into the sidecar: {dump[key]!r}"
+    assert "slicelab:slicelab@" not in (tmp_path / "slice.readback.json").read_text(
+        encoding="utf-8"
+    ), "a credential embedded in a URL survived into the sidecar"

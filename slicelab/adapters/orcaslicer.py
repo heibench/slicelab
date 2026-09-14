@@ -239,15 +239,28 @@ SPEC = EngineSpec(
     # Measured on 2.4.2, not inherited from PrusaSlicer's list. A stock Sovol triple
     # emits none of these -- 625 keys, zero credential-bearing -- so a guard written
     # against that dump would have found nothing and reported the engine clean. A
-    # machine profile with upload configured resolves to 634 keys carrying all six
+    # machine profile with upload configured resolves to a dump carrying all seven
     # verbatim, which is the same value-dependent key set PrusaSlicer has.
     #
-    # `host_type`, `printhost_authorization_type` and `bbl_use_printhost` also survive
-    # into the dump and are deliberately NOT here: they state how the printer is
-    # reached, not a secret for reaching it, and PrusaSlicer's measured list excludes
-    # the same shape.
+    # Established against the ENGINE'S OWN criterion rather than by judgement: the
+    # G-code footer is the same configuration reached another way, and what it strips
+    # is what this engine treats as unsafe to keep. Measured on 2.4.2 with a machine
+    # profile setting all eleven host keys -- the footer strips exactly these seven.
+    #
+    # `host_type`, `printhost_authorization_type`, `printhost_ssl_ignore_revoke` and
+    # `bbl_use_printhost` survive into the footer, so the engine keeps them and so does
+    # slicelab: they state how the printer is reached, not a secret for reaching it.
+    # `flashforge_serial_number` is the same -- it lands in the dump and the footer
+    # keeps it.
     secret_keys=(
         "print_host",
+        # Orca's "Device UI" field, and NOT a PrusaSlicer key -- 2.9.6's binary has no
+        # such spelling. It was missed because this list was built by name-matching
+        # against PrusaSlicer's, which is a method that cannot find a key the other
+        # engine does not have. It holds a URL rendered in an embedded webview with no
+        # separate credential field, so `http://user:pass@host/` is the ordinary way to
+        # give it auth, and 2.4.2 carries that verbatim into the dump.
+        "print_host_webui",
         "printhost_apikey",
         "printhost_cafile",
         "printhost_password",

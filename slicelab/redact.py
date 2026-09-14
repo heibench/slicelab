@@ -22,7 +22,7 @@ or nothing is written.
 split every line on `" = "` -- PrusaSlicer's ini, in a core module. OrcaSlicer's
 readback is JSON, so that removed nothing and returned a `Redacted` whose `keys` said
 so: an honest empty list, about a file that still held the credentials. Measured on
-2.4.2, the dump carries six of them in cleartext once a machine profile configures
+2.4.2, the dump carries seven of them in cleartext once a machine profile configures
 upload. The verification below is what makes that failure loud instead of silent, and
 it is why the check exists rather than a second format branch.
 """
@@ -105,8 +105,14 @@ def redact(text: str, spec: EngineSpec) -> Redacted:
             f"{spec.name}'s readback still carries {', '.join(survived)} after "
             "redaction, so the dump cannot be promised free of credentials"
         )
+    # `k not in after` catches a key the redactor DELETED, including a secret one --
+    # which `survived` cannot see, because a deleted key is neither present-and-wrong
+    # nor present-and-marked. Without it a redactor that drops `printhost_apikey`
+    # entirely passes, and `Redacted.keys` still reports it as found and removed. The
+    # marker exists precisely so a reader can tell "slicelab took this" from "the
+    # engine wrote nothing here", and a deletion says neither.
     disturbed = sorted(
-        k for k, v in before.items() if k not in wanted and (k not in after or after[k] != v)
+        k for k, v in before.items() if k not in after or (k not in wanted and after[k] != v)
     )
     if disturbed or set(after) - set(before):
         # Not pedantry: the sidecar is evidence, and evidence slicelab silently

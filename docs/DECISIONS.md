@@ -51,10 +51,20 @@ all three were structural:
   `--load-settings` with file paths.
 * `redact` split lines the same way, and that one writes a file. Orca's readback
   carries credentials: measured on 2.4.2, a machine profile with upload configured
-  resolves to a dump holding `print_host`, `printhost_apikey`, `printhost_password`,
-  `printhost_user`, `printhost_port` and `printhost_cafile` verbatim. The ini
+  resolves to a dump holding every key on `ORCASLICER.secret_keys` verbatim. The ini
   redactor removes none of them from JSON and returns a record saying so — an honest
-  empty list, about a file that still holds six credentials.
+  empty list, about a file that still holds every one of them.
+
+  The list itself was wrong on the first attempt, and the way it was wrong is the
+  point. It was built by name-matching against PrusaSlicer's, which cannot find a key
+  PrusaSlicer does not have — and `print_host_webui` is one, holding
+  `http://user:pass@host/` because Orca's Device UI field has no separate credential
+  input. The verification could not catch that: it proves the DECLARED list was
+  applied and says nothing about the list being complete. What establishes the list is
+  the engine's own G-code footer, which strips exactly the seven and keeps
+  `host_type`, `printhost_authorization_type`, `printhost_ssl_ignore_revoke` and
+  `bbl_use_printhost`; what keeps it complete is a test requiring every host-family
+  key the engine emits to be declared one way or the other.
 
 `" = "` contains a space, so the boundary test reads it as prose; `"#"` and `"["`
 contain no alphanumerics, so they carry no concept. **A lexical guard cannot see a

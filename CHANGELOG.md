@@ -32,9 +32,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **OrcaSlicer's readback carries credentials, and redaction would not have removed
   them.** Redaction split every line on `" = "` — PrusaSlicer's ini format — so on
   OrcaSlicer's JSON it removed nothing and reported the file clean. Measured on 2.4.2:
-  a machine profile with upload configured resolves to a dump carrying `print_host`,
-  `printhost_apikey`, `printhost_password`, `printhost_user`, `printhost_port` and
-  `printhost_cafile` in cleartext. A stock triple carries none of them, so a check
+  a machine profile with upload configured resolves to a dump carrying seven
+  credential keys in cleartext, `print_host_webui` among them -- which holds
+  `http://user:pass@host/`, because Orca's Device UI field has no separate credential
+  input. A stock triple carries none of them, so a check
   written against that dump would have found nothing and reported the engine clean.
   Redaction is now the adapter's, and slicelab verifies the result: it reads its own
   output back and refuses to write unless every credential key reads as the marker and
