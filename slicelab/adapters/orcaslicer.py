@@ -52,9 +52,36 @@ def _read_settings_json(text: str) -> Mapping[str, str]:
     a rendering that collapses two states into one string would report a key as
     unchanged that changed.
     """
-    document = json.loads(text)
+    seen: list[str] = []
+
+    def keep_every_pair(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        seen.extend(key for key, _ in pairs)
+        return dict(pairs)
+
+    document = json.loads(text, object_pairs_hook=keep_every_pair)
     if not isinstance(document, dict):
         return {}
+
+    # DETECTED, not tolerated. JSON permits a repeated key and `json.loads` keeps the
+    # last one without a word, so a dump carrying `wipe_tower_x` twice -- as `15.000`
+    # and as `15` -- parses to one value and loses the other silently. Which one
+    # survives is then an artifact of file order, and a readback diff comparing
+    # against it reports `applied` or `coerced` depending on nothing the author can
+    # see.
+    #
+    # Not reproduced on 2.4.2: a 616-key bare dump and a 634-key configured one both
+    # parse with zero repeats, checked by counting the pairs the hook saw against the
+    # dict it built. That is why this refuses rather than resolving -- there is no
+    # measured case saying which of two values the engine meant, so inventing a rule
+    # would be a guess about an engine that has never done this.
+    if len(seen) != len(document):
+        repeated = sorted({key for key in seen if seen.count(key) > 1})
+        raise ValueError(
+            f"the settings dump repeats {', '.join(repeated)}, and which value a "
+            "parser keeps is an artifact of file order rather than anything the "
+            "engine stated"
+        )
+
     return {
         key: value if isinstance(value, str) else json.dumps(value, sort_keys=True)
         for key, value in document.items()

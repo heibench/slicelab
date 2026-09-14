@@ -150,7 +150,19 @@ def resolve(intent_path: Path, sidecar: Path | None = None) -> Resolved:
         )
         text = _artifact(completed, plan.staged, spec, intent)
         readback = redact(text, spec)
-        adjudication = diff(plan.requested, _parse(text, spec), name_map)
+        try:
+            resolved_keys = _parse(text, spec)
+        except ValueError as unreadable:
+            # The dump exists and slicelab cannot read it unambiguously. `incomplete`,
+            # not `error`: the engine ran and answered, so this establishes nothing
+            # about the machine -- and not `sliced`, because adjudicating against a
+            # mapping that silently dropped a key is the false green this whole module
+            # exists to refuse.
+            raise ResolveIncomplete(
+                f"{spec.name} wrote a configuration slicelab cannot read without "
+                f"guessing: {unreadable}"
+            ) from unreadable
+        adjudication = diff(plan.requested, resolved_keys, name_map)
         _promote(readback, plan.destination)
 
     return Resolved(adjudication=adjudication, readback=readback, sidecar=plan.destination)

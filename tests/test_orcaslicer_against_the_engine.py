@@ -223,3 +223,34 @@ def test_a_profile_orca_will_not_load_is_incomplete_with_the_engine_s_own_reason
     # The engine's own words, carried through rather than discarded (D28).
     assert "preset" in done.stderr or "parse" in done.stderr, done.stderr
     assert not (tmp_path / "slice.readback.json").exists(), "a refused run promoted a readback"
+
+
+def test_a_prusaslicer_triple_is_refused_with_a_reason_not_silently_wrong(
+    seeded: dict[str, str], tmp_path: Path
+) -> None:
+    """#6's `unsupported` checkbox: the other engine's presets, named the other way.
+
+    PrusaSlicer addresses presets by name and Orca takes paths, so a `[base]` carrying
+    a stock MK4S triple is three names Orca reads as filenames and does not find. The
+    outcome that matters is that it is a NAMED refusal rather than a run that resolved
+    to something else and reported green.
+
+    The code asserted is the ENGINE's. 2.4.2 truncates its internal code to a byte on
+    the way out, so the shell sees 253 for the `-3` the engine chose -- and `-3` is
+    what its own record says.
+    """
+    intent = tmp_path / "slice.toml"
+    intent.write_text(
+        "[orcaslicer.base]\n"
+        'machine = "Original Prusa MK4S 0.4 nozzle"\n'
+        'process = "0.20mm SPEED @MK4S 0.4 nozzle"\n'
+        'filament = "Prusament PLA"\n',
+        encoding="utf-8",
+    )
+    done = _resolve(intent, seeded)
+
+    assert done.returncode == 2, f"{done.stdout}\n{done.stderr}"
+    assert done.stderr.startswith("incomplete"), done.stderr
+    assert "-3" in done.stderr, f"the engine's own code is not reported: {done.stderr}"
+    assert "not found" in done.stderr, f"the engine's own words are not carried: {done.stderr}"
+    assert not list(tmp_path.glob("*.readback.*")), "a refused run promoted a readback"
