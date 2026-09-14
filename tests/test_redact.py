@@ -200,3 +200,25 @@ def test_a_secret_name_appearing_as_a_value_is_left_alone() -> None:
     result = redact(quoting, SPEC)
     assert result.keys == ()
     assert result.text == quoting
+
+
+def test_a_redactor_that_deletes_a_secret_key_is_caught() -> None:
+    """Deleting is not redacting, and `keys` would have claimed it was.
+
+    A deleted key is neither present-and-wrong nor present-and-marked, so the
+    survived-check cannot see it -- and `Redacted.keys` is built from what was in the
+    original, so it still names the key as found and removed. The marker exists so a
+    reader can tell "slicelab took this" from "the engine wrote nothing here"; a
+    deletion says neither.
+    """
+
+    def deletes(text: str, keys: tuple[str, ...]) -> str:
+        kept = [
+            line
+            for line in text.splitlines(keepends=True)
+            if line.partition(" = ")[0].strip() not in set(keys)
+        ]
+        return "".join(kept)
+
+    with pytest.raises(RedactionError, match="changed keys it was not asked to"):
+        redact(DUMP, replace(PRUSASLICER, secret_keys=SECRETS, redact_readback=deletes))
