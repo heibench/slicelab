@@ -136,3 +136,19 @@ def test_a_captured_file_is_read_and_an_uncaptured_one_is_only_hashed() -> None:
     assert by_name["result.json"].text == "result.json" * 3
     assert by_name["big.bin"].text is None
     assert by_name["big.bin"].digest, "an uncaptured file is still hashed"
+
+
+def test_the_captured_text_is_the_bytes_the_digest_covers() -> None:
+    """`text` says "the file's contents", so it must not be rewritten on the way in.
+
+    Text mode applies universal newlines, so a CRLF file's `text` differed from the
+    bytes its own `digest` was taken over -- a 20-byte file reporting 19 characters.
+    Harmless to `json.loads` and wrong about the record.
+    """
+    script = "import pathlib; pathlib.Path('crlf.json').write_bytes(b'{\"a\": 1}\\r\\n')"
+    completed = run([sys.executable, "-c", script], capture=("crlf.json",), timeout=60.0)
+    left = completed.stray_files[0]
+
+    assert left.text == '{"a": 1}\r\n'
+    assert left.size == len(left.text.encode("utf-8"))
+    assert left.digest == hashlib.sha256(left.text.encode("utf-8")).hexdigest()

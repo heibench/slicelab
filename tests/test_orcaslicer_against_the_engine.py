@@ -283,13 +283,16 @@ def test_every_host_family_key_this_engine_emits_is_declared_one_way_or_the_othe
     it proves the DECLARED list was applied and says nothing about the list being
     complete.
 
-    So the engine is asked instead. Every key it emits whose name is in the host family
-    must be declared a credential or declared not one; a new one in a future release
-    forces the decision rather than defaulting to "not a secret".
+    So this pins both lists against a dump that actually carries the family. **It is a
+    regression guard, not a completeness guard**, and the difference matters: 2.4.2
+    emits a host-family key only when the loaded profile sets it, so what this can see
+    is bounded by the profile written below rather than by the engine. A key added in
+    a future release is absent from that profile, absent from the dump, and invisible
+    here.
 
-    Deliberately name-shaped rather than derived from the G-code footer, which is the
-    stronger criterion and needs a slice. This is the cheap guard that runs on every
-    engine-backed run; the footer comparison is what established the list once.
+    What finds a new one is the G-code footer comparison, which needs a slice and is a
+    standing instruction on every engine bump (D1). This is the cheap half: drop a name
+    from `secret_keys` or from `NOT_CREDENTIALS` and it goes red.
     """
     profiles = _profiles()
     configured = tmp_path / "machine.json"

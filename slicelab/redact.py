@@ -30,8 +30,15 @@ it is why the check exists rather than a second format branch.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from slicelab.adapters.base import EngineSpec
+if TYPE_CHECKING:  # `EngineSpec` is used in an annotation only, and this module has
+    # `from __future__ import annotations`, so nothing needs it at run time. Imported
+    # unconditionally it is a cycle: `adapters/__init__` loads `orcaslicer`, which
+    # imports `REDACTED` from here -- before this module has defined it. Masked in
+    # practice because every entry point imports `slicelab.adapters` first, so
+    # `import slicelab.redact` on a cold bytecode cache was the only way to see it.
+    from slicelab.adapters.base import EngineSpec
 
 __all__ = ["REDACTED", "Redacted", "RedactionError", "redact"]
 

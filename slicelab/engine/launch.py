@@ -200,13 +200,26 @@ def _inventory(scratch: Path, capture: tuple[str, ...]) -> tuple[StrayFile, ...]
         try:
             with path.open("rb") as handle:
                 digest = hashlib.file_digest(handle, "sha256").hexdigest()
+                # The size from the SAME handle the digest was taken from. Reading it
+                # from the earlier `lstat` let the two describe different states of one
+                # file if it grew in between -- a real window only on the timed-out
+                # path, where a descendant may still hold the pipes after the group
+                # kill, and an internally inconsistent evidence record either way.
+                size = os.fstat(handle.fileno()).st_size
+            # Decoded from the bytes, so `text` is what the digest covers. Text mode
+            # applies universal newlines, which rewrote CRLF on the way in and made a
+            # 20-byte file report 19 characters of "the file's contents". (`read_text`
+            # grew a `newline` argument in 3.13; this package supports 3.11.)
+            #
+            # This is the one place a stray file is read whole, and it happens only for
+            # a name the caller asked for -- which is the whole point of `capture`.
             captured = (
-                path.read_text(encoding="utf-8", errors="replace") if name in capture else None
+                path.read_bytes().decode("utf-8", errors="replace") if name in capture else None
             )
         except OSError:
             found.append(StrayFile(name=name, size=-1))
             continue
-        found.append(StrayFile(name=name, size=info.st_size, digest=digest, text=captured))
+        found.append(StrayFile(name=name, size=size, digest=digest, text=captured))
     return tuple(found)
 
 

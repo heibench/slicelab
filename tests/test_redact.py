@@ -136,7 +136,7 @@ def test_an_engine_that_declares_secrets_and_cannot_remove_them_is_refused() -> 
     otherwise reach `Redacted` through whatever the core happened to do, which is the
     defect this seam exists to close -- the core's own ini split removed nothing from
     OrcaSlicer's JSON and returned an honest empty `keys` about a file that still held
-    six credentials.
+    every credential it held.
     """
     with pytest.raises(RedactionError, match="no measured way to remove them"):
         redact(DUMP, replace(PRUSASLICER, redact_readback=None))

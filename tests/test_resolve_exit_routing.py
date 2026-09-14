@@ -266,3 +266,57 @@ def test_an_unconfigured_engine_is_an_environment_fault(any_engine, tmp_path: Pa
         f"the report names a directory other than the one checked: {done.stderr}"
     )
     assert "Traceback" not in done.stderr
+
+
+def test_a_dump_slicelab_cannot_read_is_incomplete_not_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `ValueError` from an adapter's reader must leave `resolve` as `incomplete`.
+
+    OrcaSlicer's reader refuses a dump that repeats a key, because JSON permits one
+    and `json.loads` keeps the last silently. That detector raises from
+    `read_readback` -- and `redact` reaches it one line ABOVE the guard written to
+    route it, so the exception left `resolve` unrouted and the process exited **1**
+    with a traceback. Exit 1 is `refused`: slicelab asserting it established the
+    intent cannot be honoured, over a run where the engine answered, with `Traceback`
+    where D14 requires the outcome word.
+
+    The engine is stubbed, because the subject is which exception leaves this function
+    rather than anything a slicer does.
+    """
+    from dataclasses import replace
+
+    from slicelab import resolve as resolve_module
+    from slicelab.adapters import PRUSASLICER
+    from slicelab.engine.discover import Discovery, ExitFidelity, LaunchForm, LaunchKind
+    from slicelab.engine.launch import Completed
+
+    def engine_wrote_a_dump(argv, **_kwargs):
+        staged = Path(next(a.split("=", 1)[1] for a in argv if a.startswith("--save=")))
+        staged.write_text("perimeters = 4\n", encoding="utf-8")
+        return Completed(exit_status=0)
+
+    def repeats_a_key(_text: str) -> dict[str, str]:
+        raise ValueError("the settings dump repeats wipe_tower_x")
+
+    found = Discovery(
+        engine="prusaslicer",
+        form=LaunchForm(kind=LaunchKind.PATH, argv_prefix=["prusa-slicer"], description="a stub"),
+        fidelity=ExitFidelity.ESTABLISHED,
+        reason="stubbed for an exit-routing test",
+    )
+    monkeypatch.setattr(resolve_module, "discover", lambda _spec: found)
+    monkeypatch.setattr(resolve_module, "_name_map", lambda _spec, _found: {})
+    monkeypatch.setattr(resolve_module, "run", engine_wrote_a_dump)
+    monkeypatch.setattr(resolve_module, "argv_for", lambda _form, argv, _paths: argv)
+    monkeypatch.setattr(
+        resolve_module,
+        "preflight",
+        lambda _intent: replace(PRUSASLICER, read_readback=repeats_a_key),
+    )
+
+    intent = tmp_path / "slice.toml"
+    intent.write_text(TRIPLE, encoding="utf-8")
+
+    with pytest.raises(resolve_module.ResolveIncomplete, match="cannot read without guessing"):
+        resolve_module.resolve(intent, tmp_path / "out.ini")
