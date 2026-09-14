@@ -105,9 +105,22 @@ def plan_resolve(intent: Intent, spec: EngineSpec, destination: Path, staged: Pa
     overrides sorted. A `Plan` is compared in tests and printed to humans, and an
     argv that reorders between runs is one nobody can diff.
     """
+    # The adapter's, when it has one. D1's supersede clause turns on exactly this:
+    # `--<key>=<value>`, one flag per key, is PrusaSlicer's way of addressing presets
+    # BY NAME, and OrcaSlicer has no such flag -- it repeats `--load-settings` with
+    # file paths. A core that can only emit the first shape is a core that assumed one
+    # engine, so the shape is the adapter's to state and the paths come back with it
+    # (D19: a profile slicelab never granted makes 2.4.2 exit 0 having written and
+    # said nothing).
     argv: list[str] = []
-    for key in spec.base_keys:
-        argv.append(f"--{key}={intent.base[key]}")
+    base_paths: frozenset[str] = frozenset()
+    if spec.compose_base is not None:
+        invocation = spec.compose_base(intent.base)
+        argv.extend(invocation.argv)
+        base_paths = invocation.paths
+    else:
+        for key in spec.base_keys:
+            argv.append(f"--{key}={intent.base[key]}")
 
     requested: dict[str, str] = {}
     for key in sorted(intent.overrides):
@@ -131,11 +144,21 @@ def plan_resolve(intent: Intent, spec: EngineSpec, destination: Path, staged: Pa
             f"{spec.name} has no measured way to dump its resolved configuration, so "
             "there is nothing to diff a request against"
         )
+    if spec.read_readback is None:
+        # Refused here rather than after the run, for the same reason as the flag
+        # above: a dump slicelab cannot read is a dump it cannot diff, and finding
+        # that out after launching the engine reports a fault as though the engine
+        # had one. The two are separate fields because an engine can have a measured
+        # way to WRITE its configuration and no measured way to read it back.
+        raise PlanError(
+            f"{spec.name} has no measured way to read its own configuration dump, so "
+            "a run would produce an answer slicelab could not adjudicate"
+        )
     argv.append(f"{spec.readback_flag}={staged}")
     return Plan(
         argv=tuple(argv),
         requested=requested,
         staged=staged,
         destination=destination,
-        paths=frozenset({str(staged)}),
+        paths=frozenset({str(staged), *base_paths}),
     )

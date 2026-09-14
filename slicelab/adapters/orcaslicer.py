@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from slicelab.adapters.base import ConfigLocation, EngineSpec, OptionProbe
+from slicelab.adapters.base import BaseInvocation, ConfigLocation, EngineSpec, OptionProbe
+from slicelab.redact import REDACTED
 
 
 def _options_from_settings_keys(listing: str, baseline: Mapping[str, str]) -> tuple[str, ...]:
@@ -54,6 +55,68 @@ def _read_settings_json(text: str) -> Mapping[str, str]:
     }
 
 
+#: The three profiles an Orca run loads, in the order its flags take them.
+#: slicelab's own words for the three kinds, NOT preset names: Orca has no
+#: preset-enumeration verb (`preset_query=None`), so naming a preset would mean
+#: slicelab locating a file the engine never told it about -- org contract 2.3.
+#: These are paths, and the author states them.
+_BASE_KEYS = ("machine", "process", "filament")
+
+
+def _load_profiles(base: Mapping[str, str]) -> BaseInvocation:
+    """`[orcaslicer.base]` -> the argv that loads those three profiles.
+
+    PrusaSlicer takes one flag per preset and names them; Orca takes
+    ``--load-settings`` for process and machine and ``--load-filaments`` for
+    filament, with file paths. Measured on 2.4.2: the flag REPEATS -- two
+    ``--load-settings`` are both honoured, and the dump carries the machine's
+    ``printer_settings_id`` and the process's ``layer_height`` together -- so the
+    documented ``"a.json;b.json"`` form is not needed, and a separator inside a TOML
+    value is not forced on the author.
+
+    Inheritance is Orca's to resolve and it does: every stock profile here carries
+    ``inherits``, and a triple naming three of them resolves at rc=0 with the
+    inherited values present. Reimplementing that resolution is forbidden by org
+    contract 3, and this measurement is why it never has to be.
+
+    The paths are returned alongside the argv because they are what the engine must
+    be granted (D19). A profile slicelab failed to grant does not fail loudly: with
+    an ungranted path, 2.4.2 exits **0**, writes nothing, and says nothing on either
+    stream -- this org's founding failure shape, measured on this host.
+    """
+    return BaseInvocation(
+        argv=(
+            f"--load-settings={base[_BASE_KEYS[0]]}",
+            f"--load-settings={base[_BASE_KEYS[1]]}",
+            f"--load-filaments={base[_BASE_KEYS[2]]}",
+        ),
+        paths=frozenset(base[key] for key in _BASE_KEYS),
+    )
+
+
+def _redact_settings_json(text: str, secret_keys: tuple[str, ...]) -> str:
+    """Replace the values of `secret_keys` in an Orca settings dump.
+
+    Parsed and re-serialised rather than edited line by line. Every credential Orca
+    carries happens to be a single-line string today, so a line edit would work and
+    would keep the bytes -- but 185 of the dump's keys hold lists spanning several
+    lines, and a line-based rule silently misses one the day a credential is list-
+    valued. `redact.py` verifies the result, so such a miss would be loud rather than
+    silent; it is still not a rule worth writing.
+
+    The cost is stated rather than hidden: Orca's promoted readback is slicelab's
+    re-serialisation of the engine's JSON, not the engine's bytes. Key order and every
+    value survive -- `redact.py` checks that key by key -- and JSON carries no comments
+    to lose. The tab indent matches what 2.4.2 writes.
+    """
+    document = json.loads(text)
+    wanted = set(secret_keys)
+    for key in document:
+        if key in wanted:
+            document[key] = REDACTED
+    return json.dumps(document, indent="\t", ensure_ascii=False) + "\n"
+
+
 PROBE = OptionProbe(
     # Orca's spellings for the same eight shapes PrusaSlicer's probe uses. A
     # percent and a bare number are both real Orca value forms: `accel_to_decel_factor`
@@ -76,7 +139,6 @@ PROBE = OptionProbe(
     # than PrusaSlicer, and not a claim Orca never made.
     unknown_option="",
     candidates=_options_from_settings_keys,
-    read_config=_read_settings_json,
 )
 
 SPEC = EngineSpec(
@@ -106,5 +168,27 @@ SPEC = EngineSpec(
     # only the form that is installed here is declared.
     config_location=ConfigLocation(marker="OrcaSlicer.conf", flatpak="OrcaSlicer"),
     readback_flag="--export-settings",
+    read_readback=_read_settings_json,
+    redact_readback=_redact_settings_json,
+    # Measured on 2.4.2, not inherited from PrusaSlicer's list. A stock Sovol triple
+    # emits none of these -- 625 keys, zero credential-bearing -- so a guard written
+    # against that dump would have found nothing and reported the engine clean. A
+    # machine profile with upload configured resolves to 634 keys carrying all six
+    # verbatim, which is the same value-dependent key set PrusaSlicer has.
+    #
+    # `host_type`, `printhost_authorization_type` and `bbl_use_printhost` also survive
+    # into the dump and are deliberately NOT here: they state how the printer is
+    # reached, not a secret for reaching it, and PrusaSlicer's measured list excludes
+    # the same shape.
+    secret_keys=(
+        "print_host",
+        "printhost_apikey",
+        "printhost_cafile",
+        "printhost_password",
+        "printhost_port",
+        "printhost_user",
+    ),
+    base_keys=_BASE_KEYS,
+    compose_base=_load_profiles,
     option_probe=PROBE,
 )

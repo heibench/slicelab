@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-__all__ = ["ConfigLocation", "EngineSpec", "OptionProbe", "PresetQuery"]
+__all__ = ["BaseInvocation", "ConfigLocation", "EngineSpec", "OptionProbe", "PresetQuery"]
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,21 @@ class ConfigLocation:
 
     windows: str | None = None
     """Relative to ``%APPDATA%``."""
+
+
+@dataclass(frozen=True)
+class BaseInvocation:
+    """How one engine is told which presets to load, and what that touches on disk."""
+
+    argv: tuple[str, ...]
+    paths: frozenset[str] = frozenset()
+    """Host paths this invocation reads, for a sandboxed engine to be granted (D19).
+
+    Empty for an engine that addresses presets by name. Non-empty for one that
+    addresses them by path, which is the difference this class exists to carry: a
+    profile slicelab never granted surfaces as an *engine* error about a file the
+    author can see, which is a fault slicelab caused reported as one the engine found.
+    """
 
 
 @dataclass(frozen=True)
@@ -129,15 +144,6 @@ class OptionProbe:
     keys of its own settings dump.
     """
 
-    read_config: Callable[[str], Mapping[str, str]]
-    """The text of a readback artifact -> key/value pairs.
-
-    Takes text rather than a path on purpose. Whether the artifact exists and is
-    non-empty is D7's question, it is asked about every engine alike, and the
-    driver asks it -- so an adapter cannot answer ``{}`` for a file that was never
-    written and have the caller read that as "nothing moved".
-    """
-
     enumerate_argv: tuple[str, ...] = ()
     """Argv that makes this engine list its options, or ``()`` if it will not.
 
@@ -211,6 +217,63 @@ class EngineSpec:
 
     `None` means the emission form is unmeasured for this engine, and planning
     refuses rather than composing an argv nobody has run.
+    """
+
+    read_readback: Callable[[str], Mapping[str, str]] | None = None
+    """The text of this engine's readback -> key/value pairs, or `None` if unmeasured.
+
+    Takes text rather than a path on purpose. Whether the artifact exists and is
+    non-empty is D7's question, it is asked about every engine alike, and the driver
+    asks it -- so an adapter cannot answer ``{}`` for a file that was never written
+    and have the caller read that as "nothing moved".
+
+    Beside `readback_flag` rather than on `OptionProbe`, where it used to live. The
+    probe needed it first, but it is a property of the engine's readback FORMAT: one
+    writes an ini and the other writes JSON, and `resolve` has to read the result
+    whether or not anything was ever probed. While it sat on the probe, `resolve`
+    parsed the dump itself with `key = value` and a `#` comment rule -- PrusaSlicer's
+    ini format, in a core module, where `test_names_confined.py` cannot see it because
+    `" = "` contains a space and is therefore prose. That is D1's clause being decided
+    by default, and it is why this field is here.
+    """
+
+    redact_readback: Callable[[str, tuple[str, ...]], str] | None = None
+    """Replace the values of the named keys in this engine's readback, in ITS format.
+
+    The policy stays in `redact.py` -- which keys, what marker, the refusal when
+    nobody has measured them, and the check that nothing else moved. Only the
+    substitution is here, because only the adapter knows whether the dump is an ini
+    or JSON.
+
+    It used to be entirely in the core, splitting each line on `" = "`. Handed
+    OrcaSlicer's `--export-settings` JSON that removes nothing and reports the file
+    clean -- and Orca's dump does carry credentials: measured on 2.4.2, a machine
+    profile with upload configured resolves to a dump carrying `print_host`,
+    `printhost_apikey`, `printhost_password`, `printhost_user`, `printhost_port` and
+    `printhost_cafile` in cleartext, all six verbatim. A promoted readback would have
+    carried every one of them into the directory the README says you commit, under a
+    field naming which keys had been removed.
+
+    `None` means unmeasured, and a non-empty `secret_keys` with no redactor is
+    refused rather than written.
+    """
+
+    compose_base: Callable[[Mapping[str, str]], BaseInvocation] | None = None
+    """The authored `[<engine>.base]` table -> the argv that loads those presets.
+
+    `None` means the core's own `--<key>=<value>` composition is used, which is what
+    every engine addressing presets by name needs.
+
+    This exists because OrcaSlicer does not. It has no `--printer-profile`; it takes
+    `--load-settings` with file *paths*, repeatably -- measured on 2.4.2: two
+    `--load-settings` flags are both honoured, and the resolved dump carries the
+    process profile's `layer_height` and the machine's `printer_settings_id`. A core
+    that can only emit one flag per key is a core that assumes PrusaSlicer's
+    addressing model, which is exactly what D1's supersede clause asks about.
+
+    Returning the argv AND the paths together, rather than letting the caller derive
+    the paths from the values, keeps the two from disagreeing: the adapter is the only
+    thing that knows which of its base values are paths at all.
     """
 
     bool_words: tuple[str, str] | None = None

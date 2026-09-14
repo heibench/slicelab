@@ -141,8 +141,8 @@ def resolve(intent_path: Path, sidecar: Path) -> Resolved:
         plan = plan_resolve(intent, spec, sidecar, Path(staging) / "readback")
         completed = run(argv_for(found.form, plan.argv, plan.paths))
         text = _artifact(completed, plan.staged, spec, intent)
-        readback = redact(text, spec.secret_keys)
-        adjudication = diff(plan.requested, _parse(text), name_map)
+        readback = redact(text, spec)
+        adjudication = diff(plan.requested, _parse(text, spec), name_map)
         _promote(readback, plan.destination)
 
     return Resolved(adjudication=adjudication, readback=readback, sidecar=plan.destination)
@@ -363,8 +363,9 @@ def _diagnosis(completed) -> str:
     return "it said nothing on either stream"
 
 
-def _parse(text: str) -> Mapping[str, str]:
-    """The engine's dump as a mapping. Parsed from the ORIGINAL, not the redacted copy.
+def _parse(text: str, spec: EngineSpec) -> Mapping[str, str]:
+    """The engine's dump as a mapping, READ BY THE ADAPTER. From the ORIGINAL, not the
+    redacted copy.
 
     A redacted value is `<redacted>`, and diffing against that would report a
     credential the author set as coerced -- slicelab's own removal surfacing as a
@@ -375,10 +376,19 @@ def _parse(text: str) -> Mapping[str, str]:
     credential-bearing CLI option at all -- 416 spellings, none of them. The day an
     engine grows one, this line is what stops the report blaming the engine for
     slicelab's own removal.
+
+    **The parsing itself is the adapter's.** This function used to split on `" = "`
+    and skip `#` and `[` -- PrusaSlicer's ini, written out in a core module. Handing
+    OrcaSlicer's `--export-settings` JSON to it produced an empty mapping, so every
+    authored override came back `absent` at exit 2 on a run the engine had honoured
+    exactly: a false red, from the core having assumed one engine's file format.
+
+    `test_names_confined.py` could not have caught it. Its rule is that a non-prose
+    literal must be declared vocabulary, and `" = "` contains a space, so it is prose;
+    `"#"` and `"["` contain no alphanumerics, so they carry no concept. The format
+    assumption was structural rather than lexical, which is the gap D1's clause is
+    really about -- and the reason the clause is answered by moving the reader rather
+    than by observing that no engine key appears here.
     """
-    resolved: dict[str, str] = {}
-    for line in text.splitlines():
-        key, separator, value = line.partition(" = ")
-        if separator and not key.startswith(("#", "[")):
-            resolved[key.strip()] = value
-    return resolved
+    assert spec.read_readback is not None  # `plan_resolve` refuses a spec without one
+    return spec.read_readback(text)

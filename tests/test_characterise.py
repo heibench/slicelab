@@ -1265,7 +1265,8 @@ def _live_vocabulary(spec: EngineSpec, tmp_path: Path) -> tuple[tuple[str, ...],
     run(argv_for(found.form, (f"{spec.readback_flag}={sidecar}",), (str(sidecar),)), timeout=90.0)
     if not sidecar.exists() or sidecar.stat().st_size == 0:
         pytest.skip(f"{spec.name} wrote no readback for a request with nothing set")
-    baseline = probe.read_config(sidecar.read_text(encoding="utf-8", errors="replace"))
+    assert spec.read_readback is not None
+    baseline = spec.read_readback(sidecar.read_text(encoding="utf-8", errors="replace"))
     listing = ""
     if probe.enumerate_argv:
         completed = run(argv_for(found.form, probe.enumerate_argv, ()), timeout=90.0)

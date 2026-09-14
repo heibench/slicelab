@@ -51,15 +51,24 @@ def test_the_engine_owns_its_preset_flag_names_and_the_core_does_not() -> None:
     assert not [n for n in dir(vocab) if "base_key" in n.lower()]
 
 
-def test_an_adapter_with_no_declared_base_is_not_guessed_for() -> None:
-    """Orca's `[base]` is undecided, and an empty tuple says so rather than lying.
+def test_an_engine_without_preset_enumeration_addresses_profiles_as_slicelab_names_them() -> None:
+    """Orca's `[base]` names three KINDS, and the author supplies paths.
 
-    Pre-flight will refuse on an empty `base_keys` rather than fall back to the other
-    engine's names -- degrading to a neighbouring answer is the shape org contract
-    section 3 calls a could-not-tell, not a success. `preflight.py` does not exist
-    yet, so this pins the declaration and not the behaviour.
+    This asserted `base_keys == ()` while Orca's `[base]` was undecided, and said in
+    its own docstring that it pinned the declaration because `preflight.py` did not
+    exist. Both have changed: #6 decided the table, and the refusal-on-empty behaviour
+    is covered in `test_preflight.py` against a synthetic spec, so that it does not go
+    green again the day the next adapter is finished.
+
+    What is still worth pinning is the shape. Orca has no preset-enumeration verb
+    (`preset_query is None`), so slicelab cannot ask it what presets exist; naming one
+    would mean locating a file the engine never told it about, which is org contract
+    2.3. `machine`, `process` and `filament` are slicelab's words for the three kinds,
+    and the values are paths the author states.
     """
-    assert ORCASLICER.base_keys == ()
+    assert ORCASLICER.preset_query is None
+    assert ORCASLICER.base_keys == ("machine", "process", "filament")
+    assert ORCASLICER.compose_base is not None
 
 
 def test_preset_flag_names_are_spelled_as_the_engine_spells_them() -> None:

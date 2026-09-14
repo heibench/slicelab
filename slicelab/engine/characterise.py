@@ -629,7 +629,8 @@ def _one_run(
         text = _artifact_text(sidecar)
         if text is None:
             return ProbeOutcome.NO_ARTIFACT, None
-        parsed = probe.read_config(text)
+        assert spec.read_readback is not None
+        parsed = spec.read_readback(text)
         if set(baseline) - set(parsed):
             return ProbeOutcome.NAMESPACE_CHANGED, None
         return None, parsed
@@ -656,7 +657,8 @@ def _dump(
     )
     text = _artifact_text(sidecar)
     _discard(sidecar)
-    return None if text is None else probe.read_config(text)
+    assert spec.read_readback is not None
+    return None if text is None else spec.read_readback(text)
 
 
 def _artifact_text(sidecar: Path) -> str | None:
