@@ -269,6 +269,22 @@ class EngineSpec:
     by default, and it is why this field is here.
     """
 
+    readback_suffix: str = ".readback.ini"
+    """What slicelab names the promoted readback when the author names nothing.
+
+    PrusaSlicer writes an ini and OrcaSlicer writes JSON, so one default is wrong for
+    one of them: a Sovol triple resolved to a 625-key JSON document in a file called
+    `slice.readback.ini`. Harmless to slicelab, which never reads it back by
+    extension, and wrong for every other thing that looks at a file -- an editor, a
+    diff viewer, a reviewer.
+
+    It defaults to the ini spelling rather than being required, because the suffix is
+    cosmetic and an adapter that forgets it produces a badly-named file rather than a
+    wrong answer. `cli.py` is outside `test_names_confined.py`'s scan -- it is argparse
+    plumbing, and scanning it flags a dozen of slicelab's own verb names -- which is
+    why this one sat there unnoticed while three real assumptions were being moved.
+    """
+
     run_record: RunRecord | None = None
     """Where this engine states its own outcome, or `None` if it states none.
 

@@ -205,6 +205,7 @@ SPEC = EngineSpec(
     # only the form that is installed here is declared.
     config_location=ConfigLocation(marker="OrcaSlicer.conf", flatpak="OrcaSlicer"),
     readback_flag="--export-settings",
+    readback_suffix=".readback.json",
     run_record=RunRecord(name="result.json", read=_read_result_json),
     read_readback=_read_settings_json,
     redact_readback=_redact_settings_json,

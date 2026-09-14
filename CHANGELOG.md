@@ -9,6 +9,38 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **OrcaSlicer is drivable.** `slicelab resolve` works against a stock OrcaSlicer
+  triple: `[orcaslicer.base]` names a `machine`, a `process` and a `filament` profile
+  by path, and slicelab loads them the way that engine loads profiles. Measured on
+  2.4.2 against a stock Sovol triple — exit 0, one authored override reported
+  `applied`, a 625-key JSON readback. Two engines now answer one question through two
+  mechanisms: a 376-key ini from `--save` and a 625-key JSON from `--export-settings`.
+  Profiles are named by path because OrcaSlicer has no preset-enumeration verb;
+  slicelab locating a profile the engine never told it about would be inventing an
+  inventory.
+- The readback a run promotes is named for the format it is in. OrcaSlicer's is
+  `.readback.json`; PrusaSlicer's stays `.readback.ini`.
+- `Completed.stray_files` records what an engine left in the working directory
+  slicelab gave it — name, size and digest — before that directory is swept. Cleaning
+  up and hiding evidence are the same action without the record.
+- Where an engine states its own outcome in a file, that is what gets reported.
+  OrcaSlicer writes `result.json` on every run and the shell only ever sees its code
+  truncated to a byte, so an internal `-3` arrived as 253.
+
+### Fixed
+
+- **OrcaSlicer's readback carries credentials, and redaction would not have removed
+  them.** Redaction split every line on `" = "` — PrusaSlicer's ini format — so on
+  OrcaSlicer's JSON it removed nothing and reported the file clean. Measured on 2.4.2:
+  a machine profile with upload configured resolves to a dump carrying `print_host`,
+  `printhost_apikey`, `printhost_password`, `printhost_user`, `printhost_port` and
+  `printhost_cafile` in cleartext. A stock triple carries none of them, so a check
+  written against that dump would have found nothing and reported the engine clean.
+  Redaction is now the adapter's, and slicelab verifies the result: it reads its own
+  output back and refuses to write unless every credential key reads as the marker and
+  every other key is untouched. No released version was affected — OrcaSlicer could
+  not be driven before this release.
+
 - `slicelab resolve` — reads a `slice.toml`, asks the engine what it would resolve
   it to, and diffs that against what was asked. No G-code is produced: the engine
   is asked for its resolved configuration and nothing else, which costs a preset

@@ -110,10 +110,15 @@ class Resolved:
         return self.adjudication.outcome
 
 
-def resolve(intent_path: Path, sidecar: Path) -> Resolved:
+def resolve(intent_path: Path, sidecar: Path | None = None) -> Resolved:
     """Ask the engine what it would resolve, and adjudicate the answer."""
     intent = read_intent(intent_path)
     spec = preflight(intent)
+    # Defaulted HERE, not by the caller, because the engine decides the extension and
+    # the engine is not known until the intent has been read. `cli` chose
+    # `.readback.ini` for every engine, which named OrcaSlicer's JSON dump an ini.
+    if sidecar is None:
+        sidecar = intent_path.with_suffix(spec.readback_suffix)
     found = discover(spec)
     if found.form is None:
         raise ResolveError(f"no usable {spec.name} on this machine")
