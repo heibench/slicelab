@@ -149,8 +149,15 @@ def resolve(intent_path: Path, sidecar: Path | None = None) -> Resolved:
             capture=(spec.run_record.name,) if spec.run_record else (),
         )
         text = _artifact(completed, plan.staged, spec, intent)
-        readback = redact(text, spec)
         try:
+            # `redact` INSIDE the guard, because it reads the dump first and so reaches
+            # the duplicate-key detector before `_parse` does. With it one line above,
+            # a repeated key left the `ValueError` unrouted: exit 1 with a traceback,
+            # which is `refused` -- slicelab asserting it established the intent cannot
+            # be honoured -- over a run where the engine answered, and `Traceback` where
+            # D14 requires the outcome word. `RedactionError` is not a `ValueError`, so
+            # it still reaches the `error` handler it belongs to.
+            readback = redact(text, spec)
             resolved_keys = _parse(text, spec)
         except ValueError as unreadable:
             # The dump exists and slicelab cannot read it unambiguously. `incomplete`,
