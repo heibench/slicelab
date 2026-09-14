@@ -261,6 +261,15 @@ def test_a_prusaslicer_triple_is_refused_with_a_reason_not_silently_wrong(
 #: each is a decision: the engine's own G-code footer KEEPS these and strips the seven
 #: on `ORCASLICER.secret_keys`. Adding a name here is a claim that the engine does not
 #: treat it as sensitive, made in a diff someone can object to.
+#: Host-family names that do not begin with `print_host`/`printhost_`.
+#:
+#: Listed here and deliberately NOT derived from `NOT_CREDENTIALS`. The membership
+#: test used to be `key.startswith(prefixes) or key in NOT_CREDENTIALS`, which is
+#: self-defeating for exactly these two: removing a name from the set under test
+#: removed it from consideration in the same step, so it could never be reported
+#: undecided. `host_type` was in the dump and pinned by nothing.
+UNPREFIXED_HOST_KEYS = frozenset({"host_type", "bbl_use_printhost"})
+
 NOT_CREDENTIALS = frozenset(
     {
         "host_type",
@@ -291,8 +300,14 @@ def test_every_host_family_key_this_engine_emits_is_declared_one_way_or_the_othe
     here.
 
     What finds a new one is the G-code footer comparison, which needs a slice and is a
-    standing instruction on every engine bump (D1). This is the cheap half: drop a name
-    from `secret_keys` or from `NOT_CREDENTIALS` and it goes red.
+    standing instruction on every engine bump (D1). This is the cheap half: drop any of
+    the eleven names from `secret_keys` or `NOT_CREDENTIALS` and it goes red.
+
+    Both halves of that had to be earned. The profile below sets all eleven, because a
+    key the profile does not set is a key the engine does not emit -- an earlier version
+    set nine and silently pinned nine. And the family test is independent of the sets
+    under test, because deriving it from `NOT_CREDENTIALS` meant removing a name
+    removed it from consideration in the same step.
     """
     profiles = _profiles()
     configured = tmp_path / "machine.json"
@@ -311,6 +326,11 @@ def test_every_host_family_key_this_engine_emits_is_declared_one_way_or_the_othe
                 "printhost_cafile": "/slicelab/invalid/ca.pem",
                 "printhost_authorization_type": "key",
                 "host_type": "octoprint",
+                # All eleven, so every declared name is one the dump actually carries.
+                # Measured on 2.4.2: each of these is emitted when the profile sets it
+                # and absent when it does not, so a profile setting nine pinned nine.
+                "printhost_ssl_ignore_revoke": "1",
+                "bbl_use_printhost": "1",
             }
         ),
         encoding="utf-8",
@@ -323,7 +343,7 @@ def test_every_host_family_key_this_engine_emits_is_declared_one_way_or_the_othe
     family = {
         key
         for key in dump
-        if key.startswith(("print_host", "printhost_")) or key in NOT_CREDENTIALS
+        if key.startswith(("print_host", "printhost_")) or key in UNPREFIXED_HOST_KEYS
     }
     undecided = sorted(family - set(ORCASLICER.secret_keys or ()) - NOT_CREDENTIALS)
     assert undecided == [], (

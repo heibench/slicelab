@@ -198,24 +198,28 @@ def _inventory(scratch: Path, capture: tuple[str, ...]) -> tuple[StrayFile, ...]
             continue
 
         try:
+            # ONE observation per file. Size, digest and text all come from the same
+            # open handle, so they cannot describe different states of it -- reading
+            # the size from the earlier `lstat`, or the text from a second `open`, let
+            # them diverge if the file changed in between. A real window only on the
+            # timed-out path, where a descendant may still hold the pipes after the
+            # group kill, and an internally inconsistent evidence record either way.
             with path.open("rb") as handle:
-                digest = hashlib.file_digest(handle, "sha256").hexdigest()
-                # The size from the SAME handle the digest was taken from. Reading it
-                # from the earlier `lstat` let the two describe different states of one
-                # file if it grew in between -- a real window only on the timed-out
-                # path, where a descendant may still hold the pipes after the group
-                # kill, and an internally inconsistent evidence record either way.
-                size = os.fstat(handle.fileno()).st_size
-            # Decoded from the bytes, so `text` is what the digest covers. Text mode
-            # applies universal newlines, which rewrote CRLF on the way in and made a
-            # 20-byte file report 19 characters of "the file's contents". (`read_text`
-            # grew a `newline` argument in 3.13; this package supports 3.11.)
-            #
-            # This is the one place a stray file is read whole, and it happens only for
-            # a name the caller asked for -- which is the whole point of `capture`.
-            captured = (
-                path.read_bytes().decode("utf-8", errors="replace") if name in capture else None
-            )
+                if name in capture:
+                    # The one place a stray file is read whole, and only for a name the
+                    # caller asked for -- which is the whole point of `capture`.
+                    # Decoded from bytes rather than read in text mode, because
+                    # universal newlines rewrite CRLF on the way in and made a 20-byte
+                    # file report 19 characters of "the file's contents".
+                    raw = handle.read()
+                    size, digest = len(raw), hashlib.sha256(raw).hexdigest()
+                    captured = raw.decode("utf-8", errors="replace")
+                else:
+                    # Streamed. `read_bytes` on an uncaptured stray file grew slicelab's
+                    # own RSS by 227 MiB for a 256 MiB file, on a run with no interest
+                    # in it.
+                    digest = hashlib.file_digest(handle, "sha256").hexdigest()
+                    size, captured = os.fstat(handle.fileno()).st_size, None
         except OSError:
             found.append(StrayFile(name=name, size=-1))
             continue

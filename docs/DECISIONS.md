@@ -68,10 +68,11 @@ all three were structural:
   **Re-derive that footer comparison on every OrcaSlicer bump.** It is the only thing
   that finds a key nobody knew about, and the test guarding the list cannot do it:
   2.4.2 emits a host-family key only when the loaded profile SETS it, so a test can
-  only see the keys its own profile writes. That test is a regression guard — it fails
-  if a name is dropped from either list — and an earlier version of this paragraph
-  claimed it forced a decision on future engine keys, which is the same
-  assumed-complete mistake one level up from the one that shipped a credential.
+  only see the keys its own profile writes. That test is a regression guard — it sets all
+  eleven host keys in its own profile and fails if any of them is dropped from either
+  list — and an earlier version of this paragraph claimed it forced a decision on
+  future engine keys, which is the same assumed-complete mistake one level up from the
+  one that shipped a credential.
 
 `" = "` contains a space, so the boundary test reads it as prose; `"#"` and `"["`
 contain no alphanumerics, so they carry no concept. **A lexical guard cannot see a
