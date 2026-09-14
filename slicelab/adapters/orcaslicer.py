@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from slicelab.adapters.base import BaseInvocation, ConfigLocation, EngineSpec, OptionProbe
+from slicelab.adapters.base import (
+    BaseInvocation,
+    ConfigLocation,
+    EngineSpec,
+    OptionProbe,
+    RunRecord,
+)
 from slicelab.redact import REDACTED
 
 
@@ -117,6 +123,37 @@ def _redact_settings_json(text: str, secret_keys: tuple[str, ...]) -> str:
     return json.dumps(document, indent="\t", ensure_ascii=False) + "\n"
 
 
+def _read_result_json(text: str) -> tuple[int | None, str]:
+    """Orca's `result.json` -> its own return code and error string.
+
+    Measured on 2.4.2, and the reason this is read at all: the shell sees the code
+    truncated to a byte. An internal `-3` -- "The input files to the slicer are not
+    found." -- arrives as 253, and `-5` -- "The input preset file is invalid and can
+    not be parsed." -- as 251. Reporting 253 attributes to the engine a number it
+    never chose.
+
+    Written on success too: a clean run leaves `{"return_code": 0, "error_string":
+    "Success.", ...}` in the working directory, which is why it is also the litter
+    D20 requires be recorded rather than silently swept.
+
+    A record that will not parse yields `(None, ...)` rather than a code: a file
+    slicelab could not read establishes nothing about the run, and inventing a code
+    for it is the substitution org contract 2.3 refuses.
+    """
+    try:
+        document = json.loads(text)
+    except (TypeError, ValueError):
+        return None, "the engine's run record could not be parsed"
+    if not isinstance(document, dict):
+        return None, "the engine's run record was not an object"
+    code = document.get("return_code")
+    message = document.get("error_string")
+    return (
+        code if isinstance(code, int) else None,
+        message if isinstance(message, str) else "",
+    )
+
+
 PROBE = OptionProbe(
     # Orca's spellings for the same eight shapes PrusaSlicer's probe uses. A
     # percent and a bare number are both real Orca value forms: `accel_to_decel_factor`
@@ -168,6 +205,7 @@ SPEC = EngineSpec(
     # only the form that is installed here is declared.
     config_location=ConfigLocation(marker="OrcaSlicer.conf", flatpak="OrcaSlicer"),
     readback_flag="--export-settings",
+    run_record=RunRecord(name="result.json", read=_read_result_json),
     read_readback=_read_settings_json,
     redact_readback=_redact_settings_json,
     # Measured on 2.4.2, not inherited from PrusaSlicer's list. A stock Sovol triple

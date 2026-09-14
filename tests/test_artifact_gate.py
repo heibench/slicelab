@@ -149,7 +149,7 @@ def test_a_run_that_reached_no_verdict_promotes_nothing(
 
     staged_dumps: list[Path] = []
 
-    def engine_wrote_a_dump(argv):
+    def engine_wrote_a_dump(argv, **_kwargs):
         staged = Path(next(a.split("=", 1)[1] for a in argv if a.startswith("--save=")))
         staged.write_text("perimeters = 4\n", encoding="utf-8")
         staged_dumps.append(staged)

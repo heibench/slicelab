@@ -7,16 +7,47 @@ to be honest about is decided here, once, rather than at every call site.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import signal
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-__all__ = ["Completed", "run"]
+__all__ = ["Completed", "StrayFile", "run"]
 
 DEFAULT_TIMEOUT_S = 120.0
+
+
+@dataclass(frozen=True)
+class StrayFile:
+    """One file an engine left in the working directory slicelab gave it."""
+
+    name: str
+    """Relative to the run's working directory, with `/` separators on every platform."""
+
+    size: int
+    digest: str
+
+    text: str | None = None
+    """The file's contents, for a name the caller asked to capture, else `None`.
+
+    `None` means "not captured", never "empty": an engine's own run record can
+    legitimately be an empty file, and a reader deciding whether it exists must not
+    have to guess which of the two it is looking at.
+
+    Captured rather than always read because the caller knows which files it can
+    interpret. OrcaSlicer's `result.json` carries the engine's real return code, and
+    the directory holding it is destroyed a moment later -- so it is read then or not
+    at all.
+    """
+    """sha256 of the contents, or `""` if the file could not be read.
+
+    A name and a size do not tell a reader whether the `result.json` in two runs was
+    the same `result.json`. The digest is what makes the record checkable rather than
+    merely present, and it is cheap: these files are small and there are a handful.
+    """
 
 
 @dataclass(frozen=True)
@@ -38,6 +69,26 @@ class Completed:
     stderr: str = ""
     timed_out: bool = False
 
+    stray_files: tuple[StrayFile, ...] = ()
+    """What the engine left in its working directory, recorded before it was swept.
+
+    D20 is two clauses, and this is the second: *every engine runs in a slicelab-owned
+    scratch CWD, and stray files are recorded.* Sweeping is the fix; recording is the
+    honesty, because **cleaning up and hiding evidence are the same action without the
+    field**. The scratch directory used to be created, handed to the engine, and
+    deleted with whatever was in it unexamined and unreported.
+
+    It is not hypothetical litter. OrcaSlicer 2.4.2 writes `result.json` into its cwd
+    on every run -- on success and on failure alike, measured -- and that file carries
+    the engine's own return code and error string, which is the only place its real
+    exit reason appears: the shell sees the truncated `253` for an internal `-3`.
+    So the same action that tidied the directory destroyed the run's diagnosis.
+
+    Empty for a run whose caller supplied its own directory: what an engine leaves in
+    a directory someone else owns is not slicelab's to inventory, and that caller can
+    see the files itself.
+    """
+
     @property
     def died_by_signal(self) -> bool:
         return self.signal is not None
@@ -56,6 +107,7 @@ def run(
     argv: list[str],
     *,
     cwd: Path | None = None,
+    capture: tuple[str, ...] = (),
     timeout: float = DEFAULT_TIMEOUT_S,
 ) -> Completed:
     """Invoke an engine and report what happened, without interpreting it.
@@ -97,8 +149,42 @@ def run(
     """
     if cwd is None:
         with _scratch() as scratch:
-            return _spawn(argv, Path(scratch), timeout)
+            completed = _spawn(argv, Path(scratch), timeout)
+            # Recorded BEFORE the `with` sweeps it. D20's second clause: the field is
+            # what separates cleaning up from hiding evidence, and there is nowhere
+            # else this can be read -- a moment later the directory is gone.
+            return replace(completed, stray_files=_inventory(Path(scratch), capture))
     return _spawn(argv, cwd, timeout)
+
+
+def _inventory(scratch: Path, capture: tuple[str, ...]) -> tuple[StrayFile, ...]:
+    """Everything under `scratch`, by name, size and digest.
+
+    Never raises. This runs on the way out of every invocation including failed and
+    timed-out ones, and an inventory that could fail would turn a recorded run into a
+    traceback -- reporting slicelab's own bookkeeping as an engine fault. A file that
+    cannot be read is listed with an empty digest, which says "it was here and slicelab
+    could not read it" rather than dropping it.
+    """
+    found: list[StrayFile] = []
+    for path in sorted(scratch.rglob("*")):
+        if not path.is_file():
+            continue
+        name = path.relative_to(scratch).as_posix()
+        try:
+            data = path.read_bytes()
+        except OSError:
+            found.append(StrayFile(name=name, size=-1, digest=""))
+            continue
+        found.append(
+            StrayFile(
+                name=name,
+                size=len(data),
+                digest=hashlib.sha256(data).hexdigest(),
+                text=data.decode("utf-8", errors="replace") if name in capture else None,
+            )
+        )
+    return tuple(found)
 
 
 def _scratch() -> tempfile.TemporaryDirectory[str]:

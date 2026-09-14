@@ -1111,6 +1111,12 @@ ENGINE_PACKAGE_TERMS = frozenset(
         # `Identity` and `Completed`.
         "digest_of",
         "exit_status",
+        # D20's own word for what an engine left in the working directory slicelab
+        # gave it. slicelab's term, not an engine's -- checked against both installed
+        # engines' real key universes before being declared: zero matches for
+        # `stray_files` in PrusaSlicer 2.9.6's dump or OrcaSlicer 2.4.2's, with
+        # `layer_height` as the control that the comparison finds anything at all.
+        "stray_files",
         # The XDG base-directory spec's own variable names. Neither is a config key
         # on either engine. Checked against a bare `--save` from PrusaSlicer 2.9.6 and
         # a bare `--export-settings` from OrcaSlicer 2.4.2 -- the same two dumps D30's

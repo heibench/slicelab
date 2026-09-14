@@ -6,7 +6,14 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-__all__ = ["BaseInvocation", "ConfigLocation", "EngineSpec", "OptionProbe", "PresetQuery"]
+__all__ = [
+    "BaseInvocation",
+    "ConfigLocation",
+    "EngineSpec",
+    "OptionProbe",
+    "PresetQuery",
+    "RunRecord",
+]
 
 
 @dataclass(frozen=True)
@@ -50,6 +57,31 @@ class ConfigLocation:
 
     windows: str | None = None
     """Relative to ``%APPDATA%``."""
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    """An engine's own account of how a run went, written beside its output.
+
+    Separate from the process exit status because the two disagree. OrcaSlicer 2.4.2
+    reports its internal code in this file and lets the shell see that code truncated
+    to a byte: an internal ``-3`` arrives as ``253``, and ``-5`` as ``251``. A caller
+    reading only the shell status is reading a number the engine did not choose.
+
+    ``None`` on a spec means this engine writes no such file, and the exit status is
+    all there is. It is not a gap to fill in later -- PrusaSlicer genuinely writes
+    nothing of the kind.
+    """
+
+    name: str
+    """The file, relative to the working directory the engine was given."""
+
+    read: Callable[[str], tuple[int | None, str]]
+    """Its text -> (the engine's own code, its own message).
+
+    ``None`` for the code where the record exists but does not state one, which is a
+    different fact from a record that is absent. The absent case never reaches here.
+    """
 
 
 @dataclass(frozen=True)
@@ -235,6 +267,15 @@ class EngineSpec:
     ini format, in a core module, where `test_names_confined.py` cannot see it because
     `" = "` contains a space and is therefore prose. That is D1's clause being decided
     by default, and it is why this field is here.
+    """
+
+    run_record: RunRecord | None = None
+    """Where this engine states its own outcome, or `None` if it states none.
+
+    V13: a missing record is `incomplete` -- slicelab could not tell -- and never a
+    verdict inferred from the shell status. That matters most where the shell status
+    is the most reassuring: with a path it was not granted, 2.4.2 exits **0**, writes
+    no settings, writes no record, and says nothing on either stream.
     """
 
     redact_readback: Callable[[str, tuple[str, ...]], str] | None = None

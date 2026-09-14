@@ -139,7 +139,10 @@ def resolve(intent_path: Path, sidecar: Path) -> Resolved:
     # author's git tree and is the reason the destination is not the staging path.
     with tempfile.TemporaryDirectory(prefix="slicelab-readback-") as staging:
         plan = plan_resolve(intent, spec, sidecar, Path(staging) / "readback")
-        completed = run(argv_for(found.form, plan.argv, plan.paths))
+        completed = run(
+            argv_for(found.form, plan.argv, plan.paths),
+            capture=(spec.run_record.name,) if spec.run_record else (),
+        )
         text = _artifact(completed, plan.staged, spec, intent)
         readback = redact(text, spec)
         adjudication = diff(plan.requested, _parse(text, spec), name_map)
@@ -308,6 +311,21 @@ def _artifact(completed, staged: Path, spec: EngineSpec, intent: Intent) -> str:
     except OSError as exc:  # pragma: no cover - staging is slicelab's own directory
         raise ResolveError(f"cannot examine the dump {spec.name} was asked for: {exc}") from exc
 
+    record = _run_record(completed, spec)
+    if record is not None:
+        code, message = record
+        if code not in (0, None):
+            # The ENGINE's code, not the shell's. 2.4.2 truncates its internal code to
+            # a byte on the way out -- `-3` arrives as 253 -- so reporting the shell
+            # status attributes to the engine a number it never chose. Raised before
+            # the artifact gate because the engine has already said why, in its own
+            # words, and D28 is that discarding those leaves the author with nothing
+            # to act on.
+            raise ResolveIncomplete(
+                f"{spec.name} reported {code} and wrote no usable configuration, "
+                f"so there is nothing to adjudicate: {message or _diagnosis(completed)}"
+            )
+
     if not wrote_something:
         # The engine ran and produced no configuration. Whether that is the request's
         # fault or the machine's is not readable from the exit status, so slicelab
@@ -335,6 +353,23 @@ def _artifact(completed, staged: Path, spec: EngineSpec, intent: Intent) -> str:
         return staged.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:  # pragma: no cover - staging is slicelab's own directory
         raise ResolveError(f"cannot read the dump {spec.name} wrote: {exc}") from exc
+
+
+def _run_record(completed, spec: EngineSpec) -> tuple[int | None, str] | None:
+    """What the engine said about its own run, or `None` if it said nothing.
+
+    `None` covers two cases that are the same for a caller and different for a
+    reader: an engine that writes no such file at all, and an engine that writes one
+    and did not this time. The second is the one V13 is about -- with a path it was
+    not granted, 2.4.2 exits 0, writes no settings and no record, and says nothing on
+    either stream, so the only honest reading is that slicelab could not tell.
+    """
+    if spec.run_record is None:
+        return None
+    for stray in completed.stray_files:
+        if stray.name == spec.run_record.name and stray.text is not None:
+            return spec.run_record.read(stray.text)
+    return None
 
 
 def _diagnosis(completed) -> str:
