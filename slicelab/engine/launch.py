@@ -43,9 +43,12 @@ class StrayFile:
     the same `result.json`. The digest is what makes the record checkable rather than
     merely present.
 
-    Streamed rather than read whole: this runs on every invocation, and `read_bytes`
-    on a stray file grew slicelab's own RSS by 227 MiB for a 256 MiB file. No slicer
-    does that today, and `run` is the shared path for all of them.
+    Streamed for anything the caller did not ask to capture: this runs on every
+    invocation, and `read_bytes` on a stray file grew slicelab's own RSS by 227 MiB
+    for a 256 MiB file. No slicer does that today, and `run` is the shared path for
+    all of them. A captured file is read whole regardless, because `text` needs the
+    bytes -- measured, 512 MiB captured costs 995 MiB of RSS, which is the price of
+    asking for a file's contents.
     """
 
     text: str | None = None
@@ -198,12 +201,16 @@ def _inventory(scratch: Path, capture: tuple[str, ...]) -> tuple[StrayFile, ...]
             continue
 
         try:
-            # ONE observation per file. Size, digest and text all come from the same
-            # open handle, so they cannot describe different states of it -- reading
-            # the size from the earlier `lstat`, or the text from a second `open`, let
-            # them diverge if the file changed in between. A real window only on the
-            # timed-out path, where a descendant may still hold the pipes after the
-            # group kill, and an internally inconsistent evidence record either way.
+            # One open handle, and for a captured file one observation: size, digest
+            # and text all come off the same `read`, so they cannot describe different
+            # states of it. The streaming branch NARROWS that window rather than
+            # closing it -- `file_digest` reads to EOF and `fstat` runs after, so a
+            # file still growing reports a size the digest did not cover. Measured at
+            # +20480 bytes. That is a real window only on the timed-out path, where a
+            # descendant may still hold the pipes after the group kill.
+            #
+            # Either way it beats what it replaced, which read the size from an
+            # `lstat` taken before the file was opened at all.
             with path.open("rb") as handle:
                 if name in capture:
                     # The one place a stray file is read whole, and only for a name the

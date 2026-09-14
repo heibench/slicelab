@@ -68,9 +68,9 @@ all three were structural:
   **Re-derive that footer comparison on every OrcaSlicer bump.** It is the only thing
   that finds a key nobody knew about, and the test guarding the list cannot do it:
   2.4.2 emits a host-family key only when the loaded profile SETS it, so a test can
-  only see the keys its own profile writes. That test is a regression guard — it sets all
-  eleven host keys in its own profile and fails if any of them is dropped from either
-  list — and an earlier version of this paragraph claimed it forced a decision on
+  only see the keys its own profile writes. That test is a regression guard — it sets every declared host key
+  in its own profile, refuses to run if any declared name is one the profile does not
+  make the engine emit, and fails if a name is dropped from either list — and an earlier version of this paragraph claimed it forced a decision on
   future engine keys, which is the same assumed-complete mistake one level up from the
   one that shipped a credential.
 

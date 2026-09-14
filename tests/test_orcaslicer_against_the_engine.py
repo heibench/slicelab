@@ -256,26 +256,35 @@ def test_a_prusaslicer_triple_is_refused_with_a_reason_not_silently_wrong(
     assert not list(tmp_path.glob("*.readback.*")), "a refused run promoted a readback"
 
 
+#: Host-family names that do not begin with `print_host`/`printhost_`.
+#:
+#: Listed here and deliberately NOT derived from `NOT_CREDENTIALS`. The membership test
+#: used to be `key.startswith(prefixes) or key in NOT_CREDENTIALS`, which is
+#: self-defeating for exactly these names: removing one from the set under test removed
+#: it from consideration in the same step, so it could never be reported undecided.
+#: `host_type` was in the dump and pinned by nothing.
+#:
+#: Adding a name here is a claim about SPELLING -- that this key belongs to the host
+#: family and does not carry the prefix -- and nothing about whether it is sensitive.
+#: That claim is `NOT_CREDENTIALS`, below.
+UNPREFIXED_HOST_KEYS = frozenset({"host_type", "bbl_use_printhost", "flashforge_serial_number"})
+
 #: Host-family keys 2.4.2 carries into a settings dump that are NOT credentials.
+#:
 #: Each states how the printer is reached rather than a secret for reaching it, and
 #: each is a decision: the engine's own G-code footer KEEPS these and strips the seven
 #: on `ORCASLICER.secret_keys`. Adding a name here is a claim that the engine does not
 #: treat it as sensitive, made in a diff someone can object to.
-#: Host-family names that do not begin with `print_host`/`printhost_`.
-#:
-#: Listed here and deliberately NOT derived from `NOT_CREDENTIALS`. The membership
-#: test used to be `key.startswith(prefixes) or key in NOT_CREDENTIALS`, which is
-#: self-defeating for exactly these two: removing a name from the set under test
-#: removed it from consideration in the same step, so it could never be reported
-#: undecided. `host_type` was in the dump and pinned by nothing.
-UNPREFIXED_HOST_KEYS = frozenset({"host_type", "bbl_use_printhost"})
-
 NOT_CREDENTIALS = frozenset(
     {
         "host_type",
         "printhost_authorization_type",
         "printhost_ssl_ignore_revoke",
         "bbl_use_printhost",
+        # Matches neither prefix, and was in the dump declared by nothing -- the same
+        # shape as `host_type` before the predicate above stopped deriving itself from
+        # this set. Not a credential: the footer keeps it, which is the criterion.
+        "flashforge_serial_number",
     }
 )
 
@@ -301,13 +310,14 @@ def test_every_host_family_key_this_engine_emits_is_declared_one_way_or_the_othe
 
     What finds a new one is the G-code footer comparison, which needs a slice and is a
     standing instruction on every engine bump (D1). This is the cheap half: drop any of
-    the eleven names from `secret_keys` or `NOT_CREDENTIALS` and it goes red.
+    the declared names from `secret_keys` or `NOT_CREDENTIALS` and it goes red.
 
-    Both halves of that had to be earned. The profile below sets all eleven, because a
-    key the profile does not set is a key the engine does not emit -- an earlier version
-    set nine and silently pinned nine. And the family test is independent of the sets
-    under test, because deriving it from `NOT_CREDENTIALS` meant removing a name
-    removed it from consideration in the same step.
+    Both halves of that had to be earned. The profile below sets every declared name,
+    because a key the profile does not set is a key the engine does not emit -- an
+    earlier version set nine of eleven and silently pinned nine, which the assertion
+    below now refuses outright. And the family test is independent of the sets under
+    test, because deriving it from `NOT_CREDENTIALS` meant removing a name removed it
+    from consideration in the same step.
     """
     profiles = _profiles()
     configured = tmp_path / "machine.json"
@@ -331,6 +341,7 @@ def test_every_host_family_key_this_engine_emits_is_declared_one_way_or_the_othe
                 # and absent when it does not, so a profile setting nine pinned nine.
                 "printhost_ssl_ignore_revoke": "1",
                 "bbl_use_printhost": "1",
+                "flashforge_serial_number": "SLICELABNOTASERIAL",
             }
         ),
         encoding="utf-8",
@@ -340,6 +351,17 @@ def test_every_host_family_key_this_engine_emits_is_declared_one_way_or_the_othe
     assert done.returncode == 3, f"{done.stdout}\n{done.stderr}"
 
     dump = json.loads((tmp_path / "slice.readback.json").read_text(encoding="utf-8"))
+    # Every declared name must be one this profile actually makes the engine emit.
+    # Without this the profile is a second hand-maintained list that drifts silently:
+    # dropping a key from it, or adding a name to either set and not to it, all left
+    # the guard green while pinning fewer names -- which is how it came to pin nine of
+    # eleven while saying it pinned both lists.
+    declared = set(ORCASLICER.secret_keys or ()) | NOT_CREDENTIALS
+    assert declared <= dump.keys(), (
+        f"{sorted(declared - dump.keys())} are declared but the profile above does not "
+        "make the engine emit them, so nothing here pins them"
+    )
+
     family = {
         key
         for key in dump
