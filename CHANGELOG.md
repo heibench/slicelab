@@ -9,6 +9,30 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`slicelab slice`** — slices what the intent names and hands the artifact over
+  only if the run is one slicelab can stand behind. The engine slices into a
+  directory slicelab owns; the G-code reaches your path on `sliced` and on nothing
+  else, and the file that was already there is never deleted or half-written.
+  Exits `0` sliced, `1` refused, `2` incomplete, `3` empty, `4` error.
+
+  The case it exists for, measured on PrusaSlicer 2.9.6: a `perimeters = 4.7` the
+  engine silently resolves to `4` produces a complete, perfectly printable G-code
+  file at exit 0. slicelab exits **2**, names both values, keeps the engine's own
+  configuration beside your intent as evidence, and leaves your previous artifact
+  untouched.
+
+  And the two it was built against — an object scaled outside the print volume, and
+  a post-processing script in the resolved configuration — both make the engine exit
+  **0** having written no G-code at all. One of them writes a complete configuration
+  anyway.
+- `[geometry] model` and `[output] gcode`: what to slice and where the result goes.
+  Both resolve against the `slice.toml` rather than the process working directory.
+- The output container is sniffed from the artifact's own first bytes, never assumed
+  from a flag slicelab passed. A `GCDE` container has no text footer, which is what
+  anything reading one has to know first.
+
+  No `slice.lock` is written yet; that is the next change.
+
 - **OrcaSlicer is drivable.** `slicelab resolve` works against a stock OrcaSlicer
   triple: `[orcaslicer.base]` names a `machine`, a `process` and a `filament` profile
   by path, and slicelab loads them the way that engine loads profiles. Measured on
