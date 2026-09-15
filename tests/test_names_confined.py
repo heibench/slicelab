@@ -116,7 +116,7 @@ DECLARED_VOCABULARY = frozenset(
         "artifact",
         "container",
         "destination_prehash",
-        "warnings",
+        "withheld",
         "slicelab-readback-",
         # Where the engine slices before slicelab decides whether to hand it over
         # (D7). The same shape as the readback prefix above, and named for this
