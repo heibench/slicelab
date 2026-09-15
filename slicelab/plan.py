@@ -78,7 +78,7 @@ class Plan:
     """
 
     artifact_destination: Path | None = None
-    """Where the artifact is promoted on `sliced`, and only on `sliced`."""
+    """Where the artifact is promoted, on `sliced` or `empty` (D7, D24)."""
 
     model: Path | None = None
     """The mesh, at the author's own path. Never a copy (D7).
@@ -271,6 +271,24 @@ def plan_slice(
         raise PlanError(
             f"{intent.source} sends the artifact to {artifact_destination}, which is "
             "the model this run slices, so the input would not survive the output"
+        )
+    if artifact_destination == intent.source.resolve():
+        # The same sentence as the model, about the other input. Measured: without
+        # this the intent is overwritten with 599093 bytes of G-code at exit 0, the
+        # report names its sha256 as what was "displaced", and the run that did it
+        # cannot be repeated because the file describing it is gone.
+        raise PlanError(
+            f"{intent.source} sends the artifact to {artifact_destination}, which is "
+            "the intent itself, so this run could never be repeated"
+        )
+    if artifact_destination.exists() and not artifact_destination.is_file():
+        # A directory, a device node, a fifo. `promote` refuses these -- but it
+        # refuses them after the slice, which is minutes on a real part, and it
+        # reports `error` where the three above report `refused` for the same class
+        # of fact. Knowable from the intent, so answered from the intent.
+        raise PlanError(
+            f"{intent.source} sends the artifact to {artifact_destination}, which is "
+            "not a regular file, and promoting onto it would replace it"
         )
     if not artifact_destination.parent.is_dir():
         # Cheap here, and expensive later: without it the engine slices for a minute

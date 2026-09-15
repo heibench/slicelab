@@ -118,3 +118,33 @@ def test_a_plan_with_nowhere_to_put_the_result_is_refused(tmp_path: Path) -> Non
     intent = _intent(tmp_path, "part.gcode")
     with pytest.raises(PlanError, match="declares no .output. gcode"):
         _plan(replace(intent, gcode=None), tmp_path)
+
+
+def test_a_plan_that_sends_the_artifact_onto_the_intent_is_refused(tmp_path: Path) -> None:
+    """The same sentence as the model, about the other input.
+
+    Measured before this refusal existed: the intent was overwritten with 599093
+    bytes of G-code at exit 0, and the report named its sha256 as what had been
+    "displaced". A run whose own description is gone cannot be repeated, which makes
+    it the one destination collision that destroys more than a file.
+    """
+    intent = _intent(tmp_path, "slice.toml")
+    with pytest.raises(PlanError, match="the intent itself"):
+        _plan(intent, tmp_path)
+
+
+def test_a_plan_whose_destination_is_a_directory_is_refused(tmp_path: Path) -> None:
+    """`promote` refuses this too -- after the slice. Minutes on a real part, and it
+    reports `error` where the collisions above report `refused`, for the same class
+    of fact. Knowable from the intent, so answered from the intent."""
+    (tmp_path / "part.gcode").mkdir()
+    with pytest.raises(PlanError, match="not a regular file"):
+        _plan(_intent(tmp_path, "part.gcode"), tmp_path)
+
+
+def test_a_destination_that_is_a_regular_file_is_not_refused(tmp_path: Path) -> None:
+    """The control for the one above. Replacing an existing G-code file is the
+    ordinary case -- a refusal that fired on it would make re-slicing impossible."""
+    (tmp_path / "part.gcode").write_text("PREVIOUS\n", encoding="utf-8")
+    plan = _plan(_intent(tmp_path, "part.gcode"), tmp_path)
+    assert plan.artifact_destination == (tmp_path / "part.gcode").resolve()
