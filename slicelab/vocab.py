@@ -66,10 +66,10 @@ GCODE_KEY: Final = "gcode"
 """Where the sliced artifact is promoted to, relative to the intent file.
 
 slicelab writes this and the engine never does: the engine slices into a scratch
-directory slicelab owns, and slicelab promotes on `sliced` and only on `sliced`
-(D7). An engine handed the author's own path writes it before the slice block runs
-and leaves it there when the slice fails -- [V4] is exactly that, rc=0 with a
-complete config and no G-code.
+directory slicelab owns, and slicelab promotes on `sliced` or `empty` -- D7, and
+D24's carve-out from it. An engine handed the author's own path writes it before the
+slice block runs and leaves it there when the slice fails -- [V4] is exactly that,
+rc=0 with a complete config and no G-code.
 """
 
 RUN_TABLES: Final[frozenset[str]] = frozenset({GEOMETRY_TABLE, OUTPUT_TABLE})

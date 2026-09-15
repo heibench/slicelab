@@ -115,20 +115,34 @@ and the mesh it names, and writes both a readback and a G-code file; `which` and
 `presets` read no file you name. None of the four writes a lock.
 
 `slice` writes to two paths you chose, so it refuses before running the engine if
-they collide with each other or with the mesh -- one run writing the artifact and
-the readback to one path was measured to report success over a file holding the
-wrong one. The engine writes only into a scratch directory slicelab owns; your
-path is written by slicelab, atomically, and only for an outcome it stands
-behind. A scratch directory outlives the run only when it holds an artifact the
-report names.
+they collide with each other, with the mesh, or with the intent file -- one run
+writing the artifact and the readback to one path was measured to report success
+over a file holding the wrong one. The engine writes only into a scratch directory
+slicelab owns; both of your paths are written by slicelab, atomically, replacing
+rather than truncating.
+
+The two are not written under the same rule, and the difference matters if you
+are relying on one. **The G-code is written only for an outcome slicelab stands
+behind** — `sliced`, or `empty` where there was nothing to verify. **The readback
+is written on any outcome that was adjudicated at all**, `incomplete` included
+(D31): it is the evidence for the verdict, and a verdict whose evidence was
+withheld because the verdict was bad is not worth having. So a failing `slice`
+leaves your G-code alone and does replace your readback.
+
+A scratch directory outlives the run only when it holds an artifact slicelab
+produced and would not hand over, and the report names it when it does.
 
 **Inputs.** Their own `argv` — including a `--datadir` path, which is resolved to
 an absolute path and handed to the engine, never interpreted by slicelab — plus,
 for `resolve` and `slice`, the `slice.toml` you name; for `slice`, the mesh that
 intent names, which is passed to the engine as a path and never parsed by
 slicelab; and whatever the engines print. The
-intent file is parsed as TOML and every key in it is checked against the engine's
-own option names; an unrecognised one is refused, never passed through. Engine
+intent file is parsed as TOML and checked for shape. An unrecognised key under
+`[set]` is **not** refused before the run: it becomes a `--key=value` argument and
+the engine rejects it, which slicelab reports as `incomplete` having handed
+nothing over. The check that a key means what you think it means is the readback
+adjudication, and it happens after the engine has answered, not before it is
+asked. Engine
 output is decoded with `errors="replace"` and is never evaluated: it is matched
 against a version pattern, parsed as JSON or as `key = value` lines and checked
 for shape, and printed.

@@ -47,7 +47,13 @@ def an_artifact(tmp_path: Path) -> Path:
 
 
 def test_an_artifact_beside_a_signalled_engine_is_never_handed_over(an_artifact: Path) -> None:
-    """Exit 4. A signal carries no cause, so the file it left behind means nothing.
+    """A signal carries no cause, so the file it left behind means nothing.
+
+    This pins that the run is refused, not which code it is refused with: D15 says
+    signal death is `incomplete` (2) and both verbs exit `4`. That contradiction is
+    #41 and is older than this verb, so the assertion here is deliberately about the
+    gate rather than about the number, and will not have to be rewritten whichever
+    way #41 goes.
 
     The artifact is written incrementally as the engine works, so a crash at 80%
     leaves a file that opens, parses, and stops in the middle of the object.
@@ -65,7 +71,7 @@ def test_an_artifact_beside_a_timed_out_engine_is_never_handed_over(an_artifact:
 
 
 def test_a_zero_byte_artifact_is_not_an_artifact(tmp_path: Path) -> None:
-    """Exit 2. The engine creates `-o` and then fails, which leaves the file there.
+    """The engine creates `-o` and then fails, which leaves the file there.
 
     `is_file()` alone says yes. Without the size, an empty file is handed over as a
     slice at exit 0, and it replaces whatever the author had -- the one outcome the
@@ -79,7 +85,7 @@ def test_a_zero_byte_artifact_is_not_an_artifact(tmp_path: Path) -> None:
 
 
 def test_an_artifact_from_a_non_zero_exit_is_not_evidence(an_artifact: Path) -> None:
-    """Exit 2. The file exists and the engine disowned it, so it is not a verdict.
+    """The file exists and the engine disowned it, so it is not a verdict.
 
     The opposite direction to [V4], and the reason the gate asks the file *and* the
     status rather than picking whichever one is convenient.
@@ -97,7 +103,7 @@ def test_a_good_run_passes_the_gate(an_artifact: Path) -> None:
 
 
 def test_an_artifact_with_no_configuration_cannot_be_adjudicated(tmp_path: Path) -> None:
-    """Exit 2, not 4. The engine sliced, so something happened; what it resolved that
+    """`incomplete`, not `error`. The engine sliced, so something happened; what it resolved that
     intent to is unknowable without the document, and unknowable is `incomplete`."""
     completed = Completed(exit_status=0, signal=None, stdout="", stderr="")
     with pytest.raises(ResolveIncomplete, match="and no configuration"):
