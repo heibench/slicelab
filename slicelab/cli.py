@@ -37,6 +37,7 @@ from slicelab.presets import adjudicate
 from slicelab.redact import RedactionError
 from slicelab.report import render
 from slicelab.resolve import ResolveError, ResolveIncomplete, resolve
+from slicelab.slicing import slice_intent
 from slicelab.status import EXIT_USAGE, Outcome, exit_code_for
 
 __all__ = ["main"]
@@ -95,6 +96,12 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="where to write the engine's configuration dump (default: alongside the intent)",
     )
+
+    slice_verb = verbs.add_parser(
+        "slice",
+        help="slice what the intent names, and hand over the artifact only if it is one",
+    )
+    slice_verb.add_argument("intent", type=Path, help="path to a slice.toml")
     return parser
 
 
@@ -130,6 +137,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.verb == "resolve":
         return _resolve(args.intent, args.readback)
+
+    if args.verb == "slice":
+        return _slice(args.intent)
 
     # Valid arguments naming no verb. A usage error, not an environment fault
     # and not a verdict: slicelab was asked nothing it knows how to do.
@@ -387,4 +397,49 @@ def _resolve(intent_path: Path, readback: Path | None) -> int:
     summary = f"{resolved.adjudication.keys_checked} override(s) checked"
     stream = sys.stdout if outcome is Outcome.SLICED else sys.stderr
     print(render(outcome, summary, detail), file=stream)
+    return exit_code_for(outcome)
+
+
+def _slice(intent_path: Path) -> int:
+    """`slice`, and the exit codes a consumer branches on.
+
+    The same table `resolve` uses, because the outcome vocabulary is the tool's and
+    not the verb's: `0` sliced, `1` refused, `2` incomplete, `3` empty, `4` error.
+
+    What differs is what a non-zero means for the author's files: **nothing was
+    handed over.** The engine slices into a directory slicelab owns, and the artifact
+    reaches the declared path only on `sliced` (D7). A run that exits 2 leaves
+    whatever was already there untouched, which is the point -- an engine that exits 0
+    having written no G-code is [V4], and it is not rare.
+    """
+    try:
+        sliced = slice_intent(intent_path)
+    except (IntentError, PreflightError, PlanError) as refusal:
+        print(render(Outcome.REFUSED, str(refusal)), file=sys.stderr)
+        return exit_code_for(Outcome.REFUSED)
+    except ResolveIncomplete as unfinished:
+        print(render(Outcome.INCOMPLETE, str(unfinished)), file=sys.stderr)
+        return exit_code_for(Outcome.INCOMPLETE)
+    except (IntentUnreadable, ResolveError, RedactionError, CharacterisationError) as fault:
+        print(render(Outcome.ERROR, str(fault)), file=sys.stderr)
+        return exit_code_for(Outcome.ERROR)
+
+    detail = [f"{v.option}: {v.status.value} -- {v.reason}" for v in sliced.adjudication.verdicts]
+    detail.append(f"container = {sliced.container.value}")
+    if sliced.artifact is not None:
+        detail.append(f"artifact written to {sliced.artifact}")
+        if sliced.destination_prehash is not None:
+            # What was displaced, named rather than implied. "This file is here" does
+            # not establish "this run wrote it" (D7).
+            detail.append(f"replaced a file with sha256 {sliced.destination_prehash[:16]}")
+    else:
+        detail.append(
+            "no artifact was promoted: this run reached no verdict slicelab stands behind"
+        )
+    outcome = sliced.outcome
+    stream = sys.stdout if outcome is Outcome.SLICED else sys.stderr
+    print(
+        render(outcome, f"{sliced.adjudication.keys_checked} override(s) checked", detail),
+        file=stream,
+    )
     return exit_code_for(outcome)

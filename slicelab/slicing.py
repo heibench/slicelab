@@ -73,10 +73,6 @@ class Sliced:
     actually has.
     """
 
-    warnings: tuple[str, ...]
-    """What the engine said on stdout, which is where its warnings live and the
-    artifact does not carry them. Captured at slice time or gone."""
-
     @property
     def outcome(self) -> Outcome:
         return self.adjudication.outcome
@@ -136,7 +132,6 @@ def slice_intent(intent_path: Path) -> Sliced:
         artifact=promoted,
         container=container,
         destination_prehash=prehash,
-        warnings=_warnings(completed),
     )
 
 
@@ -200,15 +195,3 @@ def _prehash(destination: Path) -> str | None:
             return hashlib.file_digest(handle, "sha256").hexdigest()
     except OSError:
         return None
-
-
-def _warnings(completed) -> tuple[str, ...]:
-    """The engine's stdout lines, which is where its warnings are and the artifact is not.
-
-    Kept whole rather than filtered. 2.9.6 interleaves progress percentages with real
-    diagnostics on one stream, and a filter deciding which is which would be slicelab
-    guessing at another tool's output -- so the lines are carried and the reader
-    judges. The progress lines are the cheapest possible evidence that the slice
-    actually ran.
-    """
-    return tuple(line.strip() for line in (completed.stdout or "").splitlines() if line.strip())
