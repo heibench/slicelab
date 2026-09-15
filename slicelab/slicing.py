@@ -53,12 +53,16 @@ from slicelab.resolve import (
 )
 from slicelab.status import Outcome
 
-__all__ = ["Sliced", "slice_intent"]
+__all__ = ["Sliced", "slice_intent", "withheld_by"]
 
 #: The outcomes whose artifact reaches the author's path. D7 says `sliced`; D24 adds
 #: `empty` as an explicit carve-out, because an intent that asserted nothing produced
 #: a G-code file that nothing was found wrong with.
 _HANDED_OVER: Final = frozenset({Outcome.SLICED, Outcome.EMPTY})
+
+#: Attribute an artifact-withholding fault carries the staged path on. Set here and
+#: read by the reporting layer, which is the only place that knows how to say it.
+_WITHHELD: Final = "_slicelab_withheld_artifact"
 
 
 @dataclass(frozen=True)
@@ -144,7 +148,7 @@ def slice_intent(intent_path: Path) -> Sliced:
                 raise ResolveError(f"cannot write the artifact: {unwritable}") from unwritable
             promoted = plan.artifact_destination
 
-        keep = promoted is None and plan.staged_artifact.is_file()
+        keep = promoted is None
         return Sliced(
             adjudication=adjudication,
             readback=readback,
@@ -153,16 +157,22 @@ def slice_intent(intent_path: Path) -> Sliced:
             destination_prehash=prehash,
             withheld=plan.staged_artifact if keep else None,
         )
-    except (ResolveError, ResolveIncomplete) as fault:
-        # The refusals reach the author as a message rather than as a record, so the
-        # path goes in the message or it goes nowhere. Same rule either way: the
-        # artifact is kept if and only if the author is told where it is.
-        if not staged_artifact.is_file():
-            raise
-        keep = True
-        raise type(fault)(
-            f"{fault}; the artifact it did produce was kept at {staged_artifact}"
-        ) from fault
+    except Exception as fault:
+        # EVERY fault, not the two the happy path raises. `redact` refuses on an
+        # unmeasured secret key, `sniff` opens a file, `promote` writes one -- each
+        # can fail after the engine has produced a perfectly good artifact, and
+        # deleting it because the failure came from an unexpected class is the same
+        # loss by a different route.
+        #
+        # The path travels ON the exception rather than inside a rebuilt message:
+        # `type(fault)(str(fault) + ...)` assumes every class takes one string
+        # argument, which is true of these two today and is not a property anything
+        # checks. `KeyboardInterrupt` is deliberately not caught -- an author who
+        # interrupted a slice did not ask for its leftovers.
+        if staged_artifact.is_file():
+            keep = True
+            setattr(fault, _WITHHELD, staged_artifact)
+        raise
     finally:
         # D7: a withheld artifact is named in the report, and a path naming a deleted
         # file is not a report. Kept only where it was named -- an engine that wrote no
@@ -231,3 +241,13 @@ def _prehash(destination: Path) -> str | None:
             return hashlib.file_digest(handle, "sha256").hexdigest()
     except OSError:
         return None
+
+
+def withheld_by(fault: BaseException) -> Path | None:
+    """The artifact a failed run produced and slicelab kept, or `None`.
+
+    D7 requires a withheld artifact to be named. A run that fails reaches the author
+    as a message rather than as a :class:`Sliced`, so the path rides on the exception
+    and is rendered by whoever renders the message.
+    """
+    return getattr(fault, _WITHHELD, None)

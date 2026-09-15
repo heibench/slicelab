@@ -37,7 +37,7 @@ from slicelab.presets import adjudicate
 from slicelab.redact import RedactionError
 from slicelab.report import render
 from slicelab.resolve import ResolveError, ResolveIncomplete, resolve
-from slicelab.slicing import slice_intent
+from slicelab.slicing import slice_intent, withheld_by
 from slicelab.status import EXIT_USAGE, Outcome, exit_code_for
 
 __all__ = ["main"]
@@ -410,20 +410,20 @@ def _slice(intent_path: Path) -> int:
 
     What differs is what a non-zero means for the author's files: **nothing was
     handed over.** The engine slices into a directory slicelab owns, and the artifact
-    reaches the declared path only on `sliced` (D7). A run that exits 2 leaves
+    reaches the declared path on `sliced` or `empty` (D7, D24). A run that exits 2 leaves
     whatever was already there untouched, which is the point -- an engine that exits 0
     having written no G-code is [V4], and it is not rare.
     """
     try:
         sliced = slice_intent(intent_path)
     except (IntentError, PreflightError, PlanError) as refusal:
-        print(render(Outcome.REFUSED, str(refusal)), file=sys.stderr)
+        print(render(Outcome.REFUSED, str(refusal), _kept(refusal)), file=sys.stderr)
         return exit_code_for(Outcome.REFUSED)
     except ResolveIncomplete as unfinished:
-        print(render(Outcome.INCOMPLETE, str(unfinished)), file=sys.stderr)
+        print(render(Outcome.INCOMPLETE, str(unfinished), _kept(unfinished)), file=sys.stderr)
         return exit_code_for(Outcome.INCOMPLETE)
     except (IntentUnreadable, ResolveError, RedactionError, CharacterisationError) as fault:
-        print(render(Outcome.ERROR, str(fault)), file=sys.stderr)
+        print(render(Outcome.ERROR, str(fault), _kept(fault)), file=sys.stderr)
         return exit_code_for(Outcome.ERROR)
 
     detail = [f"{v.option}: {v.status.value} -- {v.reason}" for v in sliced.adjudication.verdicts]
@@ -449,3 +449,14 @@ def _slice(intent_path: Path) -> int:
         file=stream,
     )
     return exit_code_for(outcome)
+
+
+def _kept(fault: BaseException) -> list[str]:
+    """D7's clause, for the reports that are a message rather than a record.
+
+    A failed slice that nonetheless produced an artifact keeps it, and the author is
+    told where -- otherwise the outcome is undiagnosable and the file is deleted out
+    from under the one person who wanted to look at it.
+    """
+    staged = withheld_by(fault)
+    return [] if staged is None else [f"the artifact it did produce was kept at {staged}"]

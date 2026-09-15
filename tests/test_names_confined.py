@@ -117,6 +117,11 @@ DECLARED_VOCABULARY = frozenset(
         "container",
         "destination_prehash",
         "withheld",
+        # The attribute a fault carries its withheld artifact's path on. Prefixed
+        # with the tool's own name because it is set on exceptions raised elsewhere,
+        # where a bare `withheld` would be slicelab writing an unnamespaced attribute
+        # onto someone else's object.
+        "_slicelab_withheld_artifact",
         "slicelab-readback-",
         # Where the engine slices before slicelab decides whether to hand it over
         # (D7). The same shape as the readback prefix above, and named for this
