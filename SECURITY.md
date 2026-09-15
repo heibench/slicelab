@@ -110,12 +110,23 @@ directory, left a 180-byte `result.json` behind at exit 0 — and this section
 said the tool wrote nothing. An identical file reached this repository that way
 and was committed for five commits before anyone noticed.
 
-`resolve` reads a `slice.toml` and writes a readback; `which` and `presets` read
-no file you name. None of the three slices a model or writes a lock.
+`resolve` reads a `slice.toml` and writes a readback; `slice` reads a `slice.toml`
+and the mesh it names, and writes both a readback and a G-code file; `which` and
+`presets` read no file you name. None of the four writes a lock.
+
+`slice` writes to two paths you chose, so it refuses before running the engine if
+they collide with each other or with the mesh -- one run writing the artifact and
+the readback to one path was measured to report success over a file holding the
+wrong one. The engine writes only into a scratch directory slicelab owns; your
+path is written by slicelab, atomically, and only for an outcome it stands
+behind. A scratch directory outlives the run only when it holds an artifact the
+report names.
 
 **Inputs.** Their own `argv` — including a `--datadir` path, which is resolved to
 an absolute path and handed to the engine, never interpreted by slicelab — plus,
-for `resolve`, the `slice.toml` you name, and whatever the engines print. The
+for `resolve` and `slice`, the `slice.toml` you name; for `slice`, the mesh that
+intent names, which is passed to the engine as a path and never parsed by
+slicelab; and whatever the engines print. The
 intent file is parsed as TOML and every key in it is checked against the engine's
 own option names; an unrecognised one is refused, never passed through. Engine
 output is decoded with `errors="replace"` and is never evaluated: it is matched
@@ -124,8 +135,9 @@ for shape, and printed.
 
 **Processes they will start.** `which` invokes discovered engines with `--help`
 and with one flag they are expected to reject. `presets` invokes them with the
-adapter's enumeration flag. `resolve` invokes the engine once per run to ask for
-its configuration — and, the **first** time it meets a given build, **a few
+adapter's enumeration flag. `resolve` and `slice` invoke the engine once per run
+to ask for its configuration -- `slice` asks for the artifact in the same
+invocation — and, the **first** time it meets a given build, **a few
 thousand** more times to measure the option-to-key map, which is then cached per
 engine and version. Three samples of a dozen of 2.9.6's 416 option spellings
 extrapolate to 1,800–2,800 invocations; the cost per option depends on how many
@@ -169,9 +181,13 @@ binary is asked to do.
 V15, where it also causes the engine to block on stdin at exit 0 while producing
 no artifact. slicelab therefore refuses a resolved configuration carrying a
 post-processing script rather than slicing and hoping — **will**, like everything
-in this section; `post_process` appears nowhere in the code today. An authored `slice.toml`
-from an untrusted source must be read as executable input, because the engine
-treats it that way.
+in this section. It does not yet: slicelab names no such key, and since `slice`
+shipped the route is live rather than hypothetical, because a `post-process` in
+`[set]` becomes a flag on an engine that runs it. What stands there today is the
+artifact gate, which reports that run `incomplete` and hands nothing over — that
+is a check on the outcome, not a refusal of the input, and the two are not the
+same guarantee. An authored `slice.toml` from an untrusted source must be read as
+executable input, because the engine treats it that way.
 
 **Flatpak filesystem grants.** Where the engine is a Flatpak, only the specific
 directories slicelab computed from the run's own path set are granted, never
