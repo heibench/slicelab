@@ -222,3 +222,54 @@ def test_intent_is_frozen() -> None:
     intent = Intent(engine="e", base={}, overrides={}, source=Path("x"))
     with pytest.raises(AttributeError):
         intent.engine = "other"  # type: ignore[misc]
+
+
+# `[geometry]` and `[output]`, which is where a half-written intent looks complete.
+#
+# Each of these is one `raise` in `_read_path`, and a mutation sweep found that
+# turning the malformed-value refusal into "no geometry declared" left all 408 tests
+# green (org contract 2.4). The outcome is not the same: `slice` refuses either way,
+# but `resolve` does not read these tables at all, so an intent whose `[geometry]`
+# was abandoned mid-edit would resolve as though it had never had one.
+
+
+def test_a_geometry_table_with_nothing_in_it_is_refused(tmp_path: Path) -> None:
+    """A file someone started writing, not a file that declares no geometry."""
+    with pytest.raises(IntentError, match=r"\[geometry\] model must be a non-empty string"):
+        read_intent(write(tmp_path, VALID + "\n[geometry]\n"))
+
+
+def test_an_empty_model_path_is_refused(tmp_path: Path) -> None:
+    """`""` resolves to the intent's own directory, so accepting it would hand the
+    engine a directory as a mesh -- one more exit-0-with-a-configuration."""
+    with pytest.raises(IntentError, match=r"\[geometry\] model must be a non-empty string"):
+        read_intent(write(tmp_path, VALID + '\n[geometry]\nmodel = "   "\n'))
+
+
+def test_a_model_that_is_not_a_string_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(IntentError, match=r"\[geometry\] model must be a non-empty string"):
+        read_intent(write(tmp_path, VALID + "\n[geometry]\nmodel = 3\n"))
+
+
+def test_an_output_table_with_nothing_in_it_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(IntentError, match=r"\[output\] gcode must be a non-empty string"):
+        read_intent(write(tmp_path, VALID + "\n[output]\n"))
+
+
+def test_a_geometry_table_with_a_key_that_is_not_model_is_refused(tmp_path: Path) -> None:
+    """`mesh`, `stl`, `file` are all plausible and none of them is the key. Refused
+    rather than ignored, because ignoring it slices the wrong thing silently."""
+    with pytest.raises(IntentError, match=r"\[geometry\] has no 'mesh'"):
+        read_intent(write(tmp_path, VALID + '\n[geometry]\nmodel = "a.stl"\nmesh = "b.stl"\n'))
+
+
+def test_the_tables_are_read_when_they_are_well_formed(tmp_path: Path) -> None:
+    """The control: six refusals that fired on everything would pass every test above
+    and leave the verb unable to read an intent at all."""
+    intent = read_intent(
+        write(
+            tmp_path, VALID + '\n[geometry]\nmodel = "part.stl"\n\n[output]\ngcode = "out.gcode"\n'
+        )
+    )
+    assert intent.model == (tmp_path / "part.stl").resolve()
+    assert intent.gcode == (tmp_path / "out.gcode").resolve()

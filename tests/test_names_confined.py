@@ -35,9 +35,12 @@ CORE_MODULE_NAMES = (
     "digest.py",
     "plan.py",
     "preflight.py",
+    "promote.py",
+    "container.py",
     "readback.py",
     "redact.py",
     "resolve.py",
+    "slicing.py",
     "vocab.py",
 )
 
@@ -74,6 +77,17 @@ DECLARED_VOCABULARY = frozenset(
         # EngineSpec.base_keys, under adapters/.
         "base",
         "set",
+        # What is being sliced and where the result goes (#7). slicelab's own words:
+        # both engines take a mesh as a positional argument and neither has an option
+        # name for it, which is why these are top-level rather than beside `base` and
+        # `set`. Checked against both engines' real key universes before being
+        # declared -- zero matches for any of the four in OrcaSlicer 2.4.2's 636-key
+        # configured dump or PrusaSlicer 2.9.6's 376-key dump from a real slice, with
+        # `layer_height` as the control that the comparison finds anything at all.
+        "geometry",
+        "model",
+        "output",
+        "gcode",
         "argv",
         "requested",
         "sidecar",
@@ -88,7 +102,31 @@ DECLARED_VOCABULARY = frozenset(
         # bare, 626 Creality, 639 Artillery) so no single number describes either.
         "staged",
         "destination",
+        # The same two, for the artifact rather than the readback (#7, D7). slicelab's
+        # own plumbing: where the ENGINE writes the G-code, and where slicelab promotes
+        # it on `sliced`. Checked against both engines' key universes -- zero matches
+        # for either name, with `layer_height` as the control.
+        "staged_artifact",
+        "artifact_destination",
+        # What `slice` established about one run (#7, D7, D10). slicelab's own record
+        # vocabulary: the thing produced, the shape it is in, what stood at the
+        # destination before it, and what the engine said on stdout. Checked against
+        # both engines' key universes -- zero matches for any of the four, with
+        # `layer_height` as the control.
+        "artifact",
+        "container",
+        "destination_prehash",
+        "withheld",
+        # The attribute a fault carries its withheld artifact's path on. Prefixed
+        # with the tool's own name because it is set on exceptions raised elsewhere,
+        # where a bare `withheld` would be slicelab writing an unnamespaced attribute
+        # onto someone else's object.
+        "_slicelab_withheld_artifact",
         "slicelab-readback-",
+        # Where the engine slices before slicelab decides whether to hand it over
+        # (D7). The same shape as the readback prefix above, and named for this
+        # tool rather than for anything an engine says.
+        "slicelab-slice-",
         # The suffix on the half-written readback, between the write and the rename
         # (D31). Spelled with the tool's own name rather than a bare `.part`, because
         # `part` is a substring of OrcaSlicer's `part_cooling_fan_min_pwm` and a
@@ -113,6 +151,13 @@ DECLARED_VOCABULARY = frozenset(
         # D4's word for the engine's own configuration dump, and the mechanism
         # named after it. slicelab's term, not any engine's.
         "readback",
+        # Container words (D10). slicelab's report vocabulary for the SHAPE of an
+        # artifact, not a key inside one -- `bgcode` is the format's own name and
+        # `gcode` says only that a file is not the declared binary magic. Checked
+        # against both engines' key universes: zero matches for either, with
+        # `layer_height` as the control.
+        "bgcode",
+        "undetermined",
         # The marker a removed credential leaves. Deliberately not empty, because
         # empty is a value the engine also writes -- a reader must be able to tell
         # "slicelab took this" from "the engine wrote nothing here".
@@ -131,7 +176,9 @@ DECLARED_VOCABULARY = frozenset(
         "readback_source",
         "effective_config",
         "values_resolved",
-        # Encoding constants. These name no engine concept.
+        # Encoding and digest constants. These name no engine concept -- `sha256` is
+        # the algorithm `hashlib` is asked for, in the same category as `utf-8`.
+        "sha256",
         "utf-8",
         "replace",
         "strict",

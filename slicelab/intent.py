@@ -20,7 +20,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
-from slicelab.vocab import BASE_TABLE, ENGINE_TABLES, SET_TABLE
+from slicelab.vocab import (
+    BASE_TABLE,
+    ENGINE_TABLES,
+    GCODE_KEY,
+    GEOMETRY_TABLE,
+    MODEL_KEY,
+    OUTPUT_TABLE,
+    RUN_TABLES,
+    SET_TABLE,
+)
 
 __all__ = ["Intent", "IntentError", "IntentUnreadable", "IntentValue", "read_intent"]
 
@@ -66,6 +75,18 @@ class Intent:
     overrides: dict[str, IntentValue]
     source: Path
 
+    model: Path | None = None
+    """The mesh to slice, resolved against the intent's own directory, or `None`.
+
+    `None` is an intent that declares no geometry, which is every `resolve` intent and
+    every one written before this field existed. `resolve` asks the engine what it
+    would resolve and needs no model at all, so requiring one would refuse a file that
+    is complete for what it is used for. `slice` refuses a `None` here by name.
+    """
+
+    gcode: Path | None = None
+    """Where a sliced artifact is promoted, resolved the same way, or `None`."""
+
     @property
     def subject_set_is_empty(self) -> bool:
         """Whether this run will verify nothing (D24, `notes/critique.md` G1).
@@ -109,7 +130,10 @@ def read_intent(path: Path) -> Intent:
     except tomllib.TOMLDecodeError as exc:
         raise IntentError(f"{path} is not valid TOML: {exc}") from exc
 
-    engines = sorted(raw)
+    # slicelab's own top-level tables come out first, because everything left at top
+    # level names the engine. The cost is that an engine may not be called `geometry`
+    # or `output`; neither is a slicer.
+    engines = sorted(set(raw) - RUN_TABLES)
     if not engines:
         raise IntentError(f"{path} declares no engine table")
     if len(engines) > 1:
@@ -129,7 +153,41 @@ def read_intent(path: Path) -> Intent:
 
     base = _read_base(table.get(BASE_TABLE), engine)
     overrides = _read_overrides(table.get(SET_TABLE), engine)
-    return Intent(engine=engine, base=base, overrides=overrides, source=path)
+    return Intent(
+        engine=engine,
+        base=base,
+        overrides=overrides,
+        source=path,
+        model=_read_path(raw.get(GEOMETRY_TABLE), GEOMETRY_TABLE, MODEL_KEY, path),
+        gcode=_read_path(raw.get(OUTPUT_TABLE), OUTPUT_TABLE, GCODE_KEY, path),
+    )
+
+
+def _read_path(value: object, table: str, key: str, source: Path) -> Path | None:
+    """One declared path, resolved against the INTENT file's directory.
+
+    Not against the process working directory. The README's git model is four files
+    in one directory, and an intent meaning a different file depending on where you
+    stood when you ran it is not a record of anything. `plan.py` resolves the staged
+    and promoted paths for the same reason and says so.
+
+    An absent table is `None`. A table that is present and does not carry its one key
+    is refused: a `[geometry]` with nothing in it is a file someone started writing,
+    and reading it as "no geometry" would take a half-finished intent for a complete
+    one.
+    """
+    if value is None:
+        return None
+    mapping = _require_mapping(value, f"[{table}]")
+    unknown = sorted(set(mapping) - {key})
+    if unknown:
+        raise IntentError(
+            f"[{table}] has no {', '.join(repr(k) for k in unknown)} ({key!r} is the only key)"
+        )
+    declared = mapping.get(key)
+    if not isinstance(declared, str) or not declared.strip():
+        raise IntentError(f"[{table}] {key} must be a non-empty string, not {declared!r}")
+    return (source.parent / declared).resolve()
 
 
 def _read_base(value: object, engine: str) -> dict[str, str]:

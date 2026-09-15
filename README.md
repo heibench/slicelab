@@ -5,12 +5,13 @@ small configuration delta, slice with a real engine, and get back G-code plus a
 lock file recording exactly what that engine resolved — or a non-zero exit
 saying why slicelab will not stand behind the result.
 
-> **Status: pre-alpha. Three verbs work: `slicelab which`, `slicelab presets` and `slicelab resolve`.**
+> **Status: pre-alpha. Four verbs work: `slicelab which`, `slicelab presets`,
+> `slicelab resolve` and `slicelab slice`.**
 > `which` finds an installed slicer and establishes whether its exit status can be
 > believed; `presets` enumerates its printer presets; `resolve` reads a `slice.toml`,
 > asks the engine what it would resolve that to, and diffs the answer against what
-> was asked. Nothing slices yet: `resolve` produces no G-code, and the `[geometry]`
-> half of the example below is what the tool is *for*, not what it currently does. See
+> was asked; `slice` does the same and produces the G-code, handing it over only if
+> the run is one it can stand behind. No `slice.lock` is written yet. See
 > [`docs/DECISIONS.md`](docs/DECISIONS.md) and
 > [`docs/RESEARCH.md`](docs/RESEARCH.md).
 
@@ -51,11 +52,20 @@ material-profile = "Prusament PLA"
 perimeters = 4.7
 ```
 
-One top-level table, named for the engine. The keys under `[base]` and `[set]` are
-that engine's own **command-line option names** (D28), so `fill-density`, never
-`fill_density`. Declaring the input model and the output path — `[geometry]`,
-`[output]`, an `engine_req` range — is what issue #7 adds along with `slice`; today
-`read_intent` accepts the engine table and nothing beside it.
+One top-level table named for the engine, plus `[geometry]` and `[output]`. The keys
+under `[base]` and `[set]` are that engine's own **command-line option names** (D28),
+so `fill-density`, never `fill_density` — `model` and `gcode` are slicelab's own,
+because both engines take a mesh as a positional argument and neither has an option
+name for it. Both paths resolve against the `slice.toml`, not the directory you
+happen to be standing in.
+
+```toml
+[geometry]
+model = "part.stl"
+
+[output]
+gcode = "part.gcode"
+```
 
 This is a real run, against PrusaSlicer 2.9.6:
 

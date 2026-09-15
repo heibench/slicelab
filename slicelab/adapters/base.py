@@ -5,9 +5,10 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 __all__ = [
-    "BaseInvocation",
+    "Invocation",
     "ConfigLocation",
     "EngineSpec",
     "OptionProbe",
@@ -85,8 +86,14 @@ class RunRecord:
 
 
 @dataclass(frozen=True)
-class BaseInvocation:
-    """How one engine is told which presets to load, and what that touches on disk."""
+class Invocation:
+    """An argv fragment an adapter composed, and the host paths it touches.
+
+    Used for both halves an engine names in its own way: which presets to load, and
+    how to be asked for a slice. Named for the shape rather than for the first caller,
+    because the second one is the same shape and a type called `BaseInvocation` would
+    have been a name that lies about half its uses.
+    """
 
     argv: tuple[str, ...]
     paths: frozenset[str] = frozenset()
@@ -269,6 +276,18 @@ class EngineSpec:
     by default, and it is why this field is here.
     """
 
+    binary_container_magic: bytes | None = None
+    """The first bytes of this engine's binary artifact container, or `None`.
+
+    `None` is unmeasured, and `container.sniff` answers `undetermined` rather than
+    concluding "not binary" on an adapter's behalf.
+
+    Measured on PrusaSlicer 2.9.6: `GCDE`. The same slice written both ways carries
+    369 footer keys and two `prusaslicer_config` markers as text, and zero of either
+    as binary -- which is why the container has to be established before anything
+    tries to read a footer (D10, [V7]).
+    """
+
     readback_suffix: str = ".readback.ini"
     """What slicelab names the promoted readback when the author names nothing.
 
@@ -316,7 +335,25 @@ class EngineSpec:
     refused rather than written.
     """
 
-    compose_base: Callable[[Mapping[str, str]], BaseInvocation] | None = None
+    compose_slice: Callable[[Path, Path, Path], Invocation] | None = None
+    """(model, where to write the artifact, where to write the readback) -> argv.
+
+    `None` means this engine has no measured way to be asked for a slice, and `slice`
+    refuses by name rather than composing an argv nobody has run. That is OrcaSlicer's
+    answer in v0.1.0 -- D1 scopes it to readback only, and `--export-3mf` is a
+    different artifact reached by different flags, unmeasured here.
+
+    The flags are the engine's: PrusaSlicer takes `--export-gcode <model> -o <path>`
+    and writes the configuration with `--save` in the SAME invocation, which is the
+    whole point -- a config captured by a second run is not evidence about the first.
+    Measured on 2.9.6: one invocation, rc=0, a 604407-byte artifact and a 14757-byte
+    configuration together.
+
+    All three paths are returned in `paths`, because a sandboxed engine must be
+    granted the model it reads as well as the two files it writes (D19).
+    """
+
+    compose_base: Callable[[Mapping[str, str]], Invocation] | None = None
     """The authored `[<engine>.base]` table -> the argv that loads those presets.
 
     `None` means the core's own `--<key>=<value>` composition is used, which is what
