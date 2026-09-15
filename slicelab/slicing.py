@@ -19,16 +19,19 @@ indistinguishable from the engine refusing the request**, which means the gate i
 protection against the engine; it is protection against being wrong at all.
 
 So the engine slices into a directory slicelab owns, and slicelab promotes to the
-author's path only on `sliced` (D7). The destination is never deleted, and the staged
-path is named in every report that is not one.
+author's path only on `sliced` -- or on `empty`, which is D24's carve-out from D7 and
+is not a fault. The destination is never deleted, and an artifact the engine produced
+that slicelab withheld outlives the run at a path the report names.
 """
 
 from __future__ import annotations
 
 import hashlib
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from slicelab.container import Container, sniff
 from slicelab.engine.configured import ConfigState, configuration_state
@@ -52,6 +55,11 @@ from slicelab.status import Outcome
 
 __all__ = ["Sliced", "slice_intent"]
 
+#: The outcomes whose artifact reaches the author's path. D7 says `sliced`; D24 adds
+#: `empty` as an explicit carve-out, because an intent that asserted nothing produced
+#: a G-code file that nothing was found wrong with.
+_HANDED_OVER: Final = frozenset({Outcome.SLICED, Outcome.EMPTY})
+
 
 @dataclass(frozen=True)
 class Sliced:
@@ -73,6 +81,14 @@ class Sliced:
     actually has.
     """
 
+    withheld: Path | None
+    """The artifact the engine produced and slicelab did not hand over.
+
+    `None` when it was handed over, and `None` when the engine produced none. D7
+    requires a withheld artifact to be named, which is only worth saying if the file
+    is still there -- so the scratch directory outlives the run in exactly this case.
+    """
+
     @property
     def outcome(self) -> Outcome:
         return self.adjudication.outcome
@@ -90,16 +106,14 @@ def slice_intent(intent_path: Path) -> Sliced:
             f"{spec.name} is installed but not configured. Run the engine once to "
             "create one. reason = engine_has_no_configuration"
         )
-    if intent.model is not None and not intent.model.is_file():
-        # Checked before the engine, because slicelab named this path and can say so
-        # plainly. Handing a missing mesh to 2.9.6 is another exit-0-with-a-config.
-        raise ResolveError(f"{intent_path} names a model slicelab cannot read: {intent.model}")
-
     name_map = _name_map(spec, found)
 
-    with tempfile.TemporaryDirectory(prefix="slicelab-slice-") as staging:
-        scratch = Path(staging)
-        plan = plan_slice(intent, spec, scratch / "artifact", scratch / "readback")
+    scratch = Path(tempfile.mkdtemp(prefix="slicelab-slice-"))
+    staged_artifact = scratch / "artifact"
+    promoted: Path | None = None
+    keep = False
+    try:
+        plan = plan_slice(intent, spec, staged_artifact, scratch / "readback")
         completed = run(
             argv_for(found.form, plan.argv, plan.paths),
             capture=(spec.run_record.name,) if spec.run_record else (),
@@ -113,26 +127,48 @@ def slice_intent(intent_path: Path) -> Sliced:
         container = sniff(plan.staged_artifact, spec.binary_container_magic)
 
         prehash = _prehash(plan.artifact_destination)
-        promoted: Path | None = None
-        if adjudication.outcome is Outcome.SLICED:
-            # ONLY on `sliced`, which is D7 and is the difference between this verb and
-            # `resolve`. A readback is evidence for a verdict of any kind; a G-code file
-            # the author will print is not, and handing over an artifact from a run
-            # slicelab could not stand behind is the failure this tool is named after.
+        # The readback goes first, and unconditionally. It is evidence for a verdict of
+        # any kind, and going second is how a run that exits 4 promoting it leaves the
+        # author's artifact already replaced -- which makes "nothing was handed over"
+        # false in exactly the case it most needs to be true.
+        _promote_readback(readback, plan.destination)
+        if adjudication.outcome in _HANDED_OVER:
+            # `sliced`, and `empty` by D24's carve-out from D7: `empty` is not a fault,
+            # it is a valid artifact against an intent that asserted nothing, and
+            # withholding it would punish an author for not having written an override
+            # yet. Every other outcome keeps the file, because handing over an artifact
+            # from a run slicelab could not stand behind is the failure it is named for.
             try:
                 promote(plan.staged_artifact.read_bytes(), plan.artifact_destination)
             except (OSError, PromotionError) as unwritable:
                 raise ResolveError(f"cannot write the artifact: {unwritable}") from unwritable
             promoted = plan.artifact_destination
-        _promote_readback(readback, plan.destination)
 
-    return Sliced(
-        adjudication=adjudication,
-        readback=readback,
-        artifact=promoted,
-        container=container,
-        destination_prehash=prehash,
-    )
+        keep = promoted is None and plan.staged_artifact.is_file()
+        return Sliced(
+            adjudication=adjudication,
+            readback=readback,
+            artifact=promoted,
+            container=container,
+            destination_prehash=prehash,
+            withheld=plan.staged_artifact if keep else None,
+        )
+    except (ResolveError, ResolveIncomplete) as fault:
+        # The refusals reach the author as a message rather than as a record, so the
+        # path goes in the message or it goes nowhere. Same rule either way: the
+        # artifact is kept if and only if the author is told where it is.
+        if not staged_artifact.is_file():
+            raise
+        keep = True
+        raise type(fault)(
+            f"{fault}; the artifact it did produce was kept at {staged_artifact}"
+        ) from fault
+    finally:
+        # D7: a withheld artifact is named in the report, and a path naming a deleted
+        # file is not a report. Kept only where it was named -- an engine that wrote no
+        # artifact leaves nothing worth keeping, and keeping it unannounced is litter.
+        if not keep:
+            shutil.rmtree(scratch, ignore_errors=True)
 
 
 def _gate(completed, staged: Path, spec, source: Path) -> None:

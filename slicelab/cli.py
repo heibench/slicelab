@@ -1,11 +1,11 @@
 """The command line, and the only place a process exit code is chosen.
 
-Three verbs exist: ``which``, ``presets`` and ``resolve``. This module is the
-single point at which slicelab's vocabulary becomes a process status, so there
-is one place to be wrong rather than seven.
+Four verbs exist: ``which``, ``presets``, ``resolve`` and ``slice``. This module
+is the single point at which slicelab's vocabulary becomes a process status, so
+there is one place to be wrong rather than seven.
 
 That sentence is a status claim and org contract 2.5 makes it part of the gate:
-the moment a fourth verb works, it is false, and the change that made it work is
+the moment a fifth verb works, it is false, and the change that made it work is
 not finished until this paragraph and :data:`_DESCRIPTION` are corrected. Note
 :data:`_DESCRIPTION` is the text ``--help`` prints, so a stale copy there is a
 false claim in a shipped artifact rather than in a comment.
@@ -48,11 +48,13 @@ Drive a Slic3r-descended slicer and record exactly what it resolved.
 `which` reports which engine build slicelab would talk to, how it would launch
 it, and whether that engine's exit status can be believed. `presets` enumerates
 an engine's printer presets. `resolve` reads a slice.toml, asks the engine what
-it would resolve that to, and diffs the answer against what was asked.
+it would resolve that to, and diffs the answer against what was asked. `slice`
+does the same and produces the G-code, handing it over only if the run is one
+slicelab stands behind.
 
-Nothing slices yet: `resolve` produces no G-code. It keeps the engine's own
-configuration dump beside your intent, with credential-bearing keys removed and
-named. See docs/DECISIONS.md and the issue tracker.
+Both keep the engine's own configuration dump beside your intent, with
+credential-bearing keys removed and named. No slice.lock is written yet. See
+docs/DECISIONS.md and the issue tracker.
 """
 
 
@@ -434,8 +436,12 @@ def _slice(intent_path: Path) -> int:
             detail.append(f"replaced a file with sha256 {sliced.destination_prehash[:16]}")
     else:
         detail.append(
-            "no artifact was promoted: this run reached no verdict slicelab stands behind"
+            "no artifact was handed over: this run reached no verdict slicelab stands behind"
         )
+        if sliced.withheld is not None:
+            # D7: the engine did produce one. Naming it is the difference between "it
+            # failed" and a file the author can open and see for themselves.
+            detail.append(f"the artifact it did produce was kept at {sliced.withheld}")
     outcome = sliced.outcome
     stream = sys.stdout if outcome is Outcome.SLICED else sys.stderr
     print(

@@ -248,6 +248,38 @@ def plan_slice(
     staged_artifact = staged_artifact.resolve()
     staged_readback = staged_readback.resolve()
     model = intent.model.resolve()
+    destination = intent.source.with_suffix(spec.readback_suffix).resolve()
+    artifact_destination = intent.gcode.resolve()
+
+    # Four refusals about the destinations, all before the engine is asked for
+    # anything (D15). Each is a measured way to reach `sliced` at exit 0 with the
+    # declared path holding something other than this run's G-code.
+    if not model.is_file():
+        # Handing a missing mesh to 2.9.6 is another exit-0-with-a-configuration, and
+        # slicelab named this path, so it can say so plainly rather than relaying a
+        # diagnostic about an argument the author never wrote.
+        raise PlanError(f"{intent.source} names a model slicelab cannot read: {model}")
+    if artifact_destination == destination:
+        # Measured: the artifact is promoted, the readback is promoted over it, and
+        # the run reports `sliced` at exit 0 with a 14787-byte configuration dump
+        # standing where the G-code was. Two writers, one path, no complaint.
+        raise PlanError(
+            f"{intent.source} sends the artifact to {artifact_destination}, which is "
+            "where the readback goes, so one would overwrite the other"
+        )
+    if artifact_destination == model:
+        raise PlanError(
+            f"{intent.source} sends the artifact to {artifact_destination}, which is "
+            "the model this run slices, so the input would not survive the output"
+        )
+    if not artifact_destination.parent.is_dir():
+        # Cheap here, and expensive later: without it the engine slices for a minute
+        # and the promotion then fails on a directory that was never going to exist.
+        raise PlanError(
+            f"{intent.source} sends the artifact to {artifact_destination}, and "
+            f"{artifact_destination.parent} is not a directory"
+        )
+
     asked = spec.compose_slice(model, staged_artifact, staged_readback)
     argv.extend(asked.argv)
 
@@ -255,9 +287,9 @@ def plan_slice(
         argv=tuple(argv),
         requested=requested,
         staged=staged_readback,
-        destination=intent.source.with_suffix(spec.readback_suffix).resolve(),
+        destination=destination,
         paths=frozenset({*asked.paths, *base_paths}),
         staged_artifact=staged_artifact,
-        artifact_destination=intent.gcode.resolve(),
+        artifact_destination=artifact_destination,
         model=model,
     )
