@@ -6,9 +6,9 @@ import json
 from collections.abc import Mapping
 
 from slicelab.adapters.base import (
-    BaseInvocation,
     ConfigLocation,
     EngineSpec,
+    Invocation,
     OptionProbe,
     RunRecord,
 )
@@ -96,7 +96,7 @@ def _read_settings_json(text: str) -> Mapping[str, str]:
 _BASE_KEYS = ("machine", "process", "filament")
 
 
-def _load_profiles(base: Mapping[str, str]) -> BaseInvocation:
+def _load_profiles(base: Mapping[str, str]) -> Invocation:
     """`[orcaslicer.base]` -> the argv that loads those three profiles.
 
     PrusaSlicer takes one flag per preset and names them; Orca takes
@@ -117,7 +117,7 @@ def _load_profiles(base: Mapping[str, str]) -> BaseInvocation:
     an ungranted path, 2.4.2 exits **0**, writes nothing, and says nothing on either
     stream -- this org's founding failure shape, measured on this host.
     """
-    return BaseInvocation(
+    return Invocation(
         argv=(
             f"--load-settings={base[_BASE_KEYS[0]]}",
             f"--load-settings={base[_BASE_KEYS[1]]}",

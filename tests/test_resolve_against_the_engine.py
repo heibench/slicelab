@@ -35,8 +35,8 @@ from slicelab.engine.characterise import SCHEMA, _baseline, _probe_one, cache_pa
 from slicelab.engine.discover import LaunchKind, argv_for, discover
 from slicelab.engine.identity import identify
 from slicelab.engine.launch import run
-from slicelab.redact import REDACTED, Redacted
-from slicelab.resolve import ResolveError, _promote
+from slicelab.promote import PromotionError, promote
+from slicelab.redact import REDACTED
 from tests.conftest import skip_or_fail
 
 PRESETS = {
@@ -730,8 +730,8 @@ def test_a_failed_promote_leaves_the_previous_readback_byte_for_byte(tmp_path: P
     soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
     resource.setrlimit(resource.RLIMIT_FSIZE, (8192, hard))
     try:
-        with pytest.raises(ResolveError, match="cannot write the readback"):
-            _promote(Redacted(text="NEW-REDACTED-READBACK\n" * 2000, keys=()), destination)
+        with pytest.raises(PromotionError, match="cannot write"):
+            promote(("NEW-REDACTED-READBACK\n" * 2000).encode("utf-8"), destination)
     finally:
         resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
 
@@ -755,8 +755,8 @@ def test_a_destination_that_is_not_a_regular_file_is_never_replaced(tmp_path: Pa
     destination = tmp_path / "readback.ini"
     os.mkfifo(destination)
 
-    with pytest.raises(ResolveError, match="not a regular file"):
-        _promote(Redacted(text="anything\n", keys=()), destination)
+    with pytest.raises(PromotionError, match="not a regular file"):
+        promote((b"anything\n"), destination)
 
     assert destination.is_fifo(), "the promote replaced a device-like destination"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["readback.ini"]
@@ -776,7 +776,7 @@ def test_the_promoted_readback_keeps_the_mode_it_would_have_had(tmp_path: Path) 
     existing = tmp_path / "existing.ini"
     existing.write_text("old\n", encoding="utf-8")
     os.chmod(existing, 0o640)
-    _promote(Redacted(text="new\n", keys=()), existing)
+    promote((b"new\n"), existing)
     assert stat.S_IMODE(existing.stat().st_mode) == 0o640, (
         "the promote changed a mode the author had set"
     )
@@ -784,7 +784,7 @@ def test_the_promoted_readback_keeps_the_mode_it_would_have_had(tmp_path: Path) 
     control = tmp_path / "control.ini"
     control.write_text("what an ordinary create gives\n", encoding="utf-8")
     fresh = tmp_path / "fresh.ini"
-    _promote(Redacted(text="new\n", keys=()), fresh)
+    promote((b"new\n"), fresh)
     assert stat.S_IMODE(fresh.stat().st_mode) == stat.S_IMODE(control.stat().st_mode), (
         "a newly promoted readback does not have the mode an ordinary write produces"
     )
@@ -798,8 +798,8 @@ def test_a_directory_where_the_readback_goes_is_refused_not_replaced(tmp_path: P
     destination = tmp_path / "readback.ini"
     destination.mkdir()
 
-    with pytest.raises(ResolveError, match="not a regular file"):
-        _promote(Redacted(text="anything\n", keys=()), destination)
+    with pytest.raises(PromotionError, match="not a regular file"):
+        promote((b"anything\n"), destination)
 
     assert sorted(entry.name for entry in tmp_path.iterdir()) == ["readback.ini"]
     assert destination.is_dir()

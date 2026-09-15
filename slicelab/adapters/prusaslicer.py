@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 
-from slicelab.adapters.base import ConfigLocation, EngineSpec, OptionProbe, PresetQuery
+from slicelab.adapters.base import ConfigLocation, EngineSpec, Invocation, OptionProbe, PresetQuery
 from slicelab.redact import REDACTED
 
 
@@ -107,6 +108,36 @@ _SENTINELS = (
     ("0.37,0.37", "0.53,0.53"),
 )
 
+
+def _ask_for_a_slice(model: Path, artifact: Path, readback: Path) -> Invocation:
+    """Slice this model, write the G-code there, and dump the configuration beside it.
+
+    **One invocation, not two.** The configuration has to come from the run that
+    produced the artifact or it is a document about a different run -- and 2.9.6 makes
+    that concrete: `--save` executes BEFORE the slice block and is not conditioned on
+    it, so a run that slices nothing still writes a complete config at rc=0 [V4]. The
+    gate that catches it lives in `slice`; composing the two together is what gives
+    the gate something to compare.
+
+    **The model is the author's own path, never a copy.** Its basename is embedded in
+    `objects_info` whenever `gcode_label_objects` is `firmware` or `octoprint`, which
+    Prusa's shipped presets set -- measured here, a cube sliced from `cube.stl` carries
+    `"name":"cube.stl id:0 copy 0"`. Slicing a renamed temp copy would put slicelab's
+    scratch filename inside the artifact the author keeps (D7).
+    """
+    # SPACE-SEPARATED, both of them, and `--save` with `=`. Measured on 2.9.6, and
+    # not guessable: `--export-gcode=<model> -o=<path>` is accepted, exits **0**,
+    # writes a complete 14757-byte configuration and **no G-code at all**. So is
+    # `--export-gcode=<model> -o <path>`. Each is [V4]'s exact shape -- rc=0 with a
+    # config and no artifact -- produced by an argv bug rather than by a bad request,
+    # which is the strongest argument for the gate there is: slicelab's own mistake
+    # looks identical to the engine's.
+    return Invocation(
+        argv=("--export-gcode", str(model), "-o", str(artifact), f"--save={readback}"),
+        paths=frozenset({str(model), str(artifact), str(readback)}),
+    )
+
+
 PROBE = OptionProbe(
     sentinels=_SENTINELS,
     # 2.9.6 answers `Unknown option --foo` on stderr at rc=1. A wrong *value* for
@@ -197,6 +228,13 @@ SPEC = EngineSpec(
     base_keys=("printer-profile", "print-profile", "material-profile"),
     # No `compose_base`: this engine addresses presets BY NAME, one flag per key,
     # which is what the core composes by default. Orca is the one that needed a seam.
+    # `binary_gcode = 1` is the stock default for the entire current Prusa line, so
+    # this is the ordinary path rather than an edge case [V7]. Measured on 2.9.6: a
+    # cube sliced with `--binary-gcode=1` is 135019 bytes beginning `GCDE`, with zero
+    # `prusaslicer_config` markers; the same cube as text is 604407 bytes beginning
+    # `; ge`, with two.
+    binary_container_magic=b"GCDE",
+    compose_slice=_ask_for_a_slice,
     read_readback=_read_ini,
     redact_readback=_redact_ini,
     preset_query=PresetQuery(argv=("--query-printer-models",), root_key="printer_models"),

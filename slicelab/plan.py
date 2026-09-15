@@ -22,7 +22,7 @@ from slicelab.adapters import EngineSpec
 from slicelab.intent import Intent
 from slicelab.preflight import render
 
-__all__ = ["Plan", "PlanError", "plan_resolve"]
+__all__ = ["Plan", "PlanError", "plan_resolve", "plan_slice"]
 
 
 class PlanError(Exception):
@@ -64,6 +64,30 @@ class Plan:
 
     Holds `staged` and NOT `destination`: the engine has no business writing the
     author's file, and the grant list is the place that is enforced.
+    """
+
+    staged_artifact: Path | None = None
+    """Where the ENGINE writes the G-code, or `None` for a plan that slices nothing.
+
+    A path slicelab owns and destroys, for D7's reason and a sharper one than the
+    readback's: `--save` executes before the slice block and is not conditioned on it,
+    so a run that slices nothing still writes a complete configuration at exit 0
+    [V4]. Pointing the engine at the author's own `.gcode` would leave last run's
+    artifact in place and a fresh config beside it, which reads exactly like a run
+    that succeeded.
+    """
+
+    artifact_destination: Path | None = None
+    """Where the artifact is promoted on `sliced`, and only on `sliced`."""
+
+    model: Path | None = None
+    """The mesh, at the author's own path. Never a copy (D7).
+
+    Its basename is embedded in `objects_info` whenever `gcode_label_objects` is
+    `firmware` or `octoprint`, which Prusa's shipped presets set -- so slicing a
+    renamed temp copy puts slicelab's scratch filename inside the artifact the author
+    keeps. Measured: a cube sliced from `cube.stl` carries
+    `"name":"cube.stl id:0 copy 0"`.
     """
 
     @property
@@ -161,4 +185,79 @@ def plan_resolve(intent: Intent, spec: EngineSpec, destination: Path, staged: Pa
         staged=staged,
         destination=destination,
         paths=frozenset({str(staged), *base_paths}),
+    )
+
+
+def plan_slice(
+    intent: Intent, spec: EngineSpec, staged_artifact: Path, staged_readback: Path
+) -> Plan:
+    """Compose the argv for `slice`: produce the artifact AND the configuration, once.
+
+    One invocation, because a configuration captured by a second run is a document
+    about a different run. The engine makes that concrete rather than theoretical:
+    2.9.6 runs `--save` before the slice block and does not condition it on the slice,
+    so [V4]'s `--scale 30` gives rc=0, no G-code, and a complete 9957-byte ini. The
+    gate in `slice` is what catches that; composing the two together is what gives the
+    gate two things to compare.
+
+    The flags are the ENGINE's, so the argv fragment comes from the adapter (D1's
+    seam). An engine with no measured way to be asked for a slice is refused here
+    rather than guessed at -- OrcaSlicer's `--export-3mf` is a different artifact
+    reached by different flags, and D1 scopes it to readback only in v0.1.0.
+
+    Ordering matches `plan_resolve`: base first in the engine's declared order, then
+    overrides sorted, then the invocation the adapter composed. A `Plan` is compared
+    in tests and printed to humans, and an argv that reorders between runs is one
+    nobody can diff.
+    """
+    if intent.model is None:
+        raise PlanError(
+            f"{intent.source} declares no [geometry] model, so there is nothing to slice"
+        )
+    if intent.gcode is None:
+        raise PlanError(
+            f"{intent.source} declares no [output] gcode, so there is nowhere to put the result"
+        )
+    if spec.compose_slice is None:
+        raise PlanError(
+            f"{spec.name} has no measured way to be asked for a slice, so slicelab will "
+            "not compose an argv nobody has run"
+        )
+    if spec.read_readback is None:
+        raise PlanError(
+            f"{spec.name} has no measured way to read its own configuration dump, so a "
+            "run would produce an answer slicelab could not adjudicate"
+        )
+
+    argv: list[str] = []
+    base_paths: frozenset[str] = frozenset()
+    if spec.compose_base is not None:
+        invocation = spec.compose_base(intent.base)
+        argv.extend(invocation.argv)
+        base_paths = invocation.paths
+    else:
+        for key in spec.base_keys:
+            argv.append(f"--{key}={intent.base[key]}")
+
+    requested: dict[str, str] = {}
+    for key in sorted(intent.overrides):
+        value = render(intent.overrides[key], spec)
+        requested[key] = value
+        argv.append(f"--{key}={value}")
+
+    staged_artifact = staged_artifact.resolve()
+    staged_readback = staged_readback.resolve()
+    model = intent.model.resolve()
+    asked = spec.compose_slice(model, staged_artifact, staged_readback)
+    argv.extend(asked.argv)
+
+    return Plan(
+        argv=tuple(argv),
+        requested=requested,
+        staged=staged_readback,
+        destination=intent.source.with_suffix(spec.readback_suffix).resolve(),
+        paths=frozenset({*asked.paths, *base_paths}),
+        staged_artifact=staged_artifact,
+        artifact_destination=intent.gcode.resolve(),
+        model=model,
     )
