@@ -251,7 +251,7 @@ def plan_slice(
     destination = intent.source.with_suffix(spec.readback_suffix).resolve()
     artifact_destination = intent.gcode.resolve()
 
-    # Four refusals about the destinations, all before the engine is asked for
+    # Six refusals about the destinations, all before the engine is asked for
     # anything (D15). Each is a measured way to reach `sliced` at exit 0 with the
     # declared path holding something other than this run's G-code.
     if not model.is_file():

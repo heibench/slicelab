@@ -115,7 +115,8 @@ and the mesh it names, and writes both a readback and a G-code file; `which` and
 `presets` read no file you name. None of the four writes a lock.
 
 `slice` writes to two paths you chose, so it refuses before running the engine if
-they collide with each other, with the mesh, or with the intent file -- one run
+the G-code collides with the readback, with the mesh, or with the intent file --
+one run
 writing the artifact and the readback to one path was measured to report success
 over a file holding the wrong one. The engine writes only into a scratch directory
 slicelab owns; both of your paths are written by slicelab, atomically, replacing
@@ -126,8 +127,13 @@ are relying on one. **The G-code is written only for an outcome slicelab stands
 behind** — `sliced`, or `empty` where there was nothing to verify. **The readback
 is written on any outcome that was adjudicated at all**, `incomplete` included
 (D31): it is the evidence for the verdict, and a verdict whose evidence was
-withheld because the verdict was bad is not worth having. So a failing `slice`
-leaves your G-code alone and does replace your readback.
+withheld because the verdict was bad is not worth having.
+
+A run refused *before* adjudication writes neither — the gate cases, an argv the
+engine rejects, a destination collision. So the readback beside your intent may
+describe an earlier run, and slicelab does not say so: it is written when there was
+a verdict to evidence, left alone when there was not, and its age is not reported
+either way.
 
 A scratch directory outlives the run only when it holds an artifact slicelab
 produced and would not hand over, and the report names it when it does.

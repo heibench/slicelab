@@ -64,7 +64,8 @@ def test_an_artifact_beside_a_signalled_engine_is_never_handed_over(an_artifact:
 
 
 def test_an_artifact_beside_a_timed_out_engine_is_never_handed_over(an_artifact: Path) -> None:
-    """Exit 4. Same shape, and plainly reachable: the run is under a timeout."""
+    """Same shape, same open question about the code, and plainly reachable: the run
+    is under a timeout."""
     completed = Completed(exit_status=None, signal=None, timed_out=True)
     with pytest.raises(ResolveError, match="did not finish slicing"):
         _gate(completed, an_artifact, PRUSASLICER, SOURCE)
