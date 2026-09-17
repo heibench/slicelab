@@ -425,6 +425,26 @@ def _slice(intent_path: Path) -> int:
     except (IntentUnreadable, ResolveError, RedactionError, CharacterisationError) as fault:
         print(render(Outcome.ERROR, str(fault), _kept(fault)), file=sys.stderr)
         return exit_code_for(Outcome.ERROR)
+    except Exception as unexpected:
+        # Anything else -- an `OSError` from the container sniff, a defect in
+        # slicelab's own code. Uncaught, CPython exits 1, which is `refused`: a claim
+        # that slicelab read the intent and found it wanting. It did not. The class
+        # and message are printed because this is the one outcome where slicelab is
+        # the suspect, and the traceback it replaces was the only thing saying so.
+        #
+        # It also has to be here rather than nowhere: `slice` keeps the artifact of
+        # any run that faulted after producing one, and a scratch directory survives
+        # exactly as long as a report names it.
+        print(
+            render(
+                Outcome.ERROR,
+                f"slicelab failed while slicing {intent_path}: "
+                f"{type(unexpected).__name__}: {unexpected}",
+                _kept(unexpected),
+            ),
+            file=sys.stderr,
+        )
+        return exit_code_for(Outcome.ERROR)
 
     detail = [f"{v.option}: {v.status.value} -- {v.reason}" for v in sliced.adjudication.verdicts]
     detail.append(f"container = {sliced.container.value}")

@@ -144,7 +144,7 @@ def slice_intent(intent_path: Path) -> Sliced:
             # from a run slicelab could not stand behind is the failure it is named for.
             try:
                 promote(plan.staged_artifact.read_bytes(), plan.artifact_destination)
-            except (OSError, PromotionError) as unwritable:
+            except PromotionError as unwritable:
                 raise ResolveError(f"cannot write the artifact: {unwritable}") from unwritable
             promoted = plan.artifact_destination
 
@@ -169,7 +169,7 @@ def slice_intent(intent_path: Path) -> Sliced:
         # argument, which is true of these two today and is not a property anything
         # checks. `KeyboardInterrupt` is deliberately not caught -- an author who
         # interrupted a slice did not ask for its leftovers.
-        if staged_artifact.is_file():
+        if _is_an_artifact(staged_artifact):
             keep = True
             setattr(fault, _WITHHELD, staged_artifact)
         raise
@@ -196,7 +196,7 @@ def _gate(completed, staged: Path, spec, source: Path) -> None:
         raise ResolveError(f"{spec.name} did not finish slicing {source} in time")
 
     try:
-        wrote_something = staged.is_file() and staged.stat().st_size
+        wrote_something = _is_an_artifact(staged)
     except OSError as exc:  # pragma: no cover - staging is slicelab's own directory
         raise ResolveError(f"cannot examine the artifact {spec.name} was asked for: {exc}") from exc
 
@@ -232,6 +232,17 @@ def _configuration(completed, staged: Path, spec, source: Path) -> str:
         return staged.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:  # pragma: no cover - staging is slicelab's own directory
         raise ResolveError(f"cannot read the configuration {spec.name} wrote: {exc}") from exc
+
+
+def _is_an_artifact(staged: Path) -> bool:
+    """Present AND non-empty, which is one definition used in two places.
+
+    The engine creates `-o` before it has anything to put in it, so `is_file()` alone
+    says yes to a run that failed immediately. Split across the gate and the
+    withholding clause, the two disagreed: one report said the engine "wrote no
+    artifact" and then named the zero-byte artifact it had kept.
+    """
+    return staged.is_file() and staged.stat().st_size > 0
 
 
 def _prehash(destination: Path) -> str | None:
