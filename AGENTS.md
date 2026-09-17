@@ -20,14 +20,15 @@ Everything else — the lock file, the multi-engine story, a native backend —
 is downstream of that one move. If the readback diff is ever weakened, delete
 the project rather than ship it.
 
-**Status: pre-alpha. Three verbs work: `slicelab which`, `slicelab presets` and `slicelab resolve`.**
+**Status: pre-alpha. Four verbs work: `slicelab which`, `slicelab presets`, `slicelab resolve` and `slicelab slice`.**
 `which` discovers an installed engine, probes whether that engine's exit status
 can be believed, and reports its identity. `presets` enumerates an engine's
 printer presets, adjudicated on the JSON rather than the exit code. `resolve` reads
 a `slice.toml`, asks the engine what it would resolve it to, and diffs that
-against what was asked -- the mechanism, without slicing. It does write one file:
-the engine's configuration dump, staged, redacted and promoted beside the intent
-(D31). Nothing produces G-code or writes a lock.
+against what was asked -- the mechanism, without slicing. `slice` does the same
+and produces the G-code, handing it over only on `sliced` or `empty` (D7, D24's
+carve-out). Both write the engine's configuration dump, staged, redacted and
+promoted beside the intent (D31). Nothing writes a lock.
 
 Treat this section as code: the moment another verb works, this paragraph is
 false and the change that made it work is not finished until it is corrected
