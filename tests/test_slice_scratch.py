@@ -163,17 +163,27 @@ def test_a_fault_from_an_unexpected_class_keeps_the_artifact(
     _discard(raised.value)
 
 
+@pytest.mark.parametrize("payload", [None, b""], ids=["no file", "zero bytes"])
 def test_a_run_that_produced_no_artifact_keeps_nothing_and_names_nothing(
-    intent: Path, engine_that_writes, monkeypatch: pytest.MonkeyPatch
+    intent: Path, engine_that_writes, monkeypatch: pytest.MonkeyPatch, payload: bytes | None
 ) -> None:
     """[V4]'s shape. The report must not name a path, because there is no file at it
     -- and the scratch must go, because a directory kept per failed run that nobody
     is told about is litter rather than evidence.
+
+    Twice, because the engine creates `-o` before it has anything to put in it, and a
+    zero-byte file is the shape a run that failed immediately leaves. The gate and the
+    withholding clause once disagreed on it: one report said the engine wrote no
+    artifact and then named the empty one it had kept. With `is_file()` alone in the
+    clause, the no-file case is green and the zero-byte case is exactly that report.
     """
     scratches: list[Path] = []
 
     def wrote_nothing(argv, capture=()):
-        scratches.append(Path(argv[argv.index("-o") + 1]).parent)
+        artifact = Path(argv[argv.index("-o") + 1])
+        scratches.append(artifact.parent)
+        if payload is not None:
+            artifact.write_bytes(payload)
         return Completed(exit_status=0, signal=None, stdout="", stderr="outside the print volume")
 
     monkeypatch.setattr(slicing, "run", wrote_nothing)

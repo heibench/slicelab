@@ -69,6 +69,10 @@ def test_an_unexpected_fault_is_reported_as_error_and_names_what_it_kept(
     assert code == 4, report
     assert report.startswith("error"), report
     assert "OSError: device is busy" in report, report
+    # The traceback follows the outcome word rather than replacing it. Without it an
+    # `AssertionError` with an empty message is one line nobody can act on.
+    assert "Traceback (most recent call last)" in report, report
+    assert report.index("error") < report.index("Traceback"), report
     assert f"kept at {kept}" in report, report
 
 

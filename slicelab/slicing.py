@@ -127,8 +127,13 @@ def slice_intent(intent_path: Path) -> Sliced:
         _gate(completed, plan.staged_artifact, spec, intent_path)
         text = _configuration(completed, plan.staged, spec, intent_path)
         readback = redact(text, spec)
-        adjudication = diff(plan.requested, _parse(text, spec), name_map)
+        # Sniffed before adjudication, on purpose: D31 promises the readback of any
+        # run that reached a verdict, and everything standing between the verdict
+        # and that promotion is a line that can fail. This one opens a file. Moved
+        # above `diff`, the only thing left between them is `_prehash`, which cannot
+        # raise.
         container = sniff(plan.staged_artifact, spec.binary_container_magic)
+        adjudication = diff(plan.requested, _parse(text, spec), name_map)
 
         prehash = _prehash(plan.artifact_destination)
         # The readback goes first, and unconditionally. It is evidence for a verdict of
@@ -142,8 +147,12 @@ def slice_intent(intent_path: Path) -> Sliced:
             # withholding it would punish an author for not having written an override
             # yet. Every other outcome keeps the file, because handing over an artifact
             # from a run slicelab could not stand behind is the failure it is named for.
+            # The read is outside the `try`: a failure to read slicelab's own scratch is
+            # not a failure to write the author's path, and reporting it as one was
+            # what the old `(OSError, PromotionError)` arm did.
+            payload = plan.staged_artifact.read_bytes()
             try:
-                promote(plan.staged_artifact.read_bytes(), plan.artifact_destination)
+                promote(payload, plan.artifact_destination)
             except PromotionError as unwritable:
                 raise ResolveError(f"cannot write the artifact: {unwritable}") from unwritable
             promoted = plan.artifact_destination

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import traceback
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -426,15 +427,18 @@ def _slice(intent_path: Path) -> int:
         print(render(Outcome.ERROR, str(fault), _kept(fault)), file=sys.stderr)
         return exit_code_for(Outcome.ERROR)
     except Exception as unexpected:
-        # Anything else -- an `OSError` from the container sniff, a defect in
-        # slicelab's own code. Uncaught, CPython exits 1, which is `refused`: a claim
-        # that slicelab read the intent and found it wanting. It did not. The class
-        # and message are printed because this is the one outcome where slicelab is
-        # the suspect, and the traceback it replaces was the only thing saying so.
+        # Anything else -- an `OSError` from a read of slicelab's own scratch, a defect
+        # in slicelab's own code. Uncaught, CPython exits 1, which is `refused`: a
+        # claim that slicelab read the intent and found it wanting. It did not.
         #
         # It also has to be here rather than nowhere: `slice` keeps the artifact of
         # any run that faulted after producing one, and a scratch directory survives
         # exactly as long as a report names it.
+        #
+        # The outcome word goes first (D14), and the traceback goes after it rather
+        # than nowhere: this is the one outcome where slicelab is the suspect, and a
+        # one-line `AssertionError:` with an empty message is not a report anyone
+        # can act on.
         print(
             render(
                 Outcome.ERROR,
@@ -444,6 +448,7 @@ def _slice(intent_path: Path) -> int:
             ),
             file=sys.stderr,
         )
+        traceback.print_exception(unexpected, file=sys.stderr)
         return exit_code_for(Outcome.ERROR)
 
     detail = [f"{v.option}: {v.status.value} -- {v.reason}" for v in sliced.adjudication.verdicts]

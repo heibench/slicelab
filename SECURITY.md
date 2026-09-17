@@ -116,9 +116,8 @@ and the mesh it names, and writes both a readback and a G-code file; `which` and
 
 `slice` writes to two paths you chose, so it refuses before running the engine if
 the G-code collides with the readback, with the mesh, or with the intent file --
-one run
-writing the artifact and the readback to one path was measured to report success
-over a file holding the wrong one. The engine writes only into a scratch directory
+one run writing the artifact and the readback to one path was measured to report
+success over a file holding the wrong one. The engine writes only into a scratch directory
 slicelab owns; both of your paths are written by slicelab, atomically, replacing
 rather than truncating.
 
