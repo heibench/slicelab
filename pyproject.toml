@@ -55,7 +55,7 @@ dev = [
     # .pre-commit-config.yaml. A range here let the hook and `just lint` be two
     # different formatters -- they were five minors apart -- and the disagreement
     # surfaces as a CI failure nobody can reproduce locally.
-    "ruff==0.16.6",
+    "ruff==0.16.8",
     "mypy>=1.10",
     # Dev-only, and only for `tests/test_pre_commit_gate.py`. That file asserts things
     # about nested YAML -- a `fetch-depth` under a `with` under one step of one job --
