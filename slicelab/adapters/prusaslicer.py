@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import Mapping
 from pathlib import Path
 
 from slicelab.adapters.base import ConfigLocation, EngineSpec, Invocation, OptionProbe, PresetQuery
+from slicelab.geometry import MeshFacts, Placement
 from slicelab.redact import REDACTED
 from slicelab.stats import DENSITY_ZERO, Stat
 from slicelab.vocab import (
@@ -15,6 +17,7 @@ from slicelab.vocab import (
     FILAMENT_MM,
     GCODE_FOOTER,
     LAYERS,
+    MESH_INFO,
     PRINT_TIME_S,
     SLICER_MARKER_COUNT,
 )
@@ -226,6 +229,89 @@ def _read_artifact_stats(text: str) -> Mapping[str, Stat]:
     return stats
 
 
+def _ask_about_a_mesh(model: Path) -> Invocation:
+    """`--info <mesh>`: describe the mesh without slicing it.
+
+    Measured on 2.9.6, 2026-10-05: rc=0 in about a third of a second, and the answer
+    goes to stdout as `key = value` lines under a `[<basename>]` heading. It slices
+    nothing, so it cannot be confused with the run that produced the artifact.
+    """
+    return Invocation(argv=("--info", str(model)), paths=frozenset({str(model)}))
+
+
+def _read_mesh_info(text: str) -> MeshFacts | None:
+    """`--info` output as the mesh facts, or `None` when it said nothing usable.
+
+    The six bounds are required together: three axes with one missing is not a box,
+    and reporting a partial one would be a shape nobody measured. The fingerprint
+    fields are each optional, because an engine that describes a mesh without
+    counting its facets has still described the mesh.
+    """
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition(" = ")
+        if separator:
+            fields[key.strip()] = value.strip()
+
+    try:
+        low = (float(fields["min_x"]), float(fields["min_y"]), float(fields["min_z"]))
+        high = (float(fields["max_x"]), float(fields["max_y"]), float(fields["max_z"]))
+    except (KeyError, ValueError):
+        return None
+
+    facets: int | None = None
+    with contextlib.suppress(KeyError, ValueError):
+        facets = int(fields["number_of_facets"])
+
+    volume: float | None = None
+    with contextlib.suppress(KeyError, ValueError):
+        volume = float(fields["volume"])
+
+    # `yes` / `no`, and anything else is unknown rather than false -- a mesh reported
+    # in a spelling slicelab does not know is not a mesh reported as open.
+    manifold: bool | None = {"yes": True, "no": False}.get(fields.get("manifold", "").lower())
+
+    return MeshFacts(
+        source=MESH_INFO,
+        key="--info",
+        min_mm=low,
+        max_mm=high,
+        facets=facets,
+        volume_mm3=volume,
+        manifold=manifold,
+    )
+
+
+def _read_placement(text: str) -> Placement | None:
+    """The artifact's `; objects_info` as a polygon per object, in plate coordinates.
+
+    JSON inside a G-code comment, which is the engine's choice and not slicelab's.
+    Measured on 2026-10-05: one object, four points, a 20 mm square centred at
+    (125, 105) on an MK3S bed. An object with no polygon is dropped rather than
+    recorded with an empty one, because an empty footprint reads as "placed nowhere"
+    instead of "the engine did not say".
+    """
+    for line in text.splitlines():
+        if not line.startswith("; objects_info = "):
+            continue
+        try:
+            document = json.loads(line.partition(" = ")[2])
+        except json.JSONDecodeError:
+            return None
+        objects: list[tuple[str, tuple[tuple[float, float], ...]]] = []
+        for entry in document.get("objects", []):
+            polygon = entry.get("polygon") or []
+            if not isinstance(entry.get("name"), str) or not polygon:
+                continue
+            try:
+                points = tuple((float(x), float(y)) for x, y in polygon)
+            except (TypeError, ValueError):
+                continue
+            objects.append((entry["name"], points))
+        return Placement(source=GCODE_FOOTER, key="; objects_info", objects=tuple(objects))
+    return None
+
+
 def _ask_for_a_slice(model: Path, artifact: Path, readback: Path) -> Invocation:
     """Slice this model, write the G-code there, and dump the configuration beside it.
 
@@ -353,6 +439,9 @@ SPEC = EngineSpec(
     binary_container_magic=b"GCDE",
     compose_slice=_ask_for_a_slice,
     read_artifact_stats=_read_artifact_stats,
+    compose_mesh_info=_ask_about_a_mesh,
+    read_mesh_info=_read_mesh_info,
+    read_placement=_read_placement,
     read_readback=_read_ini,
     redact_readback=_redact_ini,
     preset_query=PresetQuery(argv=("--query-printer-models",), root_key="printer_models"),

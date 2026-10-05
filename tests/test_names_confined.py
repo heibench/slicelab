@@ -33,6 +33,7 @@ CORE_MODULE_NAMES = (
     "presets.py",
     "intent.py",
     "digest.py",
+    "geometry.py",
     "plan.py",
     "preflight.py",
     "promote.py",
@@ -146,6 +147,26 @@ DECLARED_VOCABULARY = frozenset(
         # Why a number that the engine did print is not recorded as one.
         "filament_density_zero",
         "container_carries_no_text_footer",
+        # The lock's two geometry records. Both are slicelab's own names for the
+        # same reason the stat fields are, and neither is called `bounding_box`:
+        # the mesh box is model coordinates and the footprint is the plate, and a
+        # reader who conflates them gets a part in the wrong place with a lock that
+        # agrees. Checked against this build's 393 stated config keys on 2026-10-05
+        # with `layer_height` as the control -- none is one of them. `manifold` is
+        # also a word `--info` uses, which is a different namespace from the config
+        # keys D26 scopes to, and is an ordinary geometry term either way; the
+        # engine's own `max_layer_z` is a config key, so the plated height is named
+        # for what it measures and carries that key as its provenance instead.
+        "min_mm",
+        "max_mm",
+        "facets",
+        "volume_mm3",
+        "manifold",
+        "objects",
+        "polygon",
+        "name",
+        "engine_described_no_mesh",
+        "artifact_stated_no_placement",
         "slicelab-readback-",
         # Where the engine slices before slicelab decides whether to hand it over
         # (D7). The same shape as the readback prefix above, and named for this
