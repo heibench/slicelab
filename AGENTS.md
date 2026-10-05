@@ -28,7 +28,9 @@ a `slice.toml`, asks the engine what it would resolve it to, and diffs that
 against what was asked -- the mechanism, without slicing. `slice` does the same
 and produces the G-code, handing it over only on `sliced` or `empty` (D7, D24's
 carve-out). Both write the engine's configuration dump, staged, redacted and
-promoted beside the intent (D31). Nothing writes a lock.
+promoted beside the intent (D31). `slice` also writes `slice.lock` -- only for a run
+it stands behind, so `empty` gets its artifact and no lock (D24). Its schema is
+`docs/LOCK.md`, and it is read as a file by another tool rather than imported (D22).
 
 Treat this section as code: the moment another verb works, this paragraph is
 false and the change that made it work is not finished until it is corrected

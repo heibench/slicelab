@@ -112,7 +112,15 @@ and was committed for five commits before anyone noticed.
 
 `resolve` reads a `slice.toml` and writes a readback; `slice` reads a `slice.toml`
 and the mesh it names, and writes both a readback and a G-code file; `which` and
-`presets` read no file you name. None of the four writes a lock.
+`presets` read no file you name. `slice` writes a third file, `slice.lock`, for a run
+it stands behind.
+
+**The lock embeds the engine's configuration document**, so it embeds whatever
+redaction left behind, and it names the keys it removed in `readback.redacted_keys`.
+Measured: the three credential keys a stock triple emits read as `<redacted>` in the
+lock. The README's git model says you commit this file, so read it as configuration
+rather than as a public artifact until you have looked at it -- a credential key a
+future build adds is one nothing has measured yet.
 
 `slice` writes to two paths you chose, so it refuses before running the engine if
 the G-code collides with the readback, with the mesh, or with the intent file --

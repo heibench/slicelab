@@ -148,3 +148,27 @@ def test_a_destination_that_is_a_regular_file_is_not_refused(tmp_path: Path) -> 
     (tmp_path / "part.gcode").write_text("PREVIOUS\n", encoding="utf-8")
     plan = _plan(_intent(tmp_path, "part.gcode"), tmp_path)
     assert plan.artifact_destination == (tmp_path / "part.gcode").resolve()
+
+
+def test_a_plan_that_sends_the_artifact_where_the_lock_goes_is_refused(tmp_path: Path) -> None:
+    """The lock is a third path this run writes, and its name is derived from the
+    intent rather than chosen -- so an author pointing their output at it wrote
+    `gcode = "slice.lock"` once, not perversely."""
+    with pytest.raises(PlanError, match="where the lock goes"):
+        _plan(_intent(tmp_path, "slice.lock"), tmp_path)
+
+
+def test_a_plan_that_slices_the_file_the_lock_replaces_is_refused(tmp_path: Path) -> None:
+    """The model must exist for this to reach the collision check rather than the
+    unreadable-model one, so the mesh is written at the lock's own path."""
+    intent = _intent(tmp_path, "part.gcode")
+    (tmp_path / "slice.lock").write_text("solid cube\nendsolid cube\n", encoding="utf-8")
+    with pytest.raises(PlanError, match="where the lock goes"):
+        _plan(replace(intent, model=tmp_path / "slice.lock"), tmp_path)
+
+
+def test_the_lock_destination_is_derived_from_the_intent(tmp_path: Path) -> None:
+    """`slice.toml` gives `slice.lock`, and a differently named intent gives its own,
+    so two intents in one directory cannot overwrite each other's record."""
+    plan = _plan(_intent(tmp_path, "part.gcode"), tmp_path)
+    assert plan.lock_destination == (tmp_path / "slice.lock").resolve()

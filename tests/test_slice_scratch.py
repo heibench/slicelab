@@ -27,6 +27,7 @@ import pytest
 import slicelab.slicing as slicing
 from slicelab.engine.characterise import MapEntry, ProbeOutcome, Tracking
 from slicelab.engine.discover import Discovery, ExitFidelity, LaunchForm, LaunchKind
+from slicelab.engine.identity import Identity
 from slicelab.engine.launch import Completed
 from slicelab.redact import RedactionError
 from slicelab.resolve import ResolveError, ResolveIncomplete
@@ -78,7 +79,9 @@ def engine_that_writes(monkeypatch: pytest.MonkeyPatch):
         tracking=Tracking.EXACT,
         outcome=ProbeOutcome.MAPPED,
     )
-    monkeypatch.setattr(slicing, "_name_map", lambda spec, found: {"perimeters": mapped})
+    # `who` is accepted and ignored: the slice flow reads the identity once and hands
+    # it to the real `_name_map` so the engine is not asked its version twice (#47).
+    monkeypatch.setattr(slicing, "_name_map", lambda spec, found, who=None: {"perimeters": mapped})
 
     written: dict[str, Path] = {}
 
@@ -93,6 +96,22 @@ def engine_that_writes(monkeypatch: pytest.MonkeyPatch):
         return Completed(exit_status=0, signal=None, stdout="", stderr="")
 
     monkeypatch.setattr(slicing, "run", fake_run)
+    # The lock records the build it talked to, and `identify` asks the engine for its
+    # version -- a third invocation in a `slice` run, after the slice and `--info`.
+    # Stubbed here because this file's engine is a fabricated launch form: unstubbed it
+    # tries to exec `prusa-slicer` off PATH and the failure reads as a broken test.
+    monkeypatch.setattr(
+        slicing,
+        "identify",
+        lambda spec, found: Identity(
+            engine=spec.name,
+            kind="path",
+            version="9.9.9",
+            banner=None,
+            digest=None,
+            digest_of=None,
+        ),
+    )
     return written
 
 
@@ -260,4 +279,26 @@ def test_a_readback_that_cannot_be_written_hands_over_nothing(
     assert (tmp_path / "part.gcode").read_text(encoding="utf-8") == "PREVIOUS-ARTIFACT\n", (
         "a run that exited non-zero had already handed over the artifact"
     )
+    _discard(raised.value)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod cannot make a file unwritable on Windows")
+def test_a_lock_that_cannot_be_written_says_the_artifact_was_handed_over(
+    intent: Path, engine_that_writes
+) -> None:
+    """The one place `slice` hands something over and still exits non-zero.
+
+    The lock goes after the artifact because it describes where the artifact landed:
+    written first, a failed promotion would leave a record asserting a file that is
+    not there, and another tool reads the lock as its premise (D22). So the cost lands
+    here instead, and the report has to carry it rather than claiming nothing moved.
+    """
+    destination = intent.parent / "slice.lock"
+    destination.mkdir()
+
+    with pytest.raises(ResolveError, match="the artifact was handed over") as raised:
+        slice_intent(intent)
+
+    assert "and the lock was not" in str(raised.value)
+    assert (intent.parent / "part.gcode").is_file(), "the message says it was handed over"
     _discard(raised.value)

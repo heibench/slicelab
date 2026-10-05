@@ -34,10 +34,19 @@ from pathlib import Path
 from typing import Final
 
 from slicelab.container import Container, sniff
+from slicelab.digest import CONTAINER_IS_BINARY, normalized_sha256, raw_sha256
 from slicelab.engine.configured import ConfigState, configuration_state
 from slicelab.engine.discover import argv_for, discover
+from slicelab.engine.identity import identify
 from slicelab.engine.launch import run
+from slicelab.geometry import (
+    MESH_NOT_DESCRIBED,
+    PLACEMENT_NOT_STATED,
+    MeshFacts,
+    mesh_sha256,
+)
 from slicelab.intent import read_intent
+from slicelab.lock import SCHEMA_VERSION, dumps
 from slicelab.plan import plan_slice
 from slicelab.preflight import preflight
 from slicelab.promote import PromotionError, promote
@@ -85,6 +94,13 @@ class Sliced:
     actually has.
     """
 
+    lock: Path | None
+    """Where `slice.lock` was written, or `None` when none was.
+
+    `None` on every outcome but `sliced`: D24 gives `empty` its artifact and no lock,
+    because a lock records a resolution slicelab verified and `empty` verified none.
+    """
+
     withheld: Path | None
     """The artifact the engine produced and slicelab did not hand over.
 
@@ -110,7 +126,12 @@ def slice_intent(intent_path: Path) -> Sliced:
             f"{spec.name} is installed but not configured. Run the engine once to "
             "create one. reason = engine_has_no_configuration"
         )
-    name_map = _name_map(spec, found)
+    # Read once and reused: `_name_map` needs the version to key the option map and
+    # the lock needs the build it talked to. Asking twice is a second chance to meet
+    # the intermittent failure in #47, and a run that accepted the first answer and
+    # refused the second would look like slicelab being nondeterministic.
+    who = identify(spec, found)
+    name_map = _name_map(spec, found, who=who)
 
     scratch = Path(tempfile.mkdtemp(prefix="slicelab-slice-"))
     staged_artifact = scratch / "artifact"
@@ -157,6 +178,39 @@ def slice_intent(intent_path: Path) -> Sliced:
                 raise ResolveError(f"cannot write the artifact: {unwritable}") from unwritable
             promoted = plan.artifact_destination
 
+        locked: Path | None = None
+        if adjudication.outcome is Outcome.SLICED and plan.lock_destination is not None:
+            # Only on `sliced`. D24 is explicit that `empty` writes none -- a lock is
+            # the record of a resolution slicelab verified, and `empty` verified none --
+            # so the lock exists if and only if the run was one slicelab stands behind.
+            # That is also why it carries no `outcome` field: a value that cannot vary
+            # tells a reader nothing and invites branching on it.
+            #
+            # After the artifact, deliberately. The lock describes where the artifact
+            # landed, so a lock written first and an artifact promotion that then failed
+            # would leave a record asserting a file that is not there -- and the lock is
+            # read by another tool as its premise (D22). The cost is stated in the
+            # report instead: a lock that cannot be written is exit 4 saying the
+            # artifact was handed over and the lock was not.
+            document = _lock_document(
+                intent_path=intent_path,
+                spec=spec,
+                identity=who,
+                found=found,
+                plan=plan,
+                container=container,
+                text=_artifact_text(plan.staged_artifact, container),
+                readback=readback,
+                prehash=prehash,
+            )
+            try:
+                promote((dumps(document) + "\n").encode("utf-8"), plan.lock_destination)
+            except PromotionError as unwritable:
+                raise ResolveError(
+                    f"the artifact was handed over to {promoted} and the lock was not: {unwritable}"
+                ) from unwritable
+            locked = plan.lock_destination
+
         keep = promoted is None
         return Sliced(
             adjudication=adjudication,
@@ -165,6 +219,7 @@ def slice_intent(intent_path: Path) -> Sliced:
             container=container,
             destination_prehash=prehash,
             withheld=plan.staged_artifact if keep else None,
+            lock=locked,
         )
     except Exception as fault:
         # EVERY fault, not the two the happy path raises. `redact` refuses on an
@@ -188,6 +243,170 @@ def slice_intent(intent_path: Path) -> Sliced:
         # artifact leaves nothing worth keeping, and keeping it unannounced is litter.
         if not keep:
             shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _mesh_facts(spec, found, model: Path) -> tuple[MeshFacts | None, str | None]:
+    """Ask the engine to describe the mesh, and never let that cost the slice.
+
+    A second invocation, and the cheap kind: `--info` answers in about a third of a
+    second and slices nothing, so it cannot be mistaken for the run that produced the
+    artifact the way a second `--save` could (D7). It runs after the artifact is
+    promoted, so a slice that was never going to finish does not pay for it.
+
+    Every failure here is a missing field and never a missing slice. The mesh is still
+    identified: `mesh_sha256` is slicelab hashing the file, which needs no engine.
+    """
+    if spec.compose_mesh_info is None or spec.read_mesh_info is None:
+        return None, MESH_NOT_DESCRIBED
+    invocation = spec.compose_mesh_info(model)
+    try:
+        completed = run(argv_for(found.form, invocation.argv, invocation.paths))
+    except Exception:  # noqa: BLE001 - a field is worth less than the artifact
+        return None, MESH_NOT_DESCRIBED
+    if completed.exit_status != 0 or not completed.stdout:
+        return None, MESH_NOT_DESCRIBED
+    facts = spec.read_mesh_info(completed.stdout)
+    return facts, None if facts is not None else MESH_NOT_DESCRIBED
+
+
+def _lock_document(
+    *,
+    intent_path: Path,
+    spec,
+    identity,
+    found,
+    plan,
+    container: Container,
+    text: str | None,
+    readback: Redacted,
+    prehash: str | None,
+) -> dict[str, object]:
+    """Assemble `slice.lock`, and record every gap rather than omitting it.
+
+    `text` is the artifact's own text, or `None` when the container carries none --
+    which is D10's case, not a failure: `GCDE` has no text footer, so no stat and no
+    normalized hash can come from it, and both are recorded as unknowns with the
+    container's own code.
+
+    The builder lives here rather than in `slicelab/lock.py` so that module keeps
+    naming no field at all. That is the property that lets it stay inside both the
+    declared-vocabulary scan and the live engine-key cross-check.
+    """
+    unknowns: list[dict[str, object]] = []
+    artifact: dict[str, object] = {
+        "path": str(plan.artifact_destination),
+        "container": container.value,
+        "raw_sha256": raw_sha256(plan.artifact_destination),
+    }
+    if prehash is not None:
+        # What this run displaced. "This file is here" does not establish "this run
+        # wrote it" (D7), and the lock is where that distinction has to survive.
+        artifact["destination_prehash"] = prehash
+
+    stats: dict[str, object] = {}
+    if text is None:
+        unknowns.append(
+            {
+                "code": CONTAINER_IS_BINARY,
+                "detail": f"{container.value}: the container carries no text footer to read",
+                "fields": ["artifact.normalized", "stats"],
+            }
+        )
+    else:
+        if spec.normalize_artifact is not None:
+            normalized = normalized_sha256(text, spec.normalize_artifact)
+            artifact["normalized"] = normalized.as_table()
+            if normalized.reason is not None:
+                unknowns.append(
+                    {
+                        "code": normalized.reason,
+                        "detail": "normalization matched nothing, so no normalized hash",
+                        "fields": ["artifact.normalized.sha256"],
+                    }
+                )
+        if spec.read_artifact_stats is not None:
+            for field, stat in sorted(spec.read_artifact_stats(text).items()):
+                stats[field] = stat.as_table()
+                if stat.reason is not None:
+                    unknowns.append(
+                        {
+                            "code": stat.reason,
+                            "detail": f"{stat.key} was printed and is not a measurement",
+                            "fields": [f"stats.{field}"],
+                        }
+                    )
+
+    geometry: dict[str, object] = {}
+    if plan.model is not None:
+        geometry["mesh_sha256"] = mesh_sha256(plan.model)
+        facts, why = _mesh_facts(spec, found, plan.model)
+        if facts is not None:
+            geometry["mesh_bbox"] = facts.as_table()
+        elif why is not None:
+            unknowns.append(
+                {
+                    "code": why,
+                    "detail": f"{spec.name} described no mesh slicelab could read",
+                    "fields": ["geometry.mesh_bbox"],
+                }
+            )
+    if text is not None and spec.read_placement is not None:
+        placement = spec.read_placement(text)
+        if placement is not None:
+            geometry["plated_footprint"] = placement.as_table()
+        else:
+            unknowns.append(
+                {
+                    "code": PLACEMENT_NOT_STATED,
+                    "detail": "the artifact stated no object placement",
+                    "fields": ["geometry.plated_footprint"],
+                }
+            )
+
+    document: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
+        # D6: both engines export a resolved DOCUMENT, not resolved values.
+        # PrusaSlicer reports `extrusion_width = 0` while the toolpaths were generated
+        # at 0.45 mm. Saying so here is what stops a reader treating this as the
+        # numbers the engine actually used.
+        "values_resolved": False,
+        "reproducibility": {
+            "scope": "cross_machine",
+            "state": "not_established",
+            "reason": (
+                "one host, one build, one architecture; only a second machine can establish this"
+            ),
+        },
+        "intent": {"path": str(intent_path), "sha256": raw_sha256(intent_path)},
+        "engine": {
+            "name": identity.engine,
+            "launch": found.form.description if found.form is not None else "unknown",
+            **({"version": identity.version} if identity.version else {}),
+            **({"digest": identity.digest} if identity.digest else {}),
+        },
+        "artifact": artifact,
+        "geometry": geometry,
+        "stats": stats,
+        "readback": {"path": str(plan.destination), "redacted_keys": list(readback.keys)},
+        "unknowns": unknowns,
+        "effective_config": dict(spec.read_readback(readback.text)) if spec.read_readback else {},
+    }
+    return document
+
+
+def _artifact_text(staged: Path, container: Container) -> str | None:
+    """The artifact as text, or `None` when its container carries none.
+
+    D10 decides this and the core enforces it, not the adapter: `GCDE` has no text
+    footer, so nothing is read out of it. Measured 2026-10-05 on an MK4IS triple --
+    the file begins `GCDE`, holds zero `prusaslicer_config` and zero `;LAYER_CHANGE`,
+    and does not decode as UTF-8. The metadata strings ARE in there as bytes, so the
+    footer is absent rather than the information; reading them would mean implementing
+    the container format, which belongs to the engine (org contract section 3).
+    """
+    if container is not Container.GCODE:
+        return None
+    return staged.read_text(encoding="utf-8", errors="replace")
 
 
 def _gate(completed, staged: Path, spec, source: Path) -> None:

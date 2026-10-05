@@ -174,6 +174,42 @@ DECLARED_VOCABULARY = frozenset(
         # against this build's 393 stated keys on 2026-10-05; none is one of them.
         "substitutions",
         "artifact_header_not_recognised",
+        # The lock's own field names, assembled in `slicing.py`. slicelab's own
+        # vocabulary for the same reason the stat fields are: the lock is read as a
+        # file by another tool (D22), so a name must mean the same thing whichever
+        # engine produced the run. Checked against this build's 393 stated config keys
+        # on 2026-10-05 with `layer_height` as the control -- not one of these is one
+        # of them. The dotted ones are field paths an `unknowns` entry points at.
+        "schema_version",
+        "reproducibility",
+        "scope",
+        "state",
+        "cross_machine",
+        "not_established",
+        "intent",
+        "path",
+        "launch",
+        "version",
+        "digest",
+        "normalized",
+        "raw_sha256",
+        "mesh_sha256",
+        "mesh_bbox",
+        "plated_footprint",
+        "stats",
+        "redacted_keys",
+        "unknown",
+        "code",
+        "detail",
+        "fields",
+        "lock",
+        "lock_destination",
+        ".lock",
+        "artifact.normalized",
+        "artifact.normalized.sha256",
+        "geometry.mesh_bbox",
+        "geometry.plated_footprint",
+        "stats.",
         # TOML's own grammar, from the lock's emitter. Not domain vocabulary: the
         # lock's field names are assembled by its caller and declared above, and
         # `slicelab/lock.py` names none of them -- it is handed a document and

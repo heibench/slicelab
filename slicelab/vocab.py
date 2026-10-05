@@ -27,6 +27,7 @@ __all__ = [
     "GCODE_KEY",
     "GEOMETRY_TABLE",
     "LAYERS",
+    "LOCK_SUFFIX",
     "MESH_INFO",
     "MODEL_KEY",
     "OUTPUT_TABLE",
@@ -120,6 +121,14 @@ PrusaSlicer 2.9.6 has no layer-count field: measured 2026-10-05, a 20 mm cube at
 0.2 mm emits `;LAYER_CHANGE` 100 times and no key says 100. Counting is the only
 source, and saying so is the difference between a measured number and one that
 looks like the engine's.
+"""
+
+LOCK_SUFFIX: Final = ".lock"
+"""What `slice` names its record, derived from the intent the way the readback is.
+
+`slice.toml` gives `slice.lock`, the README's four-file layout. Deriving rather than
+fixing the name is what keeps two intents in one directory from overwriting each
+other's lock, and it is the rule the readback suffix already follows.
 """
 
 MESH_INFO: Final = "mesh_info"

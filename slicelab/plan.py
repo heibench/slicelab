@@ -21,6 +21,7 @@ from pathlib import Path
 from slicelab.adapters import EngineSpec
 from slicelab.intent import Intent
 from slicelab.preflight import render
+from slicelab.vocab import LOCK_SUFFIX
 
 __all__ = ["Plan", "PlanError", "plan_resolve", "plan_slice"]
 
@@ -88,6 +89,14 @@ class Plan:
     renamed temp copy puts slicelab's scratch filename inside the artifact the author
     keeps. Measured: a cube sliced from `cube.stl` carries
     `"name":"cube.stl id:0 copy 0"`.
+    """
+
+    lock_destination: Path | None = None
+    """Where `slice` writes `slice.lock`, derived from the intent like the readback is.
+
+    `slice.toml` gives `slice.lock`, which is the four-file layout the README
+    describes, and `part-a.toml` gives `part-a.lock` so two intents in one directory
+    cannot overwrite each other's record. `None` for `resolve`, which writes no lock.
     """
 
     @property
@@ -250,8 +259,9 @@ def plan_slice(
     model = intent.model.resolve()
     destination = intent.source.with_suffix(spec.readback_suffix).resolve()
     artifact_destination = intent.gcode.resolve()
+    lock_destination = intent.source.with_suffix(LOCK_SUFFIX).resolve()
 
-    # Six refusals about the destinations, all before the engine is asked for
+    # Eight refusals about the destinations, all before the engine is asked for
     # anything (D15). Each is a measured way to reach `sliced` at exit 0 with the
     # declared path holding something other than this run's G-code.
     if not model.is_file():
@@ -290,6 +300,19 @@ def plan_slice(
             f"{intent.source} sends the artifact to {artifact_destination}, which is "
             "not a regular file, and promoting onto it would replace it"
         )
+    if artifact_destination == lock_destination:
+        # The lock is a third path this run writes, and it is derived from the intent's
+        # name rather than chosen, so an author who points their output at it is not
+        # being perverse -- they wrote `gcode = "slice.lock"` once.
+        raise PlanError(
+            f"{intent.source} sends the artifact to {artifact_destination}, which is "
+            "where the lock goes, so one would overwrite the other"
+        )
+    if model == lock_destination:
+        raise PlanError(
+            f"{intent.source} slices {model}, which is where the lock goes, so the "
+            "input would not survive the record of it"
+        )
     if not artifact_destination.parent.is_dir():
         # Cheap here, and expensive later: without it the engine slices for a minute
         # and the promotion then fails on a directory that was never going to exist.
@@ -309,5 +332,6 @@ def plan_slice(
         paths=frozenset({*asked.paths, *base_paths}),
         staged_artifact=staged_artifact,
         artifact_destination=artifact_destination,
+        lock_destination=lock_destination,
         model=model,
     )
