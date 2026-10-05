@@ -41,6 +41,7 @@ CORE_MODULE_NAMES = (
     "redact.py",
     "resolve.py",
     "slicing.py",
+    "stats.py",
     "vocab.py",
 )
 
@@ -122,6 +123,29 @@ DECLARED_VOCABULARY = frozenset(
         # where a bare `withheld` would be slicelab writing an unnamespaced attribute
         # onto someone else's object.
         "_slicelab_withheld_artifact",
+        # The lock's reported-stat fields and the shape each one is written in.
+        # slicelab's own names, deliberately: the lock is read by another tool, so
+        # a number has to mean the same thing whichever engine produced it, and the
+        # engine's own spelling rides along as that stat's `key`. Measured against
+        # this build's 393 stated config keys on 2026-10-05 -- none of these is one
+        # of them, with `layer_height` as the control. `objects_info` IS one, which
+        # is why it is not here and lives in the adapter instead.
+        "filament_mm",
+        "filament_cm3",
+        "filament_g",
+        "print_time_s",
+        "layers",
+        "key",
+        "value",
+        # `source` and `reason` are already declared above, for the report's own
+        # structural fields; a stat reuses them rather than inventing a synonym.
+        # Where a reported number came from, as a category rather than a key.
+        "gcode_footer",
+        "slicer_marker_count",
+        "mesh_info",
+        # Why a number that the engine did print is not recorded as one.
+        "filament_density_zero",
+        "container_carries_no_text_footer",
         "slicelab-readback-",
         # Where the engine slices before slicelab decides whether to hand it over
         # (D7). The same shape as the readback prefix above, and named for this

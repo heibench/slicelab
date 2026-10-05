@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Mapping
 from pathlib import Path
 
 from slicelab.adapters.base import ConfigLocation, EngineSpec, Invocation, OptionProbe, PresetQuery
 from slicelab.redact import REDACTED
+from slicelab.stats import DENSITY_ZERO, Stat
+from slicelab.vocab import (
+    FILAMENT_CM3,
+    FILAMENT_G,
+    FILAMENT_MM,
+    GCODE_FOOTER,
+    LAYERS,
+    PRINT_TIME_S,
+    SLICER_MARKER_COUNT,
+)
 
 
 def _options_from_help_fff(help_text: str, baseline: Mapping[str, str]) -> tuple[str, ...]:
@@ -107,6 +118,112 @@ _SENTINELS = (
     ("0x0,7x0,7x7,0x7", "0x0,9x0,9x9,0x9"),
     ("0.37,0.37", "0.53,0.53"),
 )
+
+
+def _duration_seconds(spelling: str) -> int | None:
+    """`24m 42s` as 1482. `None` when the engine spells it some other way.
+
+    Measured on 2.9.6: `estimated printing time (normal mode) = 24m 42s`. Longer
+    prints gain `h` and `d` segments, so all four are read and any unknown unit
+    makes the whole duration unreadable rather than partly read -- half a duration
+    is a wrong number, not a smaller one.
+    """
+    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+    total = 0
+    seen = False
+    for chunk in spelling.split():
+        if len(chunk) < 2 or chunk[-1] not in units or not chunk[:-1].isdigit():
+            return None
+        total += int(chunk[:-1]) * units[chunk[-1]]
+        seen = True
+    return total if seen else None
+
+
+def _footer_comments(text: str) -> dict[str, str]:
+    """Every `; key = value` comment line, last occurrence winning.
+
+    The stats and the configuration block are the same syntax, so both are read
+    here and the caller picks. Values are kept verbatim.
+    """
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.startswith("; "):
+            continue
+        key, separator, value = line[2:].partition(" = ")
+        if separator:
+            out[key.strip()] = value.strip()
+    return out
+
+
+def _mass(footer: Mapping[str, str]) -> Stat | None:
+    """The print's mass, or the recorded reason it is not a number.
+
+    `filament_density = 0` makes the engine report a weightless print. Measured on
+    2026-10-05 with the MK3S triple and `--filament-density=0`: the extrusion is an
+    unchanged `; filament used [mm] = 1251.87`, the per-filament `; filament used
+    [g]` line disappears entirely, and `; total filament used [g]` still prints
+    `0.00`. So the density is the detector and the zero is the symptom -- reading
+    the zero would mean trusting the number this exists to refuse.
+
+    Any density being zero is enough: the total is a sum, and a sum missing one
+    filament's mass is not the print's mass.
+    """
+    key = "total filament used [g]"
+    if key not in footer:
+        return None
+    declared = footer.get("filament_density", "")
+    densities = [part.strip() for part in declared.split(",") if part.strip()]
+    try:
+        weightless = any(float(part) == 0 for part in densities)
+    except ValueError:
+        weightless = False
+    if not densities or weightless:
+        return Stat(source=GCODE_FOOTER, key=f"; {key}", reason=DENSITY_ZERO)
+    try:
+        return Stat(source=GCODE_FOOTER, key=f"; {key}", value=float(footer[key]))
+    except ValueError:
+        return None
+
+
+def _read_artifact_stats(text: str) -> Mapping[str, Stat]:
+    """What a sliced PrusaSlicer artifact says about itself.
+
+    A field is absent when the engine printed nothing slicelab could read, and
+    present-with-a-reason when it printed something that is not a measurement. The
+    difference matters to whoever reads the lock: the first says this engine does
+    not report it, the second says it reported it and the number is unusable.
+    """
+    footer = _footer_comments(text)
+    stats: dict[str, Stat] = {}
+
+    for field, key in ((FILAMENT_MM, "filament used [mm]"), (FILAMENT_CM3, "filament used [cm3]")):
+        if key in footer:
+            with contextlib.suppress(ValueError):
+                stats[field] = Stat(source=GCODE_FOOTER, key=f"; {key}", value=float(footer[key]))
+
+    mass = _mass(footer)
+    if mass is not None:
+        stats[FILAMENT_G] = mass
+
+    spelled = footer.get("estimated printing time (normal mode)")
+    if spelled is not None:
+        seconds = _duration_seconds(spelled)
+        if seconds is not None:
+            stats[PRINT_TIME_S] = Stat(
+                source=GCODE_FOOTER,
+                key="; estimated printing time (normal mode)",
+                value=seconds,
+            )
+
+    # No layer-count field exists. Measured on 2026-10-05: a 20 mm cube at 0.2 mm
+    # emits `;LAYER_CHANGE` 100 times and no key reports 100, so counting the
+    # marker is the only source -- and `slicer_marker_count` says so in the lock
+    # rather than letting a counted number pass as one the engine stated.
+    marker = text.count(";LAYER_CHANGE")
+    if marker:
+        stats[LAYERS] = Stat(source=SLICER_MARKER_COUNT, key=";LAYER_CHANGE", value=marker)
+
+    return stats
 
 
 def _ask_for_a_slice(model: Path, artifact: Path, readback: Path) -> Invocation:
@@ -235,6 +352,7 @@ SPEC = EngineSpec(
     # `; ge`, with two.
     binary_container_magic=b"GCDE",
     compose_slice=_ask_for_a_slice,
+    read_artifact_stats=_read_artifact_stats,
     read_readback=_read_ini,
     redact_readback=_redact_ini,
     preset_query=PresetQuery(argv=("--query-printer-models",), root_key="printer_models"),

@@ -7,6 +7,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from slicelab.stats import Stat
+
 __all__ = [
     "Invocation",
     "ConfigLocation",
@@ -351,6 +353,20 @@ class EngineSpec:
 
     All three paths are returned in `paths`, because a sandboxed engine must be
     granted the model it reads as well as the two files it writes (D19).
+    """
+
+    read_artifact_stats: Callable[[str], Mapping[str, Stat]] | None = None
+    """The artifact's own text -> the numbers it reports, each with its provenance.
+
+    Engine-side because the keys are the engine's and the two do not agree on them:
+    PrusaSlicer emits no layer count at all and has to be counted, where Orca states
+    one. The lock's field names are slicelab's (`vocab.REPORTED_STATS`) and every
+    value carries the engine's own key beside it, which is what makes the mapping
+    checkable against the artifact rather than taken on trust.
+
+    `None` means this engine has no measured way to be read, and the lock records no
+    artifact-derived stat rather than an empty one. Called only for a text container:
+    `GCDE` carries no text footer (D10), and the core decides that, not the adapter.
     """
 
     compose_base: Callable[[Mapping[str, str]], Invocation] | None = None
