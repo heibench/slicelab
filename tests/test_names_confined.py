@@ -34,6 +34,7 @@ CORE_MODULE_NAMES = (
     "intent.py",
     "digest.py",
     "geometry.py",
+    "lock.py",
     "plan.py",
     "preflight.py",
     "promote.py",
@@ -173,6 +174,24 @@ DECLARED_VOCABULARY = frozenset(
         # against this build's 393 stated keys on 2026-10-05; none is one of them.
         "substitutions",
         "artifact_header_not_recognised",
+        # TOML's own grammar, from the lock's emitter. Not domain vocabulary: the
+        # lock's field names are assembled by its caller and declared above, and
+        # `slicelab/lock.py` names none of them -- it is handed a document and
+        # serialises it. Declaring these keeps that module inside both this scan and
+        # the live engine-key cross-check, which excluding it would not. Checked
+        # against this build's 393 stated keys on 2026-10-05: none is one of them.
+        "true",
+        "false",
+        "inf",
+        "-inf",
+        "\\n",
+        "\\t",
+        "\\r",
+        "\\b",
+        "\\f",
+        "\\u",
+        "04X",
+        "^[A-Za-z0-9_-]+$",
         "slicelab-readback-",
         # Where the engine slices before slicelab decides whether to hand it over
         # (D7). The same shape as the readback prefix above, and named for this
