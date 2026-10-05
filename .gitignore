@@ -40,3 +40,11 @@ result.json
 .DS_Store
 .idea/
 .vscode/
+
+# Agent-local configuration: per-developer, never part of the package. Listed
+# here because an agent sandbox can bind a device node over each of these paths
+# inside the worktree, and `git ls-files --others` reports one -- which both
+# `ruff` and the D11 sdist guard then read as a file of this repository. To
+# track a real `.mcp.json` one day, drop the line; it is not tracked today.
+.claude/
+.mcp.json
