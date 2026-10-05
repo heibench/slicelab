@@ -396,6 +396,18 @@ class EngineSpec:
     mesh bounds are model coordinates and this is the plate.
     """
 
+    normalize_artifact: Callable[[str], tuple[str, int]] | None = None
+    """The artifact's text -> that text with its run-to-run variation removed, and how
+    many replacements were made.
+
+    The count is the contract. D9 reads a zero as "this is not the format the rule was
+    measured against" and withholds the normalized hash, so an adapter must not report
+    a substitution it did not make.
+
+    `None` means this engine has no measured normalization and the lock carries no
+    normalized hash. `raw_sha256` is unaffected: that one is slicelab hashing bytes.
+    """
+
     compose_base: Callable[[Mapping[str, str]], Invocation] | None = None
     """The authored `[<engine>.base]` table -> the argv that loads those presets.
 

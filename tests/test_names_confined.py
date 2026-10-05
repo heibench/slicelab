@@ -167,6 +167,12 @@ DECLARED_VOCABULARY = frozenset(
         "name",
         "engine_described_no_mesh",
         "artifact_stated_no_placement",
+        # D9's two hashes. `substitutions` travels with the normalized digest because
+        # the count is what makes it interpretable: 1 says the header was found, 0
+        # says the pattern matched nothing and the digest is withheld. Checked
+        # against this build's 393 stated keys on 2026-10-05; none is one of them.
+        "substitutions",
+        "artifact_header_not_recognised",
         "slicelab-readback-",
         # Where the engine slices before slicelab decides whether to hand it over
         # (D7). The same shape as the readback prefix above, and named for this
