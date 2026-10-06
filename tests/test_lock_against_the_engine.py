@@ -8,6 +8,7 @@ binary-container case recording what it could not establish rather than omitting
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -258,3 +259,27 @@ def test_a_clean_run_records_both_streams_including_an_empty_one(engine, tmp_pat
     assert streams["stdout"], "a slice prints progress at least"
     assert streams["stderr"] == []
     assert not any("warning" in line.lower() for line in streams["stdout"])
+
+
+def test_the_lock_names_what_the_promotion_displaced(engine, tmp_path: Path) -> None:
+    """D7's `destination_prehash`, in the lock rather than only in the report.
+
+    "This file is here" does not establish "this run wrote it", and the lock is the
+    record that has to survive the terminal scrolling. An mtime check was measured and
+    rejected for this: 198 of 200 tmpfs writes had identical `st_mtime_ns`.
+    """
+    _cube(tmp_path / "part.stl")
+    previous = tmp_path / "part.gcode"
+    previous.write_bytes(b"PREVIOUS-ARTIFACT\n")
+    expected = hashlib.sha256(previous.read_bytes()).hexdigest()
+
+    document = _read(_slice(tmp_path))
+
+    assert document["artifact"]["destination_prehash"] == expected
+    assert document["artifact"]["raw_sha256"] != expected, "the new artifact replaced it"
+
+
+def test_a_lock_for_a_fresh_destination_records_no_prehash(engine, tmp_path: Path) -> None:
+    """The control. Absent means nothing was there, which is a different claim from
+    "something was there and slicelab did not look"."""
+    assert "destination_prehash" not in _read(_slice(tmp_path))["artifact"]
