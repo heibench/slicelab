@@ -139,12 +139,29 @@ def test_a_stock_triple_slices_and_the_artifact_is_promoted(engine, tmp_path: Pa
     assert "lock written to" in done.stdout, done.stdout
 
 
-def test_an_object_outside_the_print_volume_hands_over_nothing(engine, tmp_path: Path) -> None:
-    """[V4]: exit 0, a complete configuration, and no G-code.
+@pytest.mark.parametrize(
+    ("override", "says"),
+    [
+        ("scale = 30", "print volume"),
+        ("layer-height = 0.5", "nozzle diameter"),
+        ("extrusion-width = 0.05", "too low to be printable"),
+    ],
+    ids=["outside the volume", "layer over nozzle", "extrusion too thin"],
+)
+def test_a_run_that_writes_no_gcode_hands_over_nothing(
+    engine, tmp_path: Path, override: str, says: str
+) -> None:
+    """[V4]'s shape, from three independent causes.
 
-    The engine's own exit status says the run succeeded. The gate asks the FILE.
+    The engine's own exit status says each run succeeded. The gate asks the FILE.
+
+    V4 was the only one on record; the other two were measured on 2026-10-05 and are
+    here because a gate verified against a single cause is one that could be
+    special-cased to that cause without anything noticing. All three exit 0, write no
+    G-code, and put their reason on stderr -- and the first writes a complete
+    configuration anyway, because `--save` runs before the slice block.
     """
-    intent = _intent(tmp_path, "scale = 30")
+    intent = _intent(tmp_path, override)
     previous = tmp_path / "part.gcode"
     previous.write_text("PREVIOUS-ARTIFACT\n", encoding="utf-8")
 
@@ -154,7 +171,7 @@ def test_an_object_outside_the_print_volume_hands_over_nothing(engine, tmp_path:
     assert done.stderr.startswith("incomplete"), done.stderr
     assert "wrote no artifact" in done.stderr, done.stderr
     # The engine's own words, carried rather than discarded (D28).
-    assert "print volume" in done.stderr, done.stderr
+    assert says in done.stderr, done.stderr
     # D7: non-destructive. The destination is never deleted and never half-written.
     assert previous.read_text(encoding="utf-8") == "PREVIOUS-ARTIFACT\n", (
         "a run that reached no verdict overwrote the author's artifact"
