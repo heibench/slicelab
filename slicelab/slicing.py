@@ -202,6 +202,7 @@ def slice_intent(intent_path: Path) -> Sliced:
                 text=_artifact_text(plan.staged_artifact, container),
                 readback=readback,
                 prehash=prehash,
+                completed=completed,
             )
             try:
                 promote((dumps(document) + "\n").encode("utf-8"), plan.lock_destination)
@@ -269,6 +270,28 @@ def _mesh_facts(spec, found, model: Path) -> tuple[MeshFacts | None, str | None]
     return facts, None if facts is not None else MESH_NOT_DESCRIBED
 
 
+def _engine_output(completed) -> dict[str, object]:
+    """Both of the engine's streams, verbatim and unclassified.
+
+    #7 asks for this because the artifact does not carry it: a run can exit 0, produce
+    a perfectly good G-code file, and say something on stdout that exists nowhere in
+    that file. Measured 2026-10-05 -- `perimeters = 0` with `fill-density = 0` gives
+    rc=0, a real artifact, and `print warning: Empty layer between 0.8 and 19.` on
+    stdout. Nothing in the G-code mentions it, so it is gone unless captured here.
+
+    **Not** called `warnings`, and not filtered down to the lines that look like one.
+    2.9.6 interleaves progress percentages with real diagnostics on one stream, so
+    labelling every line a warning would be false and selecting the warnings would be
+    slicelab deciding which of another tool's lines matter -- by matching its text,
+    which is the regress this project has already lost twice. The streams are recorded
+    as streams and the reader judges. Cheap: a stock slice is 11 lines and 600 bytes.
+    """
+    return {
+        "stdout": [line for line in (completed.stdout or "").splitlines() if line.strip()],
+        "stderr": [line for line in (completed.stderr or "").splitlines() if line.strip()],
+    }
+
+
 def _lock_document(
     *,
     intent_path: Path,
@@ -280,6 +303,7 @@ def _lock_document(
     text: str | None,
     readback: Redacted,
     prehash: str | None,
+    completed,
 ) -> dict[str, object]:
     """Assemble `slice.lock`, and record every gap rather than omitting it.
 
@@ -388,6 +412,7 @@ def _lock_document(
         "geometry": geometry,
         "stats": stats,
         "readback": {"path": str(plan.destination), "redacted_keys": list(readback.keys)},
+        "engine_output": _engine_output(completed),
         "unknowns": unknowns,
         "effective_config": dict(spec.read_readback(readback.text)) if spec.read_readback else {},
     }

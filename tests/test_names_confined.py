@@ -204,6 +204,11 @@ DECLARED_VOCABULARY = frozenset(
         "fields",
         "lock",
         "lock_destination",
+        # Both of the engine's streams, recorded unclassified. Not called `warnings`:
+        # 2.9.6 interleaves progress with diagnostics on one stream, so labelling every
+        # line a warning would be false and selecting the warnings would be slicelab
+        # matching another tool's text to decide which of its lines matter.
+        "engine_output",
         ".lock",
         "artifact.normalized",
         "artifact.normalized.sha256",

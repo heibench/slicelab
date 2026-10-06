@@ -200,6 +200,33 @@ An empty array is a real answer and means nothing was unestablished. Codes in us
 Branch on `code`. `detail` is prose and may be reworded; `fields` names what is
 missing so a reader does not have to infer it from an absent key.
 
+## `[engine_output]`
+
+| key | type |
+| --- | --- |
+| `stdout` | array of strings |
+| `stderr` | array of strings |
+
+Both streams the engine wrote during the run, verbatim, with blank lines dropped and
+nothing else removed. An empty array is a real answer.
+
+This exists because the artifact does not carry it. Measured: `perimeters = 0` with
+`fill-density = "0%"` exits 0, produces a real G-code file, and prints
+`print warning: Empty layer between 0.8 and 19.` on stdout — and the word "warning"
+appears nowhere in the artifact. Captured at slice time or gone.
+
+It is **not** called `warnings` and it is not filtered to the lines that look like one.
+The same stream carries progress percentages, so labelling every line a warning would
+be false, and selecting the warnings means matching the engine's text to decide which
+of its lines matter — which is a rule that is wrong again the first time the engine
+rewords anything. A consumer looking for diagnostics should match on the engine's own
+prefix and accept that it is matching text.
+
+A warning here does **not** change the outcome. slicelab's question is whether the
+engine honoured the intent; in the measured case it honoured it exactly, and the author
+asked for a shell with no infill. Whether the result is a good idea is not a thing
+slicelab claims to know.
+
 ## `[effective_config]`
 
 The engine's resolved configuration document, embedded — every key it emitted, with

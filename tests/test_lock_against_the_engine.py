@@ -218,3 +218,43 @@ def test_a_binary_container_records_what_it_cannot_establish(engine, tmp_path: P
     # The container was the engine's choice, not slicelab's: the artifact is the one
     # the author asked for, bytes and all.
     assert (tmp_path / "part.gcode").read_bytes()[:4] == b"GCDE"
+
+
+def test_the_engine_s_own_output_is_kept_because_the_artifact_does_not_carry_it(
+    engine, tmp_path: Path
+) -> None:
+    """#7: "engine warnings live on stdout and not in the G-code, so they must be
+    captured at slice time or they are gone".
+
+    Measured 2026-10-05: `perimeters = 0` with `fill-density = 0` exits 0, writes a
+    real artifact, and says `print warning: Empty layer between 0.8 and 19.` on stdout.
+    The engine honoured the intent exactly as authored, so the outcome stays `sliced` --
+    slicelab's question is whether the request was honoured, not whether the result is
+    a good idea. What it owes the author is not losing what the engine said.
+    """
+    # `fill-density = "0%"`, not `0`: the engine resolves a bare `0` to `0%` and the
+    # run is then `incomplete` with no lock to carry anything (measured -- another
+    # instance of the coercion family [V1] is named for). Asking in the engine's own
+    # spelling is applied cleanly, which is what D28 is about.
+    lock = _slice(tmp_path, overrides='perimeters = 0\nfill-density = "0%"')
+    document = _read(lock)
+
+    assert document["artifact"]["raw_sha256"], "this run did produce an artifact"
+    streams = document["engine_output"]
+    warned = [line for line in streams["stdout"] if "warning" in line.lower()]
+    assert warned, f"the engine's warning was not captured: {streams}"
+    assert "Empty layer" in " ".join(streams["stdout"])
+
+    # The artifact itself says nothing about it, which is why the lock has to.
+    artifact = (tmp_path / "part.gcode").read_text(encoding="utf-8", errors="replace")
+    assert "Empty layer" not in artifact
+    assert "print warning" not in artifact
+
+
+def test_a_clean_run_records_both_streams_including_an_empty_one(engine, tmp_path: Path) -> None:
+    """An empty stderr is a real answer and not a missing field: a reader that cannot
+    tell "the engine said nothing" from "slicelab did not look" has to guess."""
+    streams = _read(_slice(tmp_path))["engine_output"]
+    assert streams["stdout"], "a slice prints progress at least"
+    assert streams["stderr"] == []
+    assert not any("warning" in line.lower() for line in streams["stdout"])
