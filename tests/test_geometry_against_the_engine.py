@@ -29,7 +29,7 @@ EDGE = 20.0
 
 def _engine(usable_engines: list[EngineSpec]) -> EngineSpec:
     for spec in usable_engines:
-        if spec.compose_mesh_info is not None and spec.read_mesh_info is not None:
+        if spec.compose_slice is not None and spec.read_mesh_info is not None:
             return spec
     skip_or_fail("no engine that has declared how to describe a mesh is installed")
 
@@ -39,28 +39,43 @@ def engine(usable_engines: list[EngineSpec]) -> EngineSpec:
     return _engine(usable_engines)
 
 
-def test_the_engine_s_mesh_box_is_the_cube_the_suite_wrote(engine, tmp_path: Path) -> None:
-    """Model coordinates: a cube written at the origin reads 0..20 on every axis.
+def test_the_slice_run_describes_the_mesh_it_sliced(engine, tmp_path: Path) -> None:
+    """Model coordinates, from the same invocation that produced the artifact.
 
-    The plate footprint in the next test is the same cube at (125, 105). The two
-    numbers disagreeing is the whole reason both fields exist.
+    `--info` rides in the slice argv (`notes/critique.md` G7.3), so this asserts two
+    things at once: the engine really does answer both in one run, and the parser reads
+    its answer out of a stream that also carries progress lines. A second invocation
+    would describe whatever is at that path when it runs, which on a long slice need not
+    be what was sliced.
+
+    The plated footprint in the next test is the same cube at a bed position. The two
+    numbers disagreeing is why both fields exist.
     """
     mesh = _cube(tmp_path / "part.stl")
     found = discover(engine)
     if found.form is None:
         skip_or_fail(f"{engine.name} did not start: {found.reason}")
 
-    invocation = engine.compose_mesh_info(mesh)
+    invocation = engine.compose_slice(mesh, tmp_path / "out.gcode", tmp_path / "out.ini")
     done = subprocess.run(
-        argv_for(found.form, invocation.argv, invocation.paths),
+        argv_for(found.form, invocation.argv, invocation.paths)
+        + [
+            "--printer-profile",
+            "Original Prusa i3 MK3S & MK3S+",
+            "--print-profile",
+            "0.20mm QUALITY @MK3",
+            "--material-profile",
+            "Prusament PLA",
+        ],
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=1800,
     )
     assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    assert (tmp_path / "out.gcode").is_file(), "--info must not cost the artifact"
 
     facts = engine.read_mesh_info(done.stdout)
-    assert facts is not None, f"the engine described nothing slicelab could read: {done.stdout!r}"
+    assert facts is not None, f"the run described nothing slicelab could read: {done.stdout!r}"
     assert facts.source == MESH_INFO
     assert facts.min_mm == (0.0, 0.0, 0.0)
     assert facts.max_mm == (EDGE, EDGE, EDGE)

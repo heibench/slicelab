@@ -122,14 +122,14 @@ lock. The README's git model says you commit this file, so read it as configurat
 rather than as a public artifact until you have looked at it -- a credential key a
 future build adds is one nothing has measured yet.
 
-`slice` writes to two paths you chose, so it refuses before running the engine if
-the G-code collides with the readback, with the mesh, or with the intent file --
-one run writing the artifact and the readback to one path was measured to report
-success over a file holding the wrong one. The engine writes only into a scratch directory
+`slice` writes three files -- the G-code you named, the readback, and the lock -- and
+the last two are named after your intent. So it refuses before running the engine if the
+G-code collides with any of them or with the mesh: one run writing the artifact and the
+readback to one path was measured to report success over a file holding the wrong one. The engine writes only into a scratch directory
 slicelab owns; both of your paths are written by slicelab, atomically, replacing
 rather than truncating.
 
-The two are not written under the same rule, and the difference matters if you
+The three are not written under the same rule, and the difference matters if you
 are relying on one. **The G-code is written only for an outcome slicelab stands
 behind** — `sliced`, or `empty` where there was nothing to verify. **The readback
 is written on any outcome that was adjudicated at all**, `incomplete` included

@@ -370,22 +370,23 @@ class EngineSpec:
     `GCDE` carries no text footer (D10), and the core decides that, not the adapter.
     """
 
-    compose_mesh_info: Callable[[Path], Invocation] | None = None
-    """The mesh -> the argv that makes this engine describe it without slicing it.
-
-    A second invocation, and deliberately a cheap one: PrusaSlicer's `--info` answers
-    in about a third of a second and slices nothing, so it cannot be mistaken for the
-    run that produced the artifact the way a second `--save` could (D7).
-
-    `None` means the lock carries no mesh facts. It still carries slicelab's own hash
-    of the mesh file, so the input is identified either way.
-    """
-
     read_mesh_info: Callable[[str], MeshFacts | None] | None = None
-    """What that invocation printed -> the mesh's bounds and fingerprint.
+    """The slice run's own stdout -> the mesh's bounds and fingerprint.
+
+    `--info` rides in the slice invocation (`notes/critique.md` G7.3), so these facts
+    describe the mesh the artifact came from rather than whatever is at that path when
+    a second call runs.
 
     `None` from the callable means the engine answered and slicelab could not read a
     box out of it, which is recorded as a reason rather than as an absence.
+    """
+
+    plated_height: Callable[[str], Stat | None] | None = None
+    """The artifact's own text -> how tall the print stands on the plate.
+
+    A `Stat` because that is what it is: a number with a source and the engine's own key
+    beside it. Separate from `read_placement` because the engine reports the footprint
+    as a polygon with no Z, and combining the two would make a box it never stated.
     """
 
     read_placement: Callable[[str], Placement | None] | None = None

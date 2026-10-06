@@ -13,10 +13,11 @@ that exist answer different questions:
   `[[135,115],[115,115],[115,95],[135,95]]` -- a 20 mm square centred at
   (125, 105), which is the middle of an MK3S bed and tells you nothing about Z.
 
-So both are recorded, each named for what it is, and the plated height stays its own
-field sourced from the engine's own `; max_layer_z` rather than being folded into a
-box the engine never reported. Synthesising one plated 3D box out of a 2D polygon
-and a separate height would produce a number that is partly measured and partly
+So both are recorded, each named for what it is, and the plated height is a third field
+of its own -- `plated_height_mm`, from the engine's own `; max_layer_z` -- rather than a
+Z axis bolted onto a footprint the engine reported in two dimensions. Synthesising one
+plated 3D box out of a 2D polygon and a separate height would produce a number that is
+partly measured and partly
 derived with nothing marking which half.
 
 The mesh's identity does not depend on the engine at all: `mesh_sha256` is slicelab

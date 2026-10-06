@@ -1,7 +1,7 @@
 """Where the artifact is allowed to land, decided before the engine is asked.
 
 `plan_slice` composes one invocation that both slices and dumps the resolved
-configuration, which means one run writes to two paths the author chose separately.
+configuration, which means one run writes to three paths the author chose separately.
 Nothing stops those from being the same path, or from being an input to the run --
 and each collision was measured to produce `sliced` at exit 0 with the declared
 path holding something that is not this run's G-code:

@@ -156,8 +156,9 @@ DECLARED_VOCABULARY = frozenset(
         # with `layer_height` as the control -- none is one of them. `manifold` is
         # also a word `--info` uses, which is a different namespace from the config
         # keys D26 scopes to, and is an ordinary geometry term either way; the
-        # engine's own `max_layer_z` is a config key, so the plated height is named
+        # engine's own `max_layer_z` is a config key, so `plated_height_mm` is named
         # for what it measures and carries that key as its provenance instead.
+        "plated_height_mm",
         "min_mm",
         "max_mm",
         "facets",
@@ -209,6 +210,11 @@ DECLARED_VOCABULARY = frozenset(
         # line a warning would be false and selecting the warnings would be slicelab
         # matching another tool's text to decide which of its lines matter.
         "engine_output",
+        # The lock this run removed because it described the artifact it replaced, and
+        # the two field-path forms an `unknowns` entry uses to point at what is missing.
+        "stale_lock_removed",
+        ".value",
+        "stats.*",
         ".lock",
         "artifact.normalized",
         "artifact.normalized.sha256",

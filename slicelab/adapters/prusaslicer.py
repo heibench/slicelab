@@ -230,18 +230,13 @@ def _read_artifact_stats(text: str) -> Mapping[str, Stat]:
     return stats
 
 
-def _ask_about_a_mesh(model: Path) -> Invocation:
-    """`--info <mesh>`: describe the mesh without slicing it.
-
-    Measured on 2.9.6, 2026-10-05: rc=0 in about a third of a second, and the answer
-    goes to stdout as `key = value` lines under a `[<basename>]` heading. It slices
-    nothing, so it cannot be confused with the run that produced the artifact.
-    """
-    return Invocation(argv=("--info", str(model)), paths=frozenset({str(model)}))
-
-
 def _read_mesh_info(text: str) -> MeshFacts | None:
-    """`--info` output as the mesh facts, or `None` when it said nothing usable.
+    """The slice run's own stdout as the mesh facts, or `None` when it said nothing.
+
+    `--info` is part of the slice invocation, so these facts come from the run that
+    produced the artifact rather than from a later look at the file. The stream also
+    carries progress lines (`10 => Processing triangulated mesh`) and a `[<basename>]`
+    heading; neither contains ` = `, so neither reaches the fields below.
 
     The six bounds are required together: three axes with one missing is not a box,
     and reporting a partial one would be a shape nobody measured. The fingerprint
@@ -281,6 +276,23 @@ def _read_mesh_info(text: str) -> MeshFacts | None:
         volume_mm3=volume,
         manifold=manifold,
     )
+
+
+def _plated_height(text: str) -> Stat | None:
+    """How tall the print stands on the plate, from the engine's own `; max_layer_z`.
+
+    Its own field rather than a third axis on `plated_footprint`: the engine reports
+    the footprint as a 2D polygon and this as a separate number, so folding them into
+    one box would produce a value half measured and half assembled with nothing saying
+    which half.
+    """
+    footer = _footer_comments(text)
+    if "max_layer_z" not in footer:
+        return None
+    try:
+        return Stat(source=GCODE_FOOTER, key="; max_layer_z", value=float(footer["max_layer_z"]))
+    except ValueError:
+        return None
 
 
 def _read_placement(text: str) -> Placement | None:
@@ -357,8 +369,23 @@ def _ask_for_a_slice(model: Path, artifact: Path, readback: Path) -> Invocation:
     # config and no artifact -- produced by an argv bug rather than by a bad request,
     # which is the strongest argument for the gate there is: slicelab's own mistake
     # looks identical to the engine's.
+    # `--info` rides along in the SAME invocation, which `notes/critique.md` G7.3
+    # measured working and asked for in terms -- "state it, so nobody later
+    # 'optimizes' it into a second call whose result is not gated on the artifact".
+    # Re-measured 2026-10-06: rc=0, a 604407-byte artifact, a 14757-byte
+    # configuration, and 13 mesh-fact lines on stdout from one run. A second call
+    # would describe whatever the mesh is when it runs, which on a four-minute slice
+    # need not be the mesh the artifact came from -- D7's own argument, applied to the
+    # input instead of the output.
     return Invocation(
-        argv=("--export-gcode", str(model), "-o", str(artifact), f"--save={readback}"),
+        argv=(
+            "--export-gcode",
+            str(model),
+            "-o",
+            str(artifact),
+            f"--save={readback}",
+            "--info",
+        ),
         paths=frozenset({str(model), str(artifact), str(readback)}),
     )
 
@@ -461,9 +488,9 @@ SPEC = EngineSpec(
     binary_container_magic=b"GCDE",
     compose_slice=_ask_for_a_slice,
     read_artifact_stats=_read_artifact_stats,
-    compose_mesh_info=_ask_about_a_mesh,
     read_mesh_info=_read_mesh_info,
     read_placement=_read_placement,
+    plated_height=_plated_height,
     normalize_artifact=_normalize_artifact,
     read_readback=_read_ini,
     redact_readback=_redact_ini,
