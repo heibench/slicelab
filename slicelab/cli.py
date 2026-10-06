@@ -458,6 +458,13 @@ def _slice(intent_path: Path) -> int:
         detail.append(f"artifact written to {sliced.artifact}")
         if sliced.lock is not None:
             detail.append(f"lock written to {sliced.lock}")
+        if sliced.stale_lock_removed is not None:
+            # A file vanishing from the directory the README says you commit is not
+            # something to do quietly.
+            detail.append(
+                f"removed {sliced.stale_lock_removed}, which described the artifact "
+                "this run replaced"
+            )
         if sliced.destination_prehash is not None:
             # What was displaced, named rather than implied. "This file is here" does
             # not establish "this run wrote it" (D7).

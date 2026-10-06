@@ -213,8 +213,11 @@ def test_a_binary_container_records_what_it_cannot_establish(engine, tmp_path: P
     codes = [entry["code"] for entry in document["unknowns"]]
     assert CONTAINER_IS_BINARY in codes, codes
     entry = next(e for e in document["unknowns"] if e["code"] == CONTAINER_IS_BINARY)
+    # `stats.*` rather than `stats`: the field paths name what is missing, and `stats`
+    # itself is present as an empty table. Two of the doc's three absence cases would
+    # otherwise be identical on the wire.
     assert "artifact.normalized" in entry["fields"]
-    assert "stats" in entry["fields"]
+    assert "stats.*" in entry["fields"]
 
     # The container was the engine's choice, not slicelab's: the artifact is the one
     # the author asked for, bytes and all.
@@ -283,3 +286,66 @@ def test_a_lock_for_a_fresh_destination_records_no_prehash(engine, tmp_path: Pat
     """The control. Absent means nothing was there, which is a different claim from
     "something was there and slicelab did not look"."""
     assert "destination_prehash" not in _read(_slice(tmp_path))["artifact"]
+
+
+def test_a_re_slice_that_writes_no_lock_removes_the_one_that_described_the_old_artifact(
+    engine, tmp_path: Path
+) -> None:
+    """The stale-lock hazard D31 closed for the readback, closed for the lock.
+
+    Measured before the fix: run one with an override is `sliced` and locks artifact A;
+    run two with the override removed is `empty`, promotes artifact B, writes no lock
+    (D24) -- and the lock still claimed A, sitting beside the file it did not describe.
+    Re-running one `slice.toml` in one directory is the ordinary workflow, which is
+    exactly what D31 says armed it.
+    """
+    lock = _slice(tmp_path)
+    first = hashlib.sha256((tmp_path / "part.gcode").read_bytes()).hexdigest()
+    assert _read(lock)["artifact"]["raw_sha256"] == first
+
+    # The same intent with nothing asserted: `empty`, exit 3, artifact promoted.
+    intent = tmp_path / "slice.toml"
+    intent.write_text(
+        intent.read_text(encoding="utf-8").split("[prusaslicer.set]")[0], encoding="utf-8"
+    )
+    done = subprocess.run(
+        [sys.executable, "-m", "slicelab", "slice", str(intent)],
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+    assert done.returncode == 3, f"{done.stdout}\n{done.stderr}"
+
+    second = hashlib.sha256((tmp_path / "part.gcode").read_bytes()).hexdigest()
+    assert second != first, "the artifact was replaced, which is what makes the lock stale"
+    assert not lock.exists(), (
+        "a lock describing the artifact this run replaced survived beside the new one"
+    )
+    assert "removed" in done.stderr, done.stderr
+
+
+def test_the_lock_records_which_keys_were_actually_adjudicated(engine, tmp_path: Path) -> None:
+    """G1: the mechanism adjudicates the authored delta and only records the base, and
+    the design must say so. Without this a lock from a one-key intent and one from a
+    forty-key intent are indistinguishable while `effective_config` carries 393 keys."""
+    document = _read(_slice(tmp_path, overrides="perimeters = 3\nlayer-height = 0.15"))
+
+    verdicts = document["verdicts"]
+    assert {entry["option"] for entry in verdicts} == {"perimeters", "layer-height"}
+    for entry in verdicts:
+        assert entry["status"] == "applied"
+        assert entry["requested"]
+        assert entry["compared"], "G2: a reader must be able to check the comparison"
+        assert entry["observed"]
+    assert len(document["effective_config"]) > 300, "the base is recorded, not adjudicated"
+
+
+def test_the_plated_height_is_its_own_field(engine, tmp_path: Path) -> None:
+    """Claimed in four places before it existed. The engine reports the footprint as a
+    2D polygon and the height separately, so they stay separate."""
+    geometry = _read(_slice(tmp_path))["geometry"]
+
+    height = geometry["plated_height_mm"]
+    assert height["key"] == "; max_layer_z"
+    assert height["value"] > 0
+    assert "polygon" not in height, "the footprint and the height are not one box"

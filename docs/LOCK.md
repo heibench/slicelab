@@ -35,6 +35,10 @@ distinct on the wire:
 | the field is a table with `reason` and no `value` | the engine reported something that is not a measurement |
 | the field is missing **and** `unknowns` names it | slicelab could not establish it, and says why |
 
+`unknowns.fields` names **the thing that is missing**, not the table holding it: a
+withheld mass is `stats.filament_g.value`, because `stats.filament_g` itself is present
+and carries the reason. A whole absent group is a `*` path — `stats.*`.
+
 The second is the one worth dwelling on. `filament_g` with
 `reason = "filament_density_zero"` means the engine printed a mass and that mass was
 `0.00` because the filament profile declares no density. The extrusion length beside
@@ -84,7 +88,7 @@ emits none of them — and it is not the same as not having looked.
 | key | type | meaning |
 | --- | --- | --- |
 | `path` | string | where the G-code was promoted |
-| `container` | string | `gcode` or `bgcode`, sniffed from the file's first four bytes |
+| `container` | string | `gcode`, `bgcode`, or `undetermined` — sniffed from the file's own leading bytes |
 | `raw_sha256` | string | every byte of that file |
 | `destination_prehash` | string | sha256 of what this run displaced, absent when nothing was there |
 | `[artifact.normalized]` | table | see below |
@@ -113,9 +117,13 @@ exactly one line of 23422 — the generation timestamp — and the byte counts a
 identical, so comparing sizes would call the two files the same.
 
 A count of **0** means the pattern matched nothing, so the artifact is not in the
-format the rule was measured against. The hash is then withheld and the run is
-`incomplete` rather than `sliced` (D9) — which means no lock is written at all. Never
-a silent fallback to publishing the raw hash under the normalized name.
+format the rule was measured against. The run is then `incomplete` rather than `sliced`
+(D9), and since a lock is written only for `sliced`, **no lock exists at all** — so a
+reader never sees `[artifact.normalized]` without a `sha256`. Never a silent fallback to
+publishing the raw hash under the normalized name.
+
+That is why `artifact_header_not_recognised` is not in the code list below: it is a
+reason a lock is absent, not a code a lock can carry.
 
 The whole table is **absent** when the container carries no text footer, with
 `container_carries_no_text_footer` in `unknowns`. That is D10 and not a failure.
@@ -127,6 +135,7 @@ The whole table is **absent** when the container carries no text footer, with
 | `mesh_sha256` | string | — |
 | `[geometry.mesh_bbox]` | table | **model** |
 | `[geometry.plated_footprint]` | table | **plate** |
+| `[geometry.plated_height_mm]` | stat table | **plate** |
 
 There is no field called `bounding_box`, deliberately. The two boxes answer different
 questions and a reader who conflates them gets a part in the wrong place with a lock
@@ -142,6 +151,12 @@ slicelab computed sitting beside its own inputs invites a reader to check one ag
 the other and call the agreement evidence. `manifold` is absent rather than `false`
 when the engine's spelling is unrecognised: a mesh reported in words slicelab does not
 know is not a mesh reported as open.
+
+`plated_height_mm` is how tall the print stands, from the engine's own `; max_layer_z`,
+in the same shape as a reported stat. Its own field rather than a third axis on the
+footprint: the engine reports a 2D polygon and this number separately, so folding them
+into one box would give a value half measured and half assembled with nothing marking
+which half.
 
 `plated_footprint` carries `source`, `key` and `objects`, each an array-of-tables entry
 with `name` and `polygon`. **Plate** coordinates, XY only — the engine reports no
@@ -193,12 +208,33 @@ An empty array is a real answer and means nothing was unestablished. Codes in us
   artifact-derived stat and no normalized hash. D10 makes `verify --tier artifact`
   exit 2 on this.
 - `filament_density_zero` — a mass was printed and is not a measurement.
-- `artifact_header_not_recognised` — normalization matched nothing.
 - `engine_described_no_mesh` — no mesh facts; `mesh_sha256` is still present.
 - `artifact_stated_no_placement` — the artifact named no object placement.
 
 Branch on `code`. `detail` is prose and may be reworded; `fields` names what is
 missing so a reader does not have to infer it from an absent key.
+
+## `[[verdicts]]`
+
+One entry per key the intent authored — the only part of `[effective_config]` that was
+*adjudicated* rather than merely recorded:
+
+| key | type |
+| --- | --- |
+| `option` | string — the engine's own option name, as authored |
+| `status` | string — `applied`, `coerced`, `absent`, … |
+| `requested` | string — what the intent asked for |
+| `compared` | array of strings — the config keys the comparison looked at |
+| `observed` | array of strings — what those keys came back as |
+| `reason` | string |
+
+`compared` and `observed` are here so a reader can check the comparison rather than
+reconstruct it and get a different answer. Without this table a lock from a one-key
+intent and one from a forty-key intent are indistinguishable, while `effective_config`
+sits beside them with several hundred keys none of which it says anything about.
+
+An empty array would mean nothing was asserted — which is the `empty` outcome, and that
+run writes no lock, so it should not appear.
 
 ## `[engine_output]`
 
@@ -209,6 +245,12 @@ missing so a reader does not have to infer it from an absent key.
 
 Both streams the engine wrote during the run, verbatim, with blank lines dropped and
 nothing else removed. An empty array is a real answer.
+
+**Outside the redaction boundary.** These are the engine's own words and slicelab does
+not rewrite them, so they can carry absolute paths — including slicelab's own scratch
+directory, which holds a username and no longer exists by the time you read it — and
+`notes/evidence.md` V15 records this engine echoing configuration into stdout. Redaction
+covers `effective_config`; it does not cover this. Look before publishing a lock.
 
 This exists because the artifact does not carry it. Measured: `perimeters = 0` with
 `fill-density = "0%"` exits 0, produces a real G-code file, and prints

@@ -26,6 +26,7 @@ that slicelab withheld outlives the run at a path the report names.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import shutil
 import tempfile
@@ -94,6 +95,15 @@ class Sliced:
     actually has.
     """
 
+    stale_lock_removed: Path | None
+    """A lock this run deleted because it described the artifact it replaced.
+
+    `empty` hands its artifact over and writes no lock (D24), so a lock left from an
+    earlier run would claim the file that was just overwritten. Removing it is reported
+    rather than silent: a file disappearing from the directory the README says you
+    commit is not something to do quietly.
+    """
+
     lock: Path | None
     """Where `slice.lock` was written, or `None` when none was.
 
@@ -139,6 +149,12 @@ def slice_intent(intent_path: Path) -> Sliced:
     keep = False
     try:
         plan = plan_slice(intent, spec, staged_artifact, scratch / "readback")
+        # Before the engine runs, both of them. Afterwards is too late twice over: the
+        # read happens after the artifact has been handed over, so a failure arrives in
+        # a report claiming nothing moved, and on a four-minute slice an author's CAD
+        # re-export would be hashed instead of the mesh that was sliced.
+        intent_sha256 = raw_sha256(intent_path)
+        mesh_sha256_at_launch = mesh_sha256(plan.model) if plan.model is not None else None
         completed = run(
             argv_for(found.form, plan.argv, plan.paths),
             capture=(spec.run_record.name,) if spec.run_record else (),
@@ -156,7 +172,35 @@ def slice_intent(intent_path: Path) -> Sliced:
         container = sniff(plan.staged_artifact, spec.binary_container_magic)
         adjudication = diff(plan.requested, _parse(text, spec), name_map)
 
+        # The ARTIFACT's text, not the configuration dump: `text` above is the ini. The
+        # first version of this check normalized the ini against the G-code header
+        # pattern, found nothing, and refused every run.
+        artifact_text = _artifact_text(plan.staged_artifact, container)
+        if artifact_text is not None and spec.normalize_artifact is not None:
+            # D9: a substitution count of 0 means this is not the format the rule was
+            # measured against, so the hash is withheld AND the run is `incomplete` --
+            # never a silent fallback to hashing raw bytes under the normalized name.
+            # With promote-on-sliced that also means nothing is handed over, which is
+            # the point: the engine changing its header is when to stop rather than
+            # ship a lock claiming less than a reader will assume. A binary container
+            # is not this case; D10 never attempts normalization at all.
+            unreadable = (
+                normalized_sha256(artifact_text, spec.normalize_artifact).reason is not None
+            )
+        else:
+            unreadable = False
+        if unreadable:
+            raise ResolveIncomplete(
+                f"{spec.name} wrote an artifact whose header slicelab cannot "
+                "recognise, so it cannot be compared against another run: "
+                f"{_diagnosis(completed)}"
+            )
+
         prehash = _prehash(plan.artifact_destination)
+        # Read once, before anything is promoted: the lock hashes these same bytes, so
+        # re-reading the destination afterwards would be a second filesystem call that
+        # can fail after the hand-over.
+        payload = plan.staged_artifact.read_bytes()
         # The readback goes first, and unconditionally. It is evidence for a verdict of
         # any kind, and going second is how a run that exits 4 promoting it leaves the
         # author's artifact already replaced -- which makes "nothing was handed over"
@@ -171,7 +215,6 @@ def slice_intent(intent_path: Path) -> Sliced:
             # The read is outside the `try`: a failure to read slicelab's own scratch is
             # not a failure to write the author's path, and reporting it as one was
             # what the old `(OSError, PromotionError)` arm did.
-            payload = plan.staged_artifact.read_bytes()
             try:
                 promote(payload, plan.artifact_destination)
             except PromotionError as unwritable:
@@ -179,6 +222,7 @@ def slice_intent(intent_path: Path) -> Sliced:
             promoted = plan.artifact_destination
 
         locked: Path | None = None
+        displaced: Path | None = None
         if adjudication.outcome is Outcome.SLICED and plan.lock_destination is not None:
             # Only on `sliced`. D24 is explicit that `empty` writes none -- a lock is
             # the record of a resolution slicelab verified, and `empty` verified none --
@@ -199,10 +243,14 @@ def slice_intent(intent_path: Path) -> Sliced:
                 found=found,
                 plan=plan,
                 container=container,
-                text=_artifact_text(plan.staged_artifact, container),
+                text=artifact_text,
                 readback=readback,
                 prehash=prehash,
                 completed=completed,
+                payload=payload,
+                adjudication=adjudication,
+                intent_sha256=intent_sha256,
+                mesh_sha256_at_launch=mesh_sha256_at_launch,
             )
             try:
                 promote((dumps(document) + "\n").encode("utf-8"), plan.lock_destination)
@@ -211,6 +259,23 @@ def slice_intent(intent_path: Path) -> Sliced:
                     f"the artifact was handed over to {promoted} and the lock was not: {unwritable}"
                 ) from unwritable
             locked = plan.lock_destination
+        elif promoted is not None and plan.lock_destination is not None:
+            # An artifact was handed over and no lock was written, which is `empty`
+            # (D24). A lock already sitting there describes the file this run just
+            # replaced -- measured: run one writes a lock for artifact A, run two with
+            # the overrides removed promotes artifact B and the lock still claims A.
+            # D31 closed exactly this for the readback, calling re-running one
+            # `slice.toml` in one directory the ordinary workflow.
+            #
+            # D7's "the destination is never deleted" is about the author's G-code, the
+            # thing slicelab must not destroy. A stale lock is slicelab's own output and
+            # is not a neutral leftover: `docs/LOCK.md` says the file's presence is the
+            # claim, so leaving it makes the lock assert something false about the file
+            # beside it.
+            with contextlib.suppress(OSError):
+                if plan.lock_destination.is_file():
+                    plan.lock_destination.unlink()
+                    displaced = plan.lock_destination
 
         keep = promoted is None
         return Sliced(
@@ -221,6 +286,7 @@ def slice_intent(intent_path: Path) -> Sliced:
             destination_prehash=prehash,
             withheld=plan.staged_artifact if keep else None,
             lock=locked,
+            stale_lock_removed=displaced,
         )
     except Exception as fault:
         # EVERY fault, not the two the happy path raises. `redact` refuses on an
@@ -234,7 +300,12 @@ def slice_intent(intent_path: Path) -> Sliced:
         # argument, which is true of these two today and is not a property anything
         # checks. `KeyboardInterrupt` is deliberately not caught -- an author who
         # interrupted a slice did not ask for its leftovers.
-        if _is_an_artifact(staged_artifact):
+        if promoted is None and _is_an_artifact(staged_artifact):
+            # Only when nothing reached the author. A fault AFTER the promotion -- and
+            # several are reachable, every one of them a filesystem read -- would
+            # otherwise report "the artifact it did produce was kept at <scratch>"
+            # about a run that had already handed the artifact over, which is the
+            # opposite of what happened.
             keep = True
             setattr(fault, _WITHHELD, staged_artifact)
         raise
@@ -246,27 +317,19 @@ def slice_intent(intent_path: Path) -> Sliced:
             shutil.rmtree(scratch, ignore_errors=True)
 
 
-def _mesh_facts(spec, found, model: Path) -> tuple[MeshFacts | None, str | None]:
-    """Ask the engine to describe the mesh, and never let that cost the slice.
+def _mesh_facts(spec, completed) -> tuple[MeshFacts | None, str | None]:
+    """The mesh facts the slice run itself reported, or the reason there are none.
 
-    A second invocation, and the cheap kind: `--info` answers in about a third of a
-    second and slices nothing, so it cannot be mistaken for the run that produced the
-    artifact the way a second `--save` could (D7). It runs after the artifact is
-    promoted, so a slice that was never going to finish does not pay for it.
+    `--info` is part of the slice invocation (`notes/critique.md` G7.3), so these come
+    from the run that produced the artifact. A second call would describe whatever the
+    mesh is when it runs, which on a four-minute slice need not be the mesh the
+    artifact came from -- and nothing in the lock would mark the difference.
 
-    Every failure here is a missing field and never a missing slice. The mesh is still
-    identified: `mesh_sha256` is slicelab hashing the file, which needs no engine.
+    No engine is invoked here, so nothing here can cost the slice.
     """
-    if spec.compose_mesh_info is None or spec.read_mesh_info is None:
+    if spec.read_mesh_info is None:
         return None, MESH_NOT_DESCRIBED
-    invocation = spec.compose_mesh_info(model)
-    try:
-        completed = run(argv_for(found.form, invocation.argv, invocation.paths))
-    except Exception:  # noqa: BLE001 - a field is worth less than the artifact
-        return None, MESH_NOT_DESCRIBED
-    if completed.exit_status != 0 or not completed.stdout:
-        return None, MESH_NOT_DESCRIBED
-    facts = spec.read_mesh_info(completed.stdout)
+    facts = spec.read_mesh_info(completed.stdout or "")
     return facts, None if facts is not None else MESH_NOT_DESCRIBED
 
 
@@ -275,16 +338,20 @@ def _engine_output(completed) -> dict[str, object]:
 
     #7 asks for this because the artifact does not carry it: a run can exit 0, produce
     a perfectly good G-code file, and say something on stdout that exists nowhere in
-    that file. Measured 2026-10-05 -- `perimeters = 0` with `fill-density = 0` gives
+    that file. Measured 2026-10-05 -- `perimeters = 0` with `fill-density = "0%"` gives
     rc=0, a real artifact, and `print warning: Empty layer between 0.8 and 19.` on
     stdout. Nothing in the G-code mentions it, so it is gone unless captured here.
 
-    **Not** called `warnings`, and not filtered down to the lines that look like one.
-    2.9.6 interleaves progress percentages with real diagnostics on one stream, so
-    labelling every line a warning would be false and selecting the warnings would be
-    slicelab deciding which of another tool's lines matter -- by matching its text,
-    which is the regress this project has already lost twice. The streams are recorded
-    as streams and the reader judges. Cheap: a stock slice is 11 lines and 600 bytes.
+    **Not** called `warnings`, and not filtered to the lines that look like one. 2.9.6
+    interleaves progress percentages with real diagnostics on one stream, so labelling
+    every line a warning would be false and selecting the warnings would be slicelab
+    deciding which of another tool's lines matter -- by matching its text, which is the
+    regress this project has already lost twice. The streams are recorded as streams and
+    the reader judges.
+
+    Outside the redaction boundary, deliberately and stated in `docs/LOCK.md`: these are
+    the engine's own words and slicelab does not rewrite them. They can carry absolute
+    paths, and [V15] records this engine echoing configuration into stdout.
     """
     return {
         "stdout": [line for line in (completed.stdout or "").splitlines() if line.strip()],
@@ -301,9 +368,13 @@ def _lock_document(
     plan,
     container: Container,
     text: str | None,
+    mesh_sha256_at_launch: str | None,
     readback: Redacted,
     prehash: str | None,
     completed,
+    payload: bytes,
+    adjudication: Adjudication,
+    intent_sha256: str,
 ) -> dict[str, object]:
     """Assemble `slice.lock`, and record every gap rather than omitting it.
 
@@ -320,7 +391,10 @@ def _lock_document(
     artifact: dict[str, object] = {
         "path": str(plan.artifact_destination),
         "container": container.value,
-        "raw_sha256": raw_sha256(plan.artifact_destination),
+        # Hashed from the bytes that were promoted, not by re-reading the destination.
+        # Re-reading is a filesystem call after the hand-over: it can fail, and the
+        # failure then arrives in a report that says nothing was handed over.
+        "raw_sha256": hashlib.sha256(payload).hexdigest(),
     }
     if prehash is not None:
         # What this run displaced. "This file is here" does not establish "this run
@@ -333,7 +407,7 @@ def _lock_document(
             {
                 "code": CONTAINER_IS_BINARY,
                 "detail": f"{container.value}: the container carries no text footer to read",
-                "fields": ["artifact.normalized", "stats"],
+                "fields": ["artifact.normalized", "stats.*"],
             }
         )
     else:
@@ -356,14 +430,18 @@ def _lock_document(
                         {
                             "code": stat.reason,
                             "detail": f"{stat.key} was printed and is not a measurement",
-                            "fields": [f"stats.{field}"],
+                            # `.value`, not the field: the field IS present, as a
+                            # table carrying the reason. Naming the field would make
+                            # two of the doc's three absence cases identical on the
+                            # wire, which is the distinction it exists to draw.
+                            "fields": [f"stats.{field}.value"],
                         }
                     )
 
     geometry: dict[str, object] = {}
     if plan.model is not None:
-        geometry["mesh_sha256"] = mesh_sha256(plan.model)
-        facts, why = _mesh_facts(spec, found, plan.model)
+        geometry["mesh_sha256"] = mesh_sha256_at_launch
+        facts, why = _mesh_facts(spec, completed)
         if facts is not None:
             geometry["mesh_bbox"] = facts.as_table()
         elif why is not None:
@@ -374,6 +452,10 @@ def _lock_document(
                     "fields": ["geometry.mesh_bbox"],
                 }
             )
+    if text is not None and spec.plated_height is not None:
+        height = spec.plated_height(text)
+        if height is not None:
+            geometry["plated_height_mm"] = height.as_table()
     if text is not None and spec.read_placement is not None:
         placement = spec.read_placement(text)
         if placement is not None:
@@ -401,7 +483,7 @@ def _lock_document(
                 "one host, one build, one architecture; only a second machine can establish this"
             ),
         },
-        "intent": {"path": str(intent_path), "sha256": raw_sha256(intent_path)},
+        "intent": {"path": str(intent_path.resolve()), "sha256": intent_sha256},
         "engine": {
             "name": identity.engine,
             "launch": found.form.description if found.form is not None else "unknown",
@@ -413,6 +495,24 @@ def _lock_document(
         "stats": stats,
         "readback": {"path": str(plan.destination), "redacted_keys": list(readback.keys)},
         "engine_output": _engine_output(completed),
+        # G1 is a constraint rather than a suggestion: the mechanism adjudicates the
+        # authored delta and only RECORDS the base, and the design must say so. Without
+        # this a lock from a one-key intent and one from a forty-key intent are
+        # indistinguishable, while `effective_config` sits there with 393 keys none of
+        # which this says anything about. `compared` is carried because G2 wants a
+        # reader able to check the comparison rather than reconstruct it and get a
+        # different answer.
+        "verdicts": [
+            {
+                "option": verdict.option,
+                "status": verdict.status.value,
+                "requested": verdict.requested,
+                "compared": list(verdict.compared),
+                "observed": list(verdict.observed),
+                "reason": verdict.reason,
+            }
+            for verdict in adjudication.verdicts
+        ],
         "unknowns": unknowns,
         "effective_config": dict(spec.read_readback(readback.text)) if spec.read_readback else {},
     }
