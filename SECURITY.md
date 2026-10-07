@@ -112,16 +112,24 @@ and was committed for five commits before anyone noticed.
 
 `resolve` reads a `slice.toml` and writes a readback; `slice` reads a `slice.toml`
 and the mesh it names, and writes both a readback and a G-code file; `which` and
-`presets` read no file you name. None of the four writes a lock.
+`presets` read no file you name. `slice` writes a third file, `slice.lock`, for a run
+it stands behind.
 
-`slice` writes to two paths you chose, so it refuses before running the engine if
-the G-code collides with the readback, with the mesh, or with the intent file --
-one run writing the artifact and the readback to one path was measured to report
-success over a file holding the wrong one. The engine writes only into a scratch directory
+**The lock embeds the engine's configuration document**, so it embeds whatever
+redaction left behind, and it names the keys it removed in `readback.redacted_keys`.
+Measured: the three credential keys a stock triple emits read as `<redacted>` in the
+lock. The README's git model says you commit this file, so read it as configuration
+rather than as a public artifact until you have looked at it -- a credential key a
+future build adds is one nothing has measured yet.
+
+`slice` writes three files -- the G-code you named, the readback, and the lock -- and
+the last two are named after your intent. So it refuses before running the engine if the
+G-code collides with any of them or with the mesh: one run writing the artifact and the
+readback to one path was measured to report success over a file holding the wrong one. The engine writes only into a scratch directory
 slicelab owns; both of your paths are written by slicelab, atomically, replacing
 rather than truncating.
 
-The two are not written under the same rule, and the difference matters if you
+The three are not written under the same rule, and the difference matters if you
 are relying on one. **The G-code is written only for an outcome slicelab stands
 behind** — `sliced`, or `empty` where there was nothing to verify. **The readback
 is written on any outcome that was adjudicated at all**, `incomplete` included
@@ -136,6 +144,14 @@ either way.
 
 A scratch directory outlives the run only when it holds an artifact slicelab
 produced and would not hand over, and the report names it when it does.
+
+`slice` also **removes** one file: a `slice.lock` left beside an artifact it just
+replaced, which would otherwise assert something false about the file next to it (D33).
+It is the only deletion slicelab performs. It happens only to a file carrying
+`schema_version` whose own `artifact.path` is the G-code this run wrote, the path is
+refused outright if it is a symlink — it is derived from your intent's name, so a link
+there would reach outside the directory entirely — and the report names what was
+removed.
 
 **Inputs.** Their own `argv` — including a `--datadir` path, which is resolved to
 an absolute path and handed to the engine, never interpreted by slicelab — plus,

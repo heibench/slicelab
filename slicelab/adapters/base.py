@@ -7,6 +7,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from slicelab.geometry import MeshFacts, Placement
+from slicelab.stats import Stat
+
 __all__ = [
     "Invocation",
     "ConfigLocation",
@@ -351,6 +354,59 @@ class EngineSpec:
 
     All three paths are returned in `paths`, because a sandboxed engine must be
     granted the model it reads as well as the two files it writes (D19).
+    """
+
+    read_artifact_stats: Callable[[str], Mapping[str, Stat]] | None = None
+    """The artifact's own text -> the numbers it reports, each with its provenance.
+
+    Engine-side because the keys are the engine's and the two do not agree on them:
+    PrusaSlicer emits no layer count at all and has to be counted, where Orca states
+    one. The lock's field names are slicelab's (`vocab.REPORTED_STATS`) and every
+    value carries the engine's own key beside it, which is what makes the mapping
+    checkable against the artifact rather than taken on trust.
+
+    `None` means this engine has no measured way to be read, and the lock records no
+    artifact-derived stat rather than an empty one. Called only for a text container:
+    `GCDE` carries no text footer (D10), and the core decides that, not the adapter.
+    """
+
+    read_mesh_info: Callable[[str], MeshFacts | None] | None = None
+    """The slice run's own stdout -> the mesh's bounds and fingerprint.
+
+    `--info` rides in the slice invocation (`notes/critique.md` G7.3), so these facts
+    describe the mesh the artifact came from rather than whatever is at that path when
+    a second call runs.
+
+    `None` from the callable means the engine answered and slicelab could not read a
+    box out of it, which is recorded as a reason rather than as an absence.
+    """
+
+    plated_height: Callable[[str], Stat | None] | None = None
+    """The artifact's own text -> how tall the print stands on the plate.
+
+    A `Stat` because that is what it is: a number with a source and the engine's own key
+    beside it. Separate from `read_placement` because the engine reports the footprint
+    as a polygon with no Z, and combining the two would make a box it never stated.
+    """
+
+    read_placement: Callable[[str], Placement | None] | None = None
+    """The artifact's own text -> where each object landed on the plate.
+
+    Separate from `read_artifact_stats` because this is a shape, not a number, and
+    separate from `read_mesh_info` because it is a different coordinate system: the
+    mesh bounds are model coordinates and this is the plate.
+    """
+
+    normalize_artifact: Callable[[str], tuple[str, int]] | None = None
+    """The artifact's text -> that text with its run-to-run variation removed, and how
+    many replacements were made.
+
+    The count is the contract. D9 reads a zero as "this is not the format the rule was
+    measured against" and withholds the normalized hash, so an adapter must not report
+    a substitution it did not make.
+
+    `None` means this engine has no measured normalization and the lock carries no
+    normalized hash. `raw_sha256` is unaffected: that one is slicelab hashing bytes.
     """
 
     compose_base: Callable[[Mapping[str, str]], Invocation] | None = None
