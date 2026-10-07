@@ -20,9 +20,17 @@ artifact — D24, because a lock records a resolution slicelab verified and `emp
 verified none. So a G-code file with no lock beside it is a real state, and it means
 the intent asserted nothing.
 
+**Such a run also removes a lock that described the artifact it replaced** (D33), and
+says so in its report. Three things are established first, because the lock's path is
+derived from your intent's name rather than chosen: the path is a regular file and not a
+symlink, the file carries `schema_version`, and its `artifact.path` is the G-code this run
+just wrote. A lock describing some other artifact, or a file slicelab did not write, is
+left alone. A run that promotes nothing never touches it.
+
 The lock is named after the intent: `slice.toml` → `slice.lock`, `part-a.toml` →
-`part-a.lock`. Two intents in one directory therefore cannot overwrite each other's
-record.
+`part-a.lock`. Two intents whose names differ by more than their suffix therefore keep
+separate records — `part.toml` and `part` both derive `part.lock`, so that much is on the
+author.
 
 ## The three ways a value can be absent
 
@@ -259,7 +267,8 @@ nothing else removed. An empty array is a real answer.
 not rewrite them, so they can carry absolute paths — including slicelab's own scratch
 directory, which holds a username and no longer exists by the time you read it — and
 `notes/evidence.md` V15 records this engine echoing configuration into stdout. Redaction
-covers `effective_config`; it does not cover this. Look before publishing a lock.
+covers `effective_config`; it covers neither this nor `[[verdicts]].observed`, which
+carries the engine's values as the comparison read them. Look before publishing a lock.
 
 This exists because the artifact does not carry it. Measured: `perimeters = 0` with
 `fill-density = "0%"` exits 0, produces a real G-code file, and prints

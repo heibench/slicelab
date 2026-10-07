@@ -145,6 +145,14 @@ either way.
 A scratch directory outlives the run only when it holds an artifact slicelab
 produced and would not hand over, and the report names it when it does.
 
+`slice` also **removes** one file: a `slice.lock` left beside an artifact it just
+replaced, which would otherwise assert something false about the file next to it (D33).
+It is the only deletion slicelab performs. It happens only to a file carrying
+`schema_version` whose own `artifact.path` is the G-code this run wrote, the path is
+refused outright if it is a symlink — it is derived from your intent's name, so a link
+there would reach outside the directory entirely — and the report names what was
+removed.
+
 **Inputs.** Their own `argv` — including a `--datadir` path, which is resolved to
 an absolute path and handed to the engine, never interpreted by slicelab — plus,
 for `resolve` and `slice`, the `slice.toml` you name; for `slice`, the mesh that
