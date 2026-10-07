@@ -172,3 +172,19 @@ def test_the_lock_destination_is_derived_from_the_intent(tmp_path: Path) -> None
     so two intents in one directory cannot overwrite each other's record."""
     plan = _plan(_intent(tmp_path, "part.gcode"), tmp_path)
     assert plan.lock_destination == (tmp_path / "slice.lock").resolve()
+
+
+def test_an_intent_whose_own_name_is_the_lock_is_refused(tmp_path: Path) -> None:
+    """`part.lock` as an intent makes the lock's derived name the intent itself, so the
+    run would overwrite the file describing it."""
+    (tmp_path / "part.stl").write_text("solid cube\nendsolid cube\n", encoding="utf-8")
+    intent = Intent(
+        engine="prusaslicer",
+        base=dict(TRIPLE),
+        overrides={},
+        source=tmp_path / "part.lock",
+        model=tmp_path / "part.stl",
+        gcode=tmp_path / "part.gcode",
+    )
+    with pytest.raises(PlanError, match="overwritten by its own lock"):
+        _plan(intent, tmp_path)

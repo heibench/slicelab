@@ -171,3 +171,10 @@ def test_a_document_of_every_shape_the_lock_uses_round_trips() -> None:
 
     parsed = _round_trip(document)
     assert parsed == document, "the lock did not read back as what was written"
+
+
+def test_bytes_are_refused_rather_than_written_as_numbers() -> None:
+    """`bytes` is a Sequence, so without a guard it is emitted as an array of integers --
+    the one input the emitter got silently wrong rather than loudly."""
+    with pytest.raises(TypeError, match="not something a lock records"):
+        dumps({"artifact": {"raw": b"abc"}})

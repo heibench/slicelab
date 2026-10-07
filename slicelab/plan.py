@@ -261,7 +261,7 @@ def plan_slice(
     artifact_destination = intent.gcode.resolve()
     lock_destination = intent.source.with_suffix(LOCK_SUFFIX).resolve()
 
-    # Eight refusals about the destinations, all before the engine is asked for
+    # Nine refusals about the destinations, all before the engine is asked for
     # anything (D15). Each is a measured way to reach `sliced` at exit 0 with the
     # declared path holding something other than this run's G-code.
     if not model.is_file():
@@ -307,6 +307,14 @@ def plan_slice(
         raise PlanError(
             f"{intent.source} sends the artifact to {artifact_destination}, which is "
             "where the lock goes, so one would overwrite the other"
+        )
+    if lock_destination == intent.source.resolve():
+        # `part.lock` as an intent makes the lock's derived name the intent itself, so
+        # the run would overwrite the file describing it -- the same loss the artifact
+        # case is refused for, by a different route.
+        raise PlanError(
+            f"{intent.source} would be overwritten by its own lock at {lock_destination}, "
+            "so this run could never be repeated"
         )
     if model == lock_destination:
         raise PlanError(

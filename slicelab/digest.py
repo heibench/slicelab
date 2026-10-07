@@ -41,6 +41,15 @@ HEADER_NOT_RECOGNISED: Final = "artifact_header_not_recognised"
 #: Why normalization was never attempted (D10).
 CONTAINER_IS_BINARY: Final = "container_carries_no_text_footer"
 
+#: Why normalization was never attempted when the container itself is unknown.
+#:
+#: Distinct from the one above, because that one is established -- `GCDE` has no text
+#: footer and slicelab measured that. This one says slicelab could not tell what the
+#: container is, which is a different claim and the one `Container.UNDETERMINED`'s own
+#: docstring makes. Reporting it as "carries no text footer" would assert as measured
+#: exactly what was not.
+CONTAINER_UNDETERMINED: Final = "container_not_identified"
+
 
 def raw_sha256(artifact: Path) -> str:
     """sha256 of every byte of one file (D9)."""
@@ -91,5 +100,5 @@ def normalized_sha256(text: str, substitute: object) -> Normalized:
         return Normalized(substitutions=0, reason=HEADER_NOT_RECOGNISED)
     return Normalized(
         substitutions=count,
-        sha256=hashlib.sha256(rewritten.encode("utf-8")).hexdigest(),
+        sha256=hashlib.sha256(rewritten.encode("utf-8", errors="surrogateescape")).hexdigest(),
     )

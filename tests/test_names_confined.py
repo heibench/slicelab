@@ -175,6 +175,14 @@ DECLARED_VOCABULARY = frozenset(
         # against this build's 393 stated keys on 2026-10-05; none is one of them.
         "substitutions",
         "artifact_header_not_recognised",
+        # Why a per-filament figure is not the print's, and why an unidentified
+        # container is not an established absence of a footer. Checked against this
+        # build's 393 stated keys; neither is one. `surrogateescape` is a codec error
+        # handler, not vocabulary -- the normalized hash needs it so two artifacts
+        # differing in one undecodable byte do not fold onto one hash.
+        "per_filament_list_with_no_stated_total",
+        "container_not_identified",
+        "surrogateescape",
         # The lock's own field names, assembled in `slicing.py`. slicelab's own
         # vocabulary for the same reason the stat fields are: the lock is read as a
         # file by another tool (D22), so a name must mean the same thing whichever

@@ -11,7 +11,7 @@ from pathlib import Path
 from slicelab.adapters.base import ConfigLocation, EngineSpec, Invocation, OptionProbe, PresetQuery
 from slicelab.geometry import MeshFacts, Placement
 from slicelab.redact import REDACTED
-from slicelab.stats import DENSITY_ZERO, Stat
+from slicelab.stats import DENSITY_ZERO, PER_FILAMENT_LIST, Stat
 from slicelab.vocab import (
     FILAMENT_CM3,
     FILAMENT_G,
@@ -201,17 +201,28 @@ def _read_artifact_stats(text: str) -> Mapping[str, Stat]:
     stats: dict[str, Stat] = {}
 
     for field, key in ((FILAMENT_MM, "filament used [mm]"), (FILAMENT_CM3, "filament used [cm3]")):
-        if key in footer:
-            with contextlib.suppress(ValueError):
-                stats[field] = Stat(source=GCODE_FOOTER, key=f"; {key}", value=float(footer[key]))
+        if key not in footer:
+            continue
+        spelled = footer[key]
+        if "," in spelled:
+            # A per-filament list, which this engine writes on a multi-material print --
+            # `; filament used [mm] = 1251.87, 300.00`. There is no `total filament used
+            # [mm]` to read, unlike the mass, so there is no stated total for this
+            # field. Withheld rather than dropped: dropping it would read as "this
+            # engine reports nothing of the kind", and it reported plenty. Not summed
+            # either -- a sum is slicelab's arithmetic wearing the engine's key.
+            stats[field] = Stat(source=GCODE_FOOTER, key=f"; {key}", reason=PER_FILAMENT_LIST)
+            continue
+        with contextlib.suppress(ValueError):
+            stats[field] = Stat(source=GCODE_FOOTER, key=f"; {key}", value=float(spelled))
 
     mass = _mass(footer)
     if mass is not None:
         stats[FILAMENT_G] = mass
 
-    spelled = footer.get("estimated printing time (normal mode)")
-    if spelled is not None:
-        seconds = _duration_seconds(spelled)
+    duration = footer.get("estimated printing time (normal mode)")
+    if duration is not None:
+        seconds = _duration_seconds(duration)
         if seconds is not None:
             stats[PRINT_TIME_S] = Stat(
                 source=GCODE_FOOTER,
@@ -223,7 +234,12 @@ def _read_artifact_stats(text: str) -> Mapping[str, Stat]:
     # emits `;LAYER_CHANGE` 100 times and no key reports 100, so counting the
     # marker is the only source -- and `slicer_marker_count` says so in the lock
     # rather than letting a counted number pass as one the engine stated.
-    marker = text.count(";LAYER_CHANGE")
+    # Counted over the toolpaths only. The configuration block at the end echoes every
+    # setting back, so an author whose `layer_gcode` contains the literal would have it
+    # counted once more -- measured: two real layers plus `; layer_gcode = ;LAYER_CHANGE`
+    # gives 3. Stock presets use `;AFTER_LAYER_CHANGE`, which is why this was quiet.
+    body = text.split("; prusaslicer_config = begin", 1)[0]
+    marker = body.count(";LAYER_CHANGE")
     if marker:
         stats[LAYERS] = Stat(source=SLICER_MARKER_COUNT, key=";LAYER_CHANGE", value=marker)
 
@@ -321,6 +337,11 @@ def _read_placement(text: str) -> Placement | None:
             except (TypeError, ValueError):
                 continue
             objects.append((entry["name"], points))
+        if not objects:
+            # The engine stated a placement and slicelab could read none of it. An
+            # empty `objects` would read as "placed nowhere", which is the reading this
+            # function's own dropping rule exists to avoid.
+            return None
         return Placement(source=GCODE_FOOTER, key="; objects_info", objects=tuple(objects))
     return None
 

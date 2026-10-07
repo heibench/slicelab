@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from slicelab.adapters.prusaslicer import _duration_seconds, _read_artifact_stats
-from slicelab.stats import DENSITY_ZERO, Stat, StatError
+from slicelab.stats import DENSITY_ZERO, PER_FILAMENT_LIST, Stat, StatError
 from slicelab.vocab import (
     FILAMENT_CM3,
     FILAMENT_G,
@@ -172,3 +172,30 @@ def test_a_duration_spelled_some_other_way_is_not_half_read(spelling: str) -> No
     """Half a duration is a wrong number rather than a smaller one, so an unreadable
     unit makes the whole value absent instead of contributing nothing."""
     assert _duration_seconds(spelling) is None
+
+
+def test_a_per_filament_list_is_withheld_rather_than_dropped() -> None:
+    """A multi-material print writes `; filament used [mm] = 1251.87, 300.00`, and this
+    engine states no `total filament used [mm]` to go with it -- unlike the mass.
+
+    Dropping the field would read as "this engine reports nothing of the kind", and it
+    reported plenty. Summing would be slicelab's arithmetic wearing the engine's key.
+    """
+    multi = STOCK_FOOTER.replace(
+        "; filament used [mm] = 1251.87", "; filament used [mm] = 1251.87, 300.00"
+    ).replace("; filament used [cm3] = 3.01", "; filament used [cm3] = 3.01, 0.72")
+
+    stats = _read_artifact_stats(multi)
+
+    for field in (FILAMENT_MM, FILAMENT_CM3):
+        assert field in stats, f"{field} was dropped, which claims the engine said nothing"
+        assert stats[field].value is None
+        assert stats[field].reason == PER_FILAMENT_LIST
+    assert stats[FILAMENT_G].value == 3.73, "the mass HAS a stated total, so it survives"
+
+
+def test_the_layer_count_ignores_the_marker_inside_the_configuration() -> None:
+    """The configuration block echoes every setting back, so an author whose
+    `layer_gcode` holds the literal would have it counted once more."""
+    echoed = STOCK_FOOTER + "; prusaslicer_config = begin\n; layer_gcode = ;LAYER_CHANGE\n"
+    assert _read_artifact_stats(echoed)[LAYERS].value == 2, "the footer's copy was counted"

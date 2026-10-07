@@ -158,6 +158,10 @@ footprint: the engine reports a 2D polygon and this number separately, so foldin
 into one box would give a value half measured and half assembled with nothing marking
 which half.
 
+`plated_footprint` is **absent** rather than empty when the engine stated a placement
+slicelab could not read — an `objects = []` would say "placed nowhere", which is not what
+happened.
+
 `plated_footprint` carries `source`, `key` and `objects`, each an array-of-tables entry
 with `name` and `polygon`. **Plate** coordinates, XY only — the engine reports no
 plated Z extent, and combining the polygon with a height would produce a box half
@@ -208,6 +212,11 @@ An empty array is a real answer and means nothing was unestablished. Codes in us
   artifact-derived stat and no normalized hash. D10 makes `verify --tier artifact`
   exit 2 on this.
 - `filament_density_zero` — a mass was printed and is not a measurement.
+- `per_filament_list_with_no_stated_total` — a multi-material print reports one figure
+  per filament and no total for that field, so there is no measured total to record.
+  slicelab does not sum them: a sum is its arithmetic carrying the engine's key.
+- `container_not_identified` — slicelab could not tell what the container is, which is a
+  weaker claim than knowing it carries no text footer.
 - `engine_described_no_mesh` — no mesh facts; `mesh_sha256` is still present.
 - `artifact_stated_no_placement` — the artifact named no object placement.
 

@@ -177,3 +177,17 @@ def test_the_records_write_the_tables_the_lock_expects() -> None:
         "key": "; objects_info",
         "objects": [{"name": "a.stl", "polygon": [[1.0, 2.0], [3.0, 4.0]]}],
     }
+
+
+def test_a_placement_whose_objects_are_all_unreadable_is_none() -> None:
+    """`objects = []` would read as "placed nowhere", which is the reading the
+    per-object dropping rule exists to avoid. None says the engine was not understood."""
+    document = {"objects": [{"name": "a.stl", "polygon": []}, {"name": "b.stl", "polygon": []}]}
+    assert _read_placement(f"; objects_info = {json.dumps(document)}\n") is None
+
+
+def test_a_placement_with_three_dimensional_points_is_not_half_read() -> None:
+    """What a build adding a plated Z would emit. Reading the first two numbers of each
+    point would silently reinterpret the engine's output."""
+    document = {"objects": [{"name": "a.stl", "polygon": [[1, 2, 3], [4, 5, 6]]}]}
+    assert _read_placement(f"; objects_info = {json.dumps(document)}\n") is None

@@ -35,7 +35,12 @@ from pathlib import Path
 from typing import Final
 
 from slicelab.container import Container, sniff
-from slicelab.digest import CONTAINER_IS_BINARY, normalized_sha256, raw_sha256
+from slicelab.digest import (
+    CONTAINER_IS_BINARY,
+    CONTAINER_UNDETERMINED,
+    normalized_sha256,
+    raw_sha256,
+)
 from slicelab.engine.configured import ConfigState, configuration_state
 from slicelab.engine.discover import argv_for, discover
 from slicelab.engine.identity import identify
@@ -403,10 +408,15 @@ def _lock_document(
 
     stats: dict[str, object] = {}
     if text is None:
+        binary = container is Container.BGCODE
         unknowns.append(
             {
-                "code": CONTAINER_IS_BINARY,
-                "detail": f"{container.value}: the container carries no text footer to read",
+                "code": CONTAINER_IS_BINARY if binary else CONTAINER_UNDETERMINED,
+                "detail": (
+                    f"{container.value}: the container carries no text footer to read"
+                    if binary
+                    else f"{container.value}: slicelab could not identify the container"
+                ),
                 "fields": ["artifact.normalized", "stats.*"],
             }
         )
@@ -531,7 +541,12 @@ def _artifact_text(staged: Path, container: Container) -> str | None:
     """
     if container is not Container.GCODE:
         return None
-    return staged.read_text(encoding="utf-8", errors="replace")
+    # `surrogateescape`, not `replace`: the normalized hash is taken over this text, and
+    # `replace` folds every undecodable byte onto one character -- measured, two
+    # artifacts differing in a single byte (\xe9 against \xff) produced different raw
+    # hashes and the SAME normalized hash. surrogateescape round-trips the bytes, so the
+    # hash distinguishes the files the doc says it distinguishes.
+    return staged.read_text(encoding="utf-8", errors="surrogateescape")
 
 
 def _gate(completed, staged: Path, spec, source: Path) -> None:

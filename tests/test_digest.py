@@ -95,3 +95,19 @@ def test_the_raw_hash_is_every_byte(tmp_path: Path) -> None:
         normalized_sha256(one.read_text(encoding="utf-8"), _normalize_artifact).sha256
         == normalized_sha256(two.read_text(encoding="utf-8"), _normalize_artifact).sha256
     )
+
+
+def test_two_artifacts_differing_in_one_undecodable_byte_hash_differently(
+    tmp_path: Path,
+) -> None:
+    """The hash is "what makes two runs comparable", so it must not fold distinct bytes
+    together. Measured before the fix: `\xe9` and `\xff` gave different raw hashes and
+    the SAME normalized hash, because the text was decoded with `errors="replace"`."""
+    one = HEADER.encode() + b"G1 X0 ; \xe9\n"
+    two = HEADER.encode() + b"G1 X0 ; \xff\n"
+
+    first = normalized_sha256(one.decode("utf-8", errors="surrogateescape"), _normalize_artifact)
+    second = normalized_sha256(two.decode("utf-8", errors="surrogateescape"), _normalize_artifact)
+
+    assert first.substitutions == 1 and second.substitutions == 1
+    assert first.sha256 != second.sha256, "two different artifacts share one normalized hash"

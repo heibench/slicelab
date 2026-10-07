@@ -85,5 +85,13 @@ class Stat:
 #: Why a mass is not recorded even though the engine printed one.
 DENSITY_ZERO: Final = "filament_density_zero"
 
+#: Why a per-filament figure is not recorded as the print's.
+#:
+#: This engine writes `; filament used [mm] = 1251.87, 300.00` on a multi-material
+#: print and states no `total filament used [mm]` to go with it -- unlike the mass,
+#: which has one. So there is no measured total for that field, and summing the parts
+#: would be slicelab's arithmetic carrying the engine's key.
+PER_FILAMENT_LIST: Final = "per_filament_list_with_no_stated_total"
+
 #: Why no artifact-derived stat is recorded at all.
 CONTAINER_NOT_TEXT: Final = "container_carries_no_text_footer"

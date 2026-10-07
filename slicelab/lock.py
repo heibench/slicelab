@@ -91,7 +91,7 @@ def _value(value: object) -> str:
         if value != value or value in (float("inf"), float("-inf")):
             raise ValueError(f"a lock does not record {value!r}: it is not a measurement")
         return repr(value)
-    if isinstance(value, Sequence):
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return "[" + ", ".join(_value(item) for item in value) + "]"
     raise TypeError(f"not something a lock records: {value!r}")
 
