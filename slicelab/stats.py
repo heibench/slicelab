@@ -93,5 +93,8 @@ DENSITY_ZERO: Final = "filament_density_zero"
 #: would be slicelab's arithmetic carrying the engine's key.
 PER_FILAMENT_LIST: Final = "per_filament_list_with_no_stated_total"
 
+#: Why a figure the engine printed is not recorded as a number.
+NOT_A_NUMBER: Final = "engine_printed_a_value_that_is_not_a_number"
+
 #: Why no artifact-derived stat is recorded at all.
 CONTAINER_NOT_TEXT: Final = "container_carries_no_text_footer"

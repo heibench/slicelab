@@ -66,6 +66,15 @@ def _string(text: str) -> str:
         escape = _ESCAPES.get(character)
         if escape is not None:
             out.append(escape)
+        elif 0xD800 <= ord(character) <= 0xDFFF:
+            # A lone surrogate, which the artifact's `surrogateescape` decode produces
+            # from an undecodable byte. TOML has no spelling for it and this document is
+            # encoded as UTF-8, so emitting it raised from `encode` AFTER the artifact had
+            # been handed over -- a traceback where a stated refusal belongs.
+            raise ValueError(
+                f"a lock does not record an unpaired surrogate (U+{ord(character):04X}): "
+                "the engine wrote a byte slicelab cannot represent as text"
+            )
         elif ord(character) < 0x20 or ord(character) == 0x7F:
             out.append(f"\\u{ord(character):04X}")
         else:

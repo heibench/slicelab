@@ -178,3 +178,12 @@ def test_bytes_are_refused_rather_than_written_as_numbers() -> None:
     the one input the emitter got silently wrong rather than loudly."""
     with pytest.raises(TypeError, match="not something a lock records"):
         dumps({"artifact": {"raw": b"abc"}})
+
+
+def test_an_unpaired_surrogate_is_refused_rather_than_written() -> None:
+    """The artifact is decoded with `surrogateescape`, so an undecodable byte reaches the
+    emitter as a lone surrogate. TOML has no spelling for it and the document is encoded
+    as UTF-8, so emitting it raised from `encode` AFTER the artifact had been handed
+    over -- a traceback where a stated refusal belongs."""
+    with pytest.raises(ValueError, match="unpaired surrogate"):
+        dumps({"geometry": {"objects": [{"name": "part\udce8.stl"}]}})

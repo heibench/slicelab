@@ -191,3 +191,25 @@ def test_a_placement_with_three_dimensional_points_is_not_half_read() -> None:
     point would silently reinterpret the engine's output."""
     document = {"objects": [{"name": "a.stl", "polygon": [[1, 2, 3], [4, 5, 6]]}]}
     assert _read_placement(f"; objects_info = {json.dumps(document)}\n") is None
+
+
+def test_an_unreadable_plated_height_is_a_reason_not_an_absence() -> None:
+    """The distinction this whole three-case structure exists to draw, applied to the
+    field that was added in the same change that drew it."""
+    from slicelab.adapters.prusaslicer import _plated_height
+
+    measured = _plated_height("; max_layer_z = 20.3\n")
+    assert measured is not None and measured.value == 20.3
+    unreadable = _plated_height("; max_layer_z = n/a\n")
+    assert unreadable is not None, "reported and unreadable is not the same as unreported"
+    assert unreadable.value is None
+    assert unreadable.reason == "engine_printed_a_value_that_is_not_a_number"
+    assert _plated_height("; layer_height = 0.2\n") is None, "genuinely unreported"
+
+
+def test_the_engine_s_own_mesh_box_is_not_overwritten_by_a_later_line() -> None:
+    """`--info` prints before the progress lines, so the mesh block comes first. V15
+    records this engine echoing configuration onto the same stream, which last-wins
+    would let overwrite the box the engine measured."""
+    echoed = INFO + "max_z = 999\n"
+    assert _read_mesh_info(echoed).max_mm == (20.0, 20.0, 20.0)  # type: ignore[union-attr]

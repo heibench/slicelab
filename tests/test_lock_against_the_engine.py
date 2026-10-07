@@ -349,3 +349,71 @@ def test_the_plated_height_is_its_own_field(engine, tmp_path: Path) -> None:
     assert height["key"] == "; max_layer_z"
     assert height["value"] > 0
     assert "polygon" not in height, "the footprint and the height are not one box"
+
+
+def test_a_file_slicelab_did_not_write_is_not_removed(engine, tmp_path: Path) -> None:
+    """The lock's path is DERIVED from the intent's name, not chosen by the author, so a
+    file of their own can be sitting at it. Measured before the guard: deleted."""
+    lock = _slice(tmp_path)
+    assert lock.is_file()
+    mine = "# my own notes about this part, nothing to do with slicelab\n"
+    lock.write_text(mine, encoding="utf-8")
+
+    intent = tmp_path / "slice.toml"
+    intent.write_text(
+        intent.read_text(encoding="utf-8").split("[prusaslicer.set]")[0], encoding="utf-8"
+    )
+    done = subprocess.run(
+        [sys.executable, "-m", "slicelab", "slice", str(intent)],
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+
+    assert done.returncode == 3, f"{done.stdout}\n{done.stderr}"
+    assert lock.read_text(encoding="utf-8") == mine, "a file slicelab never wrote was removed"
+    assert "removed" not in done.stderr
+
+
+def test_a_lock_describing_a_different_artifact_is_not_removed(engine, tmp_path: Path) -> None:
+    """A lock for `v1.gcode` still describes a file that may be sitting there intact.
+
+    Measured before the guard: a second run writing `v2.gcode` deleted it, reporting that
+    it "described the artifact this run replaced" -- which replaced nothing.
+    """
+    _cube(tmp_path / "part.stl")
+    first = tmp_path / "slice.toml"
+    first.write_text(
+        '[geometry]\nmodel = "part.stl"\n\n[output]\ngcode = "v1.gcode"\n\n'
+        + TRIPLE
+        + "\n[prusaslicer.set]\nperimeters = 3\n",
+        encoding="utf-8",
+    )
+    assert (
+        subprocess.run(
+            [sys.executable, "-m", "slicelab", "slice", str(first)],
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        ).returncode
+        == 0
+    )
+    lock = tmp_path / "slice.lock"
+    recorded = lock.read_bytes()
+    assert "v1.gcode" in _read(lock)["artifact"]["path"]
+
+    # Same intent file, a different output, nothing asserted: `empty`.
+    first.write_text(
+        '[geometry]\nmodel = "part.stl"\n\n[output]\ngcode = "v2.gcode"\n\n' + TRIPLE,
+        encoding="utf-8",
+    )
+    done = subprocess.run(
+        [sys.executable, "-m", "slicelab", "slice", str(first)],
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+
+    assert done.returncode == 3, f"{done.stdout}\n{done.stderr}"
+    assert (tmp_path / "v1.gcode").is_file(), "the artifact it describes is still there"
+    assert lock.read_bytes() == recorded, "a lock describing an untouched artifact was removed"

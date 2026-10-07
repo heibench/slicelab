@@ -188,3 +188,31 @@ def test_an_intent_whose_own_name_is_the_lock_is_refused(tmp_path: Path) -> None
     )
     with pytest.raises(PlanError, match="overwritten by its own lock"):
         _plan(intent, tmp_path)
+
+
+def test_a_symlinked_lock_destination_is_refused(tmp_path: Path) -> None:
+    """`Plan.lock_destination` is resolved, and `slice` both writes and removes it.
+
+    Measured before this refusal: a `slice.lock` linked to `../elsewhere/notes.toml` gave
+    a destination OUTSIDE the project directory, and the stale-lock removal unlinked the
+    author's file there -- a path they never named.
+    """
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "notes.toml").write_text("my own notes\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "part.stl").write_text("solid c\nendsolid c\n", encoding="utf-8")
+    (project / "slice.lock").symlink_to("../elsewhere/notes.toml")
+
+    intent = Intent(
+        engine="prusaslicer",
+        base=dict(TRIPLE),
+        overrides={},
+        source=project / "slice.toml",
+        model=project / "part.stl",
+        gcode=project / "part.gcode",
+    )
+    with pytest.raises(PlanError, match="is a symlink"):
+        _plan(intent, tmp_path)
+    assert (outside / "notes.toml").is_file(), "the link's target was touched"

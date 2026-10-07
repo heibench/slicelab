@@ -11,7 +11,7 @@ from pathlib import Path
 from slicelab.adapters.base import ConfigLocation, EngineSpec, Invocation, OptionProbe, PresetQuery
 from slicelab.geometry import MeshFacts, Placement
 from slicelab.redact import REDACTED
-from slicelab.stats import DENSITY_ZERO, PER_FILAMENT_LIST, Stat
+from slicelab.stats import DENSITY_ZERO, NOT_A_NUMBER, PER_FILAMENT_LIST, Stat
 from slicelab.vocab import (
     FILAMENT_CM3,
     FILAMENT_G,
@@ -262,7 +262,10 @@ def _read_mesh_info(text: str) -> MeshFacts | None:
     fields: dict[str, str] = {}
     for line in text.splitlines():
         key, separator, value = line.partition(" = ")
-        if separator:
+        if separator and key.strip() not in fields:
+            # First wins. `--info` prints before any progress line, so the mesh block
+            # comes first -- and [V15] records this engine echoing configuration onto
+            # stdout, which last-wins would let overwrite the engine's own box.
             fields[key.strip()] = value.strip()
 
     try:
@@ -308,7 +311,10 @@ def _plated_height(text: str) -> Stat | None:
     try:
         return Stat(source=GCODE_FOOTER, key="; max_layer_z", value=float(footer["max_layer_z"]))
     except ValueError:
-        return None
+        # Reported and not a number. Absent would say "this engine reports nothing of the
+        # kind", which is the other case entirely -- and this field is new in the same
+        # change that drew the distinction.
+        return Stat(source=GCODE_FOOTER, key="; max_layer_z", reason=NOT_A_NUMBER)
 
 
 def _read_placement(text: str) -> Placement | None:

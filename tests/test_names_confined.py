@@ -181,6 +181,7 @@ DECLARED_VOCABULARY = frozenset(
         # handler, not vocabulary -- the normalized hash needs it so two artifacts
         # differing in one undecodable byte do not fold onto one hash.
         "per_filament_list_with_no_stated_total",
+        "engine_printed_a_value_that_is_not_a_number",
         "container_not_identified",
         "surrogateescape",
         # The lock's own field names, assembled in `slicing.py`. slicelab's own

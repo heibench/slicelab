@@ -259,7 +259,17 @@ def plan_slice(
     model = intent.model.resolve()
     destination = intent.source.with_suffix(spec.readback_suffix).resolve()
     artifact_destination = intent.gcode.resolve()
-    lock_destination = intent.source.with_suffix(LOCK_SUFFIX).resolve()
+    declared_lock = intent.source.with_suffix(LOCK_SUFFIX)
+    if declared_lock.is_symlink():
+        # `.resolve()` below follows it, and `slice` both writes and (on `empty`)
+        # removes that path -- so a link would put both operations somewhere the author
+        # never named. Measured: a `slice.lock` linked to `../elsewhere/notes.toml`
+        # resolved outside the project directory entirely.
+        raise PlanError(
+            f"{declared_lock} is a symlink, and slicelab writes and removes the lock "
+            "at that path rather than following a link to somewhere else"
+        )
+    lock_destination = declared_lock.resolve()
 
     # Nine refusals about the destinations, all before the engine is asked for
     # anything (D15). Each is a measured way to reach `sliced` at exit 0 with the

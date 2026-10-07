@@ -26,10 +26,10 @@ that slicelab withheld outlives the run at a path the report names.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import shutil
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -175,12 +175,26 @@ def slice_intent(intent_path: Path) -> Sliced:
         # above `diff`, the only thing left between them is `_prehash`, which cannot
         # raise.
         container = sniff(plan.staged_artifact, spec.binary_container_magic)
+        artifact_text = _artifact_text(plan.staged_artifact, container)
         adjudication = diff(plan.requested, _parse(text, spec), name_map)
 
-        # The ARTIFACT's text, not the configuration dump: `text` above is the ini. The
-        # first version of this check normalized the ini against the G-code header
-        # pattern, found nothing, and refused every run.
-        artifact_text = _artifact_text(plan.staged_artifact, container)
+        prehash = _prehash(plan.artifact_destination)
+        # Read once, before anything is promoted: the lock hashes these same bytes, so
+        # re-reading the destination afterwards would be a second filesystem call that
+        # can fail after the hand-over.
+        payload = plan.staged_artifact.read_bytes()
+        # The readback goes first, and unconditionally. It is evidence for a verdict of
+        # any kind, and going second is how a run that exits 4 promoting it leaves the
+        # author's artifact already replaced -- which makes "nothing was handed over"
+        # false in exactly the case it most needs to be true.
+        _promote_readback(readback, plan.destination)
+
+        # AFTER the readback, deliberately. D31 promises the readback on any outcome
+        # that was adjudicated at all -- `incomplete` included, because it is the
+        # evidence for the verdict and a verdict whose evidence was withheld because
+        # the verdict was bad is not worth having. `diff` has already run here, so
+        # refusing before the promotion made that promise false and left the author
+        # an `incomplete` with nothing to check it against.
         if artifact_text is not None and spec.normalize_artifact is not None:
             # D9: a substitution count of 0 means this is not the format the rule was
             # measured against, so the hash is withheld AND the run is `incomplete` --
@@ -200,17 +214,6 @@ def slice_intent(intent_path: Path) -> Sliced:
                 "recognise, so it cannot be compared against another run: "
                 f"{_diagnosis(completed)}"
             )
-
-        prehash = _prehash(plan.artifact_destination)
-        # Read once, before anything is promoted: the lock hashes these same bytes, so
-        # re-reading the destination afterwards would be a second filesystem call that
-        # can fail after the hand-over.
-        payload = plan.staged_artifact.read_bytes()
-        # The readback goes first, and unconditionally. It is evidence for a verdict of
-        # any kind, and going second is how a run that exits 4 promoting it leaves the
-        # author's artifact already replaced -- which makes "nothing was handed over"
-        # false in exactly the case it most needs to be true.
-        _promote_readback(readback, plan.destination)
         if adjudication.outcome in _HANDED_OVER:
             # `sliced`, and `empty` by D24's carve-out from D7: `empty` is not a fault,
             # it is a valid artifact against an intent that asserted nothing, and
@@ -260,27 +263,31 @@ def slice_intent(intent_path: Path) -> Sliced:
             try:
                 promote((dumps(document) + "\n").encode("utf-8"), plan.lock_destination)
             except PromotionError as unwritable:
+                stale = (
+                    " The lock already there describes a different artifact."
+                    if plan.lock_destination.is_file()
+                    else ""
+                )
                 raise ResolveError(
-                    f"the artifact was handed over to {promoted} and the lock was not: {unwritable}"
+                    f"the artifact was handed over to {promoted} and the lock was not: "
+                    f"{unwritable}.{stale}"
                 ) from unwritable
             locked = plan.lock_destination
         elif promoted is not None and plan.lock_destination is not None:
             # An artifact was handed over and no lock was written, which is `empty`
-            # (D24). A lock already sitting there describes the file this run just
-            # replaced -- measured: run one writes a lock for artifact A, run two with
-            # the overrides removed promotes artifact B and the lock still claims A.
-            # D31 closed exactly this for the readback, calling re-running one
-            # `slice.toml` in one directory the ordinary workflow.
+            # (D24). A lock already sitting there may describe the file this run just
+            # replaced -- measured: run one locks artifact A, run two with the overrides
+            # removed promotes artifact B and the lock still claims A. D31 closed exactly
+            # this for the readback, calling re-running one `slice.toml` in one directory
+            # the ordinary workflow.
             #
-            # D7's "the destination is never deleted" is about the author's G-code, the
-            # thing slicelab must not destroy. A stale lock is slicelab's own output and
-            # is not a neutral leftover: `docs/LOCK.md` says the file's presence is the
-            # claim, so leaving it makes the lock assert something false about the file
-            # beside it.
-            with contextlib.suppress(OSError):
-                if plan.lock_destination.is_file():
-                    plan.lock_destination.unlink()
-                    displaced = plan.lock_destination
+            # D7's "the destination is never deleted" is about the author's G-code. A
+            # stale lock is slicelab's own output and is not a neutral leftover. But the
+            # first version of this deleted whatever sat at that path, and the path is
+            # DERIVED from the intent's name rather than chosen -- so it removed an
+            # author's own file, and through a symlink it removed one outside the project
+            # entirely. So the removal now has to establish three things first.
+            displaced = _remove_superseded_lock(plan.lock_destination, promoted)
 
         keep = promoted is None
         return Sliced(
@@ -336,6 +343,44 @@ def _mesh_facts(spec, completed) -> tuple[MeshFacts | None, str | None]:
         return None, MESH_NOT_DESCRIBED
     facts = spec.read_mesh_info(completed.stdout or "")
     return facts, None if facts is not None else MESH_NOT_DESCRIBED
+
+
+def _remove_superseded_lock(destination: Path, promoted: Path) -> Path | None:
+    """Delete a lock only when it describes the artifact this run just replaced.
+
+    Three things are established before anything is unlinked, because the first version
+    of this established none of them and the path is derived from the intent's name
+    rather than chosen by the author:
+
+    * it is a regular file, not a symlink. `Plan.lock_destination` is `.resolve()`d, so a
+      symlinked `slice.lock` resolves to its target -- measured, a link to
+      `../elsewhere/notes.toml` made the destination a path outside the project, and
+      unlinking it deleted a file the author never named.
+    * it parses as a lock. A file carrying `schema_version` is one slicelab wrote; a file
+      of someone's own notes that happens to sit at that name is not.
+    * it describes THIS artifact. A lock whose `artifact.path` is some other G-code still
+      describes a file that may be sitting there intact, and deleting it would discard a
+      true record -- measured: run two writing `v2.gcode` deleted the lock for an
+      untouched `v1.gcode`.
+
+    Returns the path removed, or `None` when there was nothing to remove or the file was
+    not slicelab's to remove. An `OSError` is NOT suppressed: an artifact handed over
+    beside a stale lock that could not be removed is a state the author has to be told
+    about, and the first version swallowed it.
+    """
+    if not destination.exists() or destination.is_symlink() or not destination.is_file():
+        return None
+    try:
+        existing = tomllib.loads(destination.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    if "schema_version" not in existing:
+        return None
+    described = existing.get("artifact", {})
+    if not isinstance(described, dict) or described.get("path") != str(promoted):
+        return None
+    destination.unlink()
+    return destination
 
 
 def _engine_output(completed) -> dict[str, object]:
