@@ -1,7 +1,7 @@
 """Where the artifact is allowed to land, decided before the engine is asked.
 
 `plan_slice` composes one invocation that both slices and dumps the resolved
-configuration, which means one run writes to two paths the author chose separately.
+configuration, which means one run writes to three paths the author chose separately.
 Nothing stops those from being the same path, or from being an input to the run --
 and each collision was measured to produce `sliced` at exit 0 with the declared
 path holding something that is not this run's G-code:
@@ -148,3 +148,71 @@ def test_a_destination_that_is_a_regular_file_is_not_refused(tmp_path: Path) -> 
     (tmp_path / "part.gcode").write_text("PREVIOUS\n", encoding="utf-8")
     plan = _plan(_intent(tmp_path, "part.gcode"), tmp_path)
     assert plan.artifact_destination == (tmp_path / "part.gcode").resolve()
+
+
+def test_a_plan_that_sends_the_artifact_where_the_lock_goes_is_refused(tmp_path: Path) -> None:
+    """The lock is a third path this run writes, and its name is derived from the
+    intent rather than chosen -- so an author pointing their output at it wrote
+    `gcode = "slice.lock"` once, not perversely."""
+    with pytest.raises(PlanError, match="where the lock goes"):
+        _plan(_intent(tmp_path, "slice.lock"), tmp_path)
+
+
+def test_a_plan_that_slices_the_file_the_lock_replaces_is_refused(tmp_path: Path) -> None:
+    """The model must exist for this to reach the collision check rather than the
+    unreadable-model one, so the mesh is written at the lock's own path."""
+    intent = _intent(tmp_path, "part.gcode")
+    (tmp_path / "slice.lock").write_text("solid cube\nendsolid cube\n", encoding="utf-8")
+    with pytest.raises(PlanError, match="where the lock goes"):
+        _plan(replace(intent, model=tmp_path / "slice.lock"), tmp_path)
+
+
+def test_the_lock_destination_is_derived_from_the_intent(tmp_path: Path) -> None:
+    """`slice.toml` gives `slice.lock`, and a differently named intent gives its own,
+    so two intents in one directory cannot overwrite each other's record."""
+    plan = _plan(_intent(tmp_path, "part.gcode"), tmp_path)
+    assert plan.lock_destination == (tmp_path / "slice.lock").resolve()
+
+
+def test_an_intent_whose_own_name_is_the_lock_is_refused(tmp_path: Path) -> None:
+    """`part.lock` as an intent makes the lock's derived name the intent itself, so the
+    run would overwrite the file describing it."""
+    (tmp_path / "part.stl").write_text("solid cube\nendsolid cube\n", encoding="utf-8")
+    intent = Intent(
+        engine="prusaslicer",
+        base=dict(TRIPLE),
+        overrides={},
+        source=tmp_path / "part.lock",
+        model=tmp_path / "part.stl",
+        gcode=tmp_path / "part.gcode",
+    )
+    with pytest.raises(PlanError, match="overwritten by its own lock"):
+        _plan(intent, tmp_path)
+
+
+def test_a_symlinked_lock_destination_is_refused(tmp_path: Path) -> None:
+    """`Plan.lock_destination` is resolved, and `slice` both writes and removes it.
+
+    Measured before this refusal: a `slice.lock` linked to `../elsewhere/notes.toml` gave
+    a destination OUTSIDE the project directory, and the stale-lock removal unlinked the
+    author's file there -- a path they never named.
+    """
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "notes.toml").write_text("my own notes\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "part.stl").write_text("solid c\nendsolid c\n", encoding="utf-8")
+    (project / "slice.lock").symlink_to("../elsewhere/notes.toml")
+
+    intent = Intent(
+        engine="prusaslicer",
+        base=dict(TRIPLE),
+        overrides={},
+        source=project / "slice.toml",
+        model=project / "part.stl",
+        gcode=project / "part.gcode",
+    )
+    with pytest.raises(PlanError, match="is a symlink"):
+        _plan(intent, tmp_path)
+    assert (outside / "notes.toml").is_file(), "the link's target was touched"

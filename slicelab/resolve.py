@@ -49,7 +49,7 @@ from slicelab.engine.configured import (
     where_configuration_should_be,
 )
 from slicelab.engine.discover import Discovery, argv_for, discover
-from slicelab.engine.identity import identify
+from slicelab.engine.identity import Identity, identify
 from slicelab.engine.launch import run
 from slicelab.intent import Intent, read_intent
 from slicelab.plan import plan_resolve
@@ -173,8 +173,18 @@ def resolve(intent_path: Path, sidecar: Path | None = None) -> Resolved:
     return Resolved(adjudication=adjudication, readback=readback, sidecar=plan.destination)
 
 
-def _name_map(spec: EngineSpec, found: Discovery) -> Mapping[str, MapEntry]:
+def _name_map(
+    spec: EngineSpec, found: Discovery, *, who: Identity | None = None
+) -> Mapping[str, MapEntry]:
     """The probed map for THIS build, or an environment fault naming why there is none.
+
+    `who` lets a caller that already read the identity hand it over instead of asking
+    the engine again. `slice` needs it twice -- for this map and for the build the lock
+    records -- and a second read is a second chance to meet the intermittent failure in
+    #47, where the engine answers a cheap query wrongly and then correctly a moment
+    later. One read per run also means a run cannot refuse on the second answer after
+    accepting the first, which would look like nondeterminism in slicelab rather than
+    in the engine.
 
     Never a fallback to deriving keys from option names. `notes/critique.md` G2
     measured what that costs -- a false `absent` on a perfectly applied key -- and
@@ -188,7 +198,8 @@ def _name_map(spec: EngineSpec, found: Discovery) -> Mapping[str, MapEntry]:
     another, silently, which is confidently wrong in the direction this project
     exists to refuse.
     """
-    who = identify(spec, found)
+    if who is None:
+        who = identify(spec, found)
     if not who.exact or who.version is None:
         raise ResolveError(
             f"{spec.name} did not state a version slicelab could read, and the "

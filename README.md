@@ -11,7 +11,7 @@ saying why slicelab will not stand behind the result.
 > believed; `presets` enumerates its printer presets; `resolve` reads a `slice.toml`,
 > asks the engine what it would resolve that to, and diffs the answer against what
 > was asked; `slice` does the same and produces the G-code, handing it over only if
-> the run is one it can stand behind. No `slice.lock` is written yet. See
+> the run is one it can stand behind, and records a `slice.lock` beside it. See
 > [`docs/DECISIONS.md`](docs/DECISIONS.md) and
 > [`docs/RESEARCH.md`](docs/RESEARCH.md).
 

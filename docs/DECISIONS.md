@@ -220,7 +220,9 @@ than by an mtime check that D5 already measured and rejected — 198 of 200 tmpf
 writes had identical `st_mtime_ns`.
 
 Non-destructive: the destination is never deleted, and the staged path is named in
-every non-sliced report.
+every non-sliced report. D33 carves out one exception, and it is not the author's
+G-code: a `slice.lock` that describes the artifact a run replaced is removed, under
+three conditions that establish it is slicelab's to remove.
 
 Slicing runs **from the declared input path**, never a renamed temp copy, because
 the basename is embedded in `objects_info` whenever `gcode_label_objects` is
@@ -1506,3 +1508,59 @@ engine's stderr means it refused the request", that engine's refusals become
 `refused` (1) and this stays the answer for every engine that has not measured one.
 The classification would live on the adapter, never in `resolve.py` or `readback.py`
 — D26's boundary is what keeps an engine's diagnostics out of the core.
+
+## D33 — A lock that describes the artifact a run replaced is removed, and that is a carve-out from D7
+
+D7 says "the destination is never deleted". That is about the author's G-code, which
+slicelab must never destroy. A `slice.lock` is slicelab's own output, and a stale one is
+not a neutral leftover: `docs/LOCK.md` makes the file's presence the claim, so a lock
+left beside an artifact it does not describe asserts something false about the file next
+to it — and `slicespec` reads the lock as its premise (D22), so it would verify the wrong
+artifact.
+
+Measured on 2026-10-06: run one with an override is `sliced` and locks artifact
+`d5e04537…`; run two on the same intent with the override removed is `empty`, promotes a
+new artifact `3124d3c2…` and writes no lock (D24) — and the old lock survived, still
+claiming `d5e04537…`. D31 closed exactly this hazard for the readback and named the
+trigger: "re-running one `slice.toml` in one directory — the ordinary workflow".
+
+### Decided
+
+An artifact promoted **without** a lock removes the lock at that path, and the report
+names the removal. A file disappearing from the directory the README's git model says you
+commit is not something to do quietly.
+
+**Three things are established before anything is unlinked**, because the first
+implementation established none of them and the path is *derived* from the intent's name
+rather than chosen by the author:
+
+- **It is a regular file, not a symlink.** Measured: a link to `../elsewhere/notes.toml`
+  produced a destination outside the project directory, and the unlink removed a file the
+  author never named. That case is refused at **plan time**, before the engine runs,
+  because `slice` both writes and removes this path — and the plan-time refusal is what
+  saves it, not the check at the unlink: `Plan.lock_destination` is resolved, and a
+  resolved path is never a symlink (measured, `declared.is_symlink()` is True where
+  `declared.resolve().is_symlink()` is False). The check at the unlink covers the window
+  between the two, and a path that resolves to itself.
+- **It parses as a lock.** A file carrying `schema_version` is one slicelab wrote; a file
+  of the author's own notes that happens to sit at that name is not. Measured: deleted.
+- **It describes THIS artifact.** A lock whose `artifact.path` names a different G-code
+  still describes a file that may be sitting there intact. Measured: a second run writing
+  `v2.gcode` deleted the lock for an untouched `v1.gcode`, reporting that it "described
+  the artifact this run replaced" — which had replaced nothing.
+
+A removal that fails is **not** suppressed, and the author is told in the terms this
+paragraph promises: exit 4 naming both facts — the artifact was handed over, and the lock
+beside it could not be removed. The first implementation swallowed the `OSError` and
+reported nothing; the second let it reach the CLI's catch-all, which reported a traceback
+and told the author slicelab had a defect rather than what state their directory was in.
+
+A run that promotes nothing does not touch the lock at all. On `coerced`, `absent` or
+`unvalidated` the lock beside the artifact still describes the artifact that is there.
+
+### Escalated, not assumed
+
+This is a **carve-out from D7** and is recorded here rather than argued in a code
+comment, which is what D24 did for its own carve-out. The first implementation lived only
+in the code and the CLI string, and `AGENTS.md`'s "treat this section as code" rule makes
+that a half-finished change.

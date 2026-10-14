@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
 from slicelab.adapters.base import ConfigLocation, EngineSpec, Invocation, OptionProbe, PresetQuery
+from slicelab.geometry import MeshFacts, Placement
 from slicelab.redact import REDACTED
+from slicelab.stats import DENSITY_ZERO, NOT_A_NUMBER, PER_FILAMENT_LIST, Stat
+from slicelab.vocab import (
+    FILAMENT_CM3,
+    FILAMENT_G,
+    FILAMENT_MM,
+    GCODE_FOOTER,
+    LAYERS,
+    MESH_INFO,
+    PRINT_TIME_S,
+    SLICER_MARKER_COUNT,
+)
 
 
 def _options_from_help_fff(help_text: str, baseline: Mapping[str, str]) -> tuple[str, ...]:
@@ -109,6 +124,255 @@ _SENTINELS = (
 )
 
 
+def _duration_seconds(spelling: str) -> int | None:
+    """`24m 42s` as 1482. `None` when the engine spells it some other way.
+
+    Measured on 2.9.6: `estimated printing time (normal mode) = 24m 42s`. Longer
+    prints gain `h` and `d` segments, so all four are read and any unknown unit
+    makes the whole duration unreadable rather than partly read -- half a duration
+    is a wrong number, not a smaller one.
+    """
+    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+    total = 0
+    seen = False
+    for chunk in spelling.split():
+        if len(chunk) < 2 or chunk[-1] not in units or not chunk[:-1].isdigit():
+            return None
+        total += int(chunk[:-1]) * units[chunk[-1]]
+        seen = True
+    return total if seen else None
+
+
+def _footer_comments(text: str) -> dict[str, str]:
+    """Every `; key = value` comment line, last occurrence winning.
+
+    The stats and the configuration block are the same syntax, so both are read
+    here and the caller picks. Values are kept verbatim.
+    """
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.startswith("; "):
+            continue
+        key, separator, value = line[2:].partition(" = ")
+        if separator:
+            out[key.strip()] = value.strip()
+    return out
+
+
+def _mass(footer: Mapping[str, str]) -> Stat | None:
+    """The print's mass, or the recorded reason it is not a number.
+
+    `filament_density = 0` makes the engine report a weightless print. Measured on
+    2026-10-05 with the MK3S triple and `--filament-density=0`: the extrusion is an
+    unchanged `; filament used [mm] = 1251.87`, the per-filament `; filament used
+    [g]` line disappears entirely, and `; total filament used [g]` still prints
+    `0.00`. So the density is the detector and the zero is the symptom -- reading
+    the zero would mean trusting the number this exists to refuse.
+
+    Any density being zero is enough: the total is a sum, and a sum missing one
+    filament's mass is not the print's mass.
+    """
+    key = "total filament used [g]"
+    if key not in footer:
+        return None
+    declared = footer.get("filament_density", "")
+    densities = [part.strip() for part in declared.split(",") if part.strip()]
+    try:
+        weightless = any(float(part) == 0 for part in densities)
+    except ValueError:
+        weightless = False
+    if not densities or weightless:
+        return Stat(source=GCODE_FOOTER, key=f"; {key}", reason=DENSITY_ZERO)
+    try:
+        return Stat(source=GCODE_FOOTER, key=f"; {key}", value=float(footer[key]))
+    except ValueError:
+        return None
+
+
+def _read_artifact_stats(text: str) -> Mapping[str, Stat]:
+    """What a sliced PrusaSlicer artifact says about itself.
+
+    A field is absent when the engine printed nothing slicelab could read, and
+    present-with-a-reason when it printed something that is not a measurement. The
+    difference matters to whoever reads the lock: the first says this engine does
+    not report it, the second says it reported it and the number is unusable.
+    """
+    footer = _footer_comments(text)
+    stats: dict[str, Stat] = {}
+
+    for field, key in ((FILAMENT_MM, "filament used [mm]"), (FILAMENT_CM3, "filament used [cm3]")):
+        if key not in footer:
+            continue
+        spelled = footer[key]
+        if "," in spelled:
+            # A per-filament list, which this engine writes on a multi-material print --
+            # `; filament used [mm] = 1251.87, 300.00`. There is no `total filament used
+            # [mm]` to read, unlike the mass, so there is no stated total for this
+            # field. Withheld rather than dropped: dropping it would read as "this
+            # engine reports nothing of the kind", and it reported plenty. Not summed
+            # either -- a sum is slicelab's arithmetic wearing the engine's key.
+            stats[field] = Stat(source=GCODE_FOOTER, key=f"; {key}", reason=PER_FILAMENT_LIST)
+            continue
+        with contextlib.suppress(ValueError):
+            stats[field] = Stat(source=GCODE_FOOTER, key=f"; {key}", value=float(spelled))
+
+    mass = _mass(footer)
+    if mass is not None:
+        stats[FILAMENT_G] = mass
+
+    duration = footer.get("estimated printing time (normal mode)")
+    if duration is not None:
+        seconds = _duration_seconds(duration)
+        if seconds is not None:
+            stats[PRINT_TIME_S] = Stat(
+                source=GCODE_FOOTER,
+                key="; estimated printing time (normal mode)",
+                value=seconds,
+            )
+
+    # No layer-count field exists. Measured on 2026-10-05: a 20 mm cube at 0.2 mm
+    # emits `;LAYER_CHANGE` 100 times and no key reports 100, so counting the
+    # marker is the only source -- and `slicer_marker_count` says so in the lock
+    # rather than letting a counted number pass as one the engine stated.
+    # Counted over the toolpaths only. The configuration block at the end echoes every
+    # setting back, so an author whose `layer_gcode` contains the literal would have it
+    # counted once more -- measured: two real layers plus `; layer_gcode = ;LAYER_CHANGE`
+    # gives 3. Stock presets use `;AFTER_LAYER_CHANGE`, which is why this was quiet.
+    body = text.split("; prusaslicer_config = begin", 1)[0]
+    marker = body.count(";LAYER_CHANGE")
+    if marker:
+        stats[LAYERS] = Stat(source=SLICER_MARKER_COUNT, key=";LAYER_CHANGE", value=marker)
+
+    return stats
+
+
+def _read_mesh_info(text: str) -> MeshFacts | None:
+    """The slice run's own stdout as the mesh facts, or `None` when it said nothing.
+
+    `--info` is part of the slice invocation, so these facts come from the run that
+    produced the artifact rather than from a later look at the file. The stream also
+    carries progress lines (`10 => Processing triangulated mesh`) and a `[<basename>]`
+    heading; neither contains ` = `, so neither reaches the fields below.
+
+    The six bounds are required together: three axes with one missing is not a box,
+    and reporting a partial one would be a shape nobody measured. The fingerprint
+    fields are each optional, because an engine that describes a mesh without
+    counting its facets has still described the mesh.
+    """
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition(" = ")
+        if separator and key.strip() not in fields:
+            # First wins. `--info` prints before any progress line, so the mesh block
+            # comes first -- and [V15] records this engine echoing configuration onto
+            # stdout, which last-wins would let overwrite the engine's own box.
+            fields[key.strip()] = value.strip()
+
+    try:
+        low = (float(fields["min_x"]), float(fields["min_y"]), float(fields["min_z"]))
+        high = (float(fields["max_x"]), float(fields["max_y"]), float(fields["max_z"]))
+    except (KeyError, ValueError):
+        return None
+
+    facets: int | None = None
+    with contextlib.suppress(KeyError, ValueError):
+        facets = int(fields["number_of_facets"])
+
+    volume: float | None = None
+    with contextlib.suppress(KeyError, ValueError):
+        volume = float(fields["volume"])
+
+    # `yes` / `no`, and anything else is unknown rather than false -- a mesh reported
+    # in a spelling slicelab does not know is not a mesh reported as open.
+    manifold: bool | None = {"yes": True, "no": False}.get(fields.get("manifold", "").lower())
+
+    return MeshFacts(
+        source=MESH_INFO,
+        key="--info",
+        min_mm=low,
+        max_mm=high,
+        facets=facets,
+        volume_mm3=volume,
+        manifold=manifold,
+    )
+
+
+def _plated_height(text: str) -> Stat | None:
+    """How tall the print stands on the plate, from the engine's own `; max_layer_z`.
+
+    Its own field rather than a third axis on `plated_footprint`: the engine reports
+    the footprint as a 2D polygon and this as a separate number, so folding them into
+    one box would produce a value half measured and half assembled with nothing saying
+    which half.
+    """
+    footer = _footer_comments(text)
+    if "max_layer_z" not in footer:
+        return None
+    try:
+        return Stat(source=GCODE_FOOTER, key="; max_layer_z", value=float(footer["max_layer_z"]))
+    except ValueError:
+        # Reported and not a number. Absent would say "this engine reports nothing of the
+        # kind", which is the other case entirely -- and this field is new in the same
+        # change that drew the distinction.
+        return Stat(source=GCODE_FOOTER, key="; max_layer_z", reason=NOT_A_NUMBER)
+
+
+def _read_placement(text: str) -> Placement | None:
+    """The artifact's `; objects_info` as a polygon per object, in plate coordinates.
+
+    JSON inside a G-code comment, which is the engine's choice and not slicelab's.
+    Measured on 2026-10-05: one object, four points, a 20 mm square centred at
+    (125, 105) on an MK3S bed. An object with no polygon is dropped rather than
+    recorded with an empty one, because an empty footprint reads as "placed nowhere"
+    instead of "the engine did not say".
+    """
+    for line in text.splitlines():
+        if not line.startswith("; objects_info = "):
+            continue
+        try:
+            document = json.loads(line.partition(" = ")[2])
+        except json.JSONDecodeError:
+            return None
+        objects: list[tuple[str, tuple[tuple[float, float], ...]]] = []
+        for entry in document.get("objects", []):
+            polygon = entry.get("polygon") or []
+            if not isinstance(entry.get("name"), str) or not polygon:
+                continue
+            try:
+                points = tuple((float(x), float(y)) for x, y in polygon)
+            except (TypeError, ValueError):
+                continue
+            objects.append((entry["name"], points))
+        if not objects:
+            # The engine stated a placement and slicelab could read none of it. An
+            # empty `objects` would read as "placed nowhere", which is the reading this
+            # function's own dropping rule exists to avoid.
+            return None
+        return Placement(source=GCODE_FOOTER, key="; objects_info", objects=tuple(objects))
+    return None
+
+
+#: The one line that changes between two slices of the same input. Measured on
+#: 2026-10-05: of 23422 lines and 604407 bytes, line 0 alone differs, and the byte
+#: count does not -- the timestamp's width is fixed, so comparing sizes would have
+#: called the two files identical. The version stays in the hash deliberately: a
+#: different build producing different toolpaths SHOULD change it.
+_GENERATED_AT = re.compile(
+    r"^(; generated by .+ on )\d{4}-\d{2}-\d{2}( at )\d{2}:\d{2}:\d{2}( UTC)$",
+    re.MULTILINE,
+)
+
+
+def _normalize_artifact(text: str) -> tuple[str, int]:
+    """The artifact with its generation timestamp replaced, and how many were replaced.
+
+    The count is the point. Zero means this build does not write the header slicelab
+    measured, and D9 withholds the normalized hash rather than hashing raw bytes
+    under its name.
+    """
+    return _GENERATED_AT.subn(r"\1<date>\2<time>\3", text)
+
+
 def _ask_for_a_slice(model: Path, artifact: Path, readback: Path) -> Invocation:
     """Slice this model, write the G-code there, and dump the configuration beside it.
 
@@ -132,8 +396,23 @@ def _ask_for_a_slice(model: Path, artifact: Path, readback: Path) -> Invocation:
     # config and no artifact -- produced by an argv bug rather than by a bad request,
     # which is the strongest argument for the gate there is: slicelab's own mistake
     # looks identical to the engine's.
+    # `--info` rides along in the SAME invocation, which `notes/critique.md` G7.3
+    # measured working and asked for in terms -- "state it, so nobody later
+    # 'optimizes' it into a second call whose result is not gated on the artifact".
+    # Re-measured 2026-10-06: rc=0, a 604407-byte artifact, a 14757-byte
+    # configuration, and 13 mesh-fact lines on stdout from one run. A second call
+    # would describe whatever the mesh is when it runs, which on a four-minute slice
+    # need not be the mesh the artifact came from -- D7's own argument, applied to the
+    # input instead of the output.
     return Invocation(
-        argv=("--export-gcode", str(model), "-o", str(artifact), f"--save={readback}"),
+        argv=(
+            "--export-gcode",
+            str(model),
+            "-o",
+            str(artifact),
+            f"--save={readback}",
+            "--info",
+        ),
         paths=frozenset({str(model), str(artifact), str(readback)}),
     )
 
@@ -235,6 +514,11 @@ SPEC = EngineSpec(
     # `; ge`, with two.
     binary_container_magic=b"GCDE",
     compose_slice=_ask_for_a_slice,
+    read_artifact_stats=_read_artifact_stats,
+    read_mesh_info=_read_mesh_info,
+    read_placement=_read_placement,
+    plated_height=_plated_height,
+    normalize_artifact=_normalize_artifact,
     read_readback=_read_ini,
     redact_readback=_redact_ini,
     preset_query=PresetQuery(argv=("--query-printer-models",), root_key="printer_models"),

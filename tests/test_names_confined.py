@@ -33,6 +33,8 @@ CORE_MODULE_NAMES = (
     "presets.py",
     "intent.py",
     "digest.py",
+    "geometry.py",
+    "lock.py",
     "plan.py",
     "preflight.py",
     "promote.py",
@@ -41,6 +43,7 @@ CORE_MODULE_NAMES = (
     "redact.py",
     "resolve.py",
     "slicing.py",
+    "stats.py",
     "vocab.py",
 )
 
@@ -122,6 +125,129 @@ DECLARED_VOCABULARY = frozenset(
         # where a bare `withheld` would be slicelab writing an unnamespaced attribute
         # onto someone else's object.
         "_slicelab_withheld_artifact",
+        # The lock's reported-stat fields and the shape each one is written in.
+        # slicelab's own names, deliberately: the lock is read by another tool, so
+        # a number has to mean the same thing whichever engine produced it, and the
+        # engine's own spelling rides along as that stat's `key`. Measured against
+        # this build's 393 stated config keys on 2026-10-05 -- none of these is one
+        # of them, with `layer_height` as the control. `objects_info` IS one, which
+        # is why it is not here and lives in the adapter instead.
+        "filament_mm",
+        "filament_cm3",
+        "filament_g",
+        "print_time_s",
+        "layers",
+        "key",
+        "value",
+        # `source` and `reason` are already declared above, for the report's own
+        # structural fields; a stat reuses them rather than inventing a synonym.
+        # Where a reported number came from, as a category rather than a key.
+        "gcode_footer",
+        "slicer_marker_count",
+        "mesh_info",
+        # Why a number that the engine did print is not recorded as one.
+        "filament_density_zero",
+        "container_carries_no_text_footer",
+        # The lock's two geometry records. Both are slicelab's own names for the
+        # same reason the stat fields are, and neither is called `bounding_box`:
+        # the mesh box is model coordinates and the footprint is the plate, and a
+        # reader who conflates them gets a part in the wrong place with a lock that
+        # agrees. Checked against this build's 393 stated config keys on 2026-10-05
+        # with `layer_height` as the control -- none is one of them. `manifold` is
+        # also a word `--info` uses, which is a different namespace from the config
+        # keys D26 scopes to, and is an ordinary geometry term either way; the
+        # engine's own `max_layer_z` is a config key, so `plated_height_mm` is named
+        # for what it measures and carries that key as its provenance instead.
+        "plated_height_mm",
+        "min_mm",
+        "max_mm",
+        "facets",
+        "volume_mm3",
+        "manifold",
+        "objects",
+        "polygon",
+        "name",
+        "engine_described_no_mesh",
+        "artifact_stated_no_placement",
+        # D9's two hashes. `substitutions` travels with the normalized digest because
+        # the count is what makes it interpretable: 1 says the header was found, 0
+        # says the pattern matched nothing and the digest is withheld. Checked
+        # against this build's 393 stated keys on 2026-10-05; none is one of them.
+        "substitutions",
+        "artifact_header_not_recognised",
+        # Why a per-filament figure is not the print's, and why an unidentified
+        # container is not an established absence of a footer. Checked against this
+        # build's 393 stated keys; neither is one. `surrogateescape` is a codec error
+        # handler, not vocabulary -- the normalized hash needs it so two artifacts
+        # differing in one undecodable byte do not fold onto one hash.
+        "per_filament_list_with_no_stated_total",
+        "engine_printed_a_value_that_is_not_a_number",
+        "container_not_identified",
+        "surrogateescape",
+        # The lock's own field names, assembled in `slicing.py`. slicelab's own
+        # vocabulary for the same reason the stat fields are: the lock is read as a
+        # file by another tool (D22), so a name must mean the same thing whichever
+        # engine produced the run. Checked against this build's 393 stated config keys
+        # on 2026-10-05 with `layer_height` as the control -- not one of these is one
+        # of them. The dotted ones are field paths an `unknowns` entry points at.
+        "schema_version",
+        "reproducibility",
+        "scope",
+        "state",
+        "cross_machine",
+        "not_established",
+        "intent",
+        "path",
+        "launch",
+        "version",
+        "digest",
+        "normalized",
+        "raw_sha256",
+        "mesh_sha256",
+        "mesh_bbox",
+        "plated_footprint",
+        "stats",
+        "redacted_keys",
+        "unknown",
+        "code",
+        "detail",
+        "fields",
+        "lock",
+        "lock_destination",
+        # Both of the engine's streams, recorded unclassified. Not called `warnings`:
+        # 2.9.6 interleaves progress with diagnostics on one stream, so labelling every
+        # line a warning would be false and selecting the warnings would be slicelab
+        # matching another tool's text to decide which of its lines matter.
+        "engine_output",
+        # The lock this run removed because it described the artifact it replaced, and
+        # the two field-path forms an `unknowns` entry uses to point at what is missing.
+        "stale_lock_removed",
+        ".value",
+        "stats.*",
+        ".lock",
+        "artifact.normalized",
+        "artifact.normalized.sha256",
+        "geometry.mesh_bbox",
+        "geometry.plated_footprint",
+        "stats.",
+        # TOML's own grammar, from the lock's emitter. Not domain vocabulary: the
+        # lock's field names are assembled by its caller and declared above, and
+        # `slicelab/lock.py` names none of them -- it is handed a document and
+        # serialises it. Declaring these keeps that module inside both this scan and
+        # the live engine-key cross-check, which excluding it would not. Checked
+        # against this build's 393 stated keys on 2026-10-05: none is one of them.
+        "true",
+        "false",
+        "inf",
+        "-inf",
+        "\\n",
+        "\\t",
+        "\\r",
+        "\\b",
+        "\\f",
+        "\\u",
+        "04X",
+        "^[A-Za-z0-9_-]+$",
         "slicelab-readback-",
         # Where the engine slices before slicelab decides whether to hand it over
         # (D7). The same shape as the readback prefix above, and named for this

@@ -54,8 +54,9 @@ does the same and produces the G-code, handing it over only if the run is one
 slicelab stands behind.
 
 Both keep the engine's own configuration dump beside your intent, with
-credential-bearing keys removed and named. No slice.lock is written yet. See
-docs/DECISIONS.md and the issue tracker.
+credential-bearing keys removed and named. `slice` also writes a slice.lock for
+every run it stands behind -- what produced the artifact, and what it could not
+establish. See docs/LOCK.md, docs/DECISIONS.md and the issue tracker.
 """
 
 
@@ -455,6 +456,15 @@ def _slice(intent_path: Path) -> int:
     detail.append(f"container = {sliced.container.value}")
     if sliced.artifact is not None:
         detail.append(f"artifact written to {sliced.artifact}")
+        if sliced.lock is not None:
+            detail.append(f"lock written to {sliced.lock}")
+        if sliced.stale_lock_removed is not None:
+            # A file vanishing from the directory the README says you commit is not
+            # something to do quietly.
+            detail.append(
+                f"removed {sliced.stale_lock_removed}, which described the artifact "
+                "this run replaced"
+            )
         if sliced.destination_prehash is not None:
             # What was displaced, named rather than implied. "This file is here" does
             # not establish "this run wrote it" (D7).

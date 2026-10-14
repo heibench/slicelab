@@ -9,6 +9,37 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`slice.lock`** — what produced an artifact, written for a run slicelab stands
+  behind and for no other. `empty` keeps its G-code and gets no lock (D24): a lock
+  records a resolution slicelab verified, and that run verified none. Schema in
+  [`docs/LOCK.md`](docs/LOCK.md); `schema_version` is the first key in the file.
+
+  Every reported number carries where it came from — `source` as a category, the
+  engine's own `key` verbatim beside it. The layer count says it was *counted*
+  (`;LAYER_CHANGE`), because PrusaSlicer states no layer-count field at all.
+
+  TOML has no null, so a number the engine printed that is not a measurement is a
+  table with a `reason` and no `value`. The case that forces it: with
+  `filament_density = 0` the engine reports `total filament used [g] = 0.00` beside an
+  unchanged `filament used [mm] = 1251.87`. The extrusion is real and the mass is not,
+  so the declared density is the detector and the zero never becomes a number.
+
+  Two hashes. `raw_sha256` is every byte. `normalized_sha256` carries the substitution
+  count that makes it interpretable — measured, two slices of one mesh differ in
+  exactly one line of 23422, the generation timestamp, and the byte counts are
+  identical, so comparing sizes would call them the same file. A count of 0 withholds
+  the hash rather than publishing the raw one under its name.
+
+  Two boxes, never one field called `bounding_box`: `mesh_bbox` in model coordinates
+  from the engine's own mesh report, and `plated_footprint` in plate coordinates from
+  the artifact, XY only because the engine reports no plated Z. Plus `mesh_sha256`,
+  which needs no engine, so the input is identified even when the engine describes
+  nothing.
+
+  `unknowns` names what could not be established and which fields it cost. A binary
+  container has no text footer, so it has no artifact-derived stats and no normalized
+  hash — recorded, with its code, and never by silently forcing `--binary-gcode=0`.
+
 - **`slicelab slice`** — slices what the intent names and hands the artifact over
   only if the run is one slicelab can stand behind. The engine slices into a
   directory slicelab owns; the G-code reaches your path on `sliced` and on `empty`,
