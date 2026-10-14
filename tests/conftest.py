@@ -25,19 +25,44 @@ from slicelab.engine.discover import ExitFidelity, discover
 REQUIRE_ENV = "SLICELAB_REQUIRE_ENGINE"
 
 
-def _require() -> bool:
-    return os.environ.get(REQUIRE_ENV, "") not in ("", "0", "false", "False")
+def _required() -> frozenset[str]:
+    """Which engines this runner has declared must be present.
+
+    `1` (or any other truthy word) means every engine in the registry, which is what
+    a host with all of them should say. A comma-separated list names them instead,
+    for a leg that installs some and not others.
+
+    That distinction is why this is a set rather than the boolean it was. The engine
+    matrix sets the flag for every job but only its Flatpak leg installs OrcaSlicer,
+    so the macOS and Windows legs demanded an engine they never install and the five
+    OrcaSlicer tests errored at setup -- measured on run 38497422988, five errors on
+    each of those two legs. "This leg has no OrcaSlicer" is a true statement about
+    the leg, not a finding about the code, and a skip is the honest answer to it.
+    The flag still exists to stop a MISSING engine passing for a tested one, and on
+    a leg that names the engine it still does exactly that.
+    """
+    value = os.environ.get(REQUIRE_ENV, "")
+    if value in ("", "0", "false", "False"):
+        return frozenset()
+    if "," in value or value in REGISTRY:
+        return frozenset(name.strip() for name in value.split(",") if name.strip())
+    return frozenset(REGISTRY)
 
 
-def skip_or_fail(message: str) -> NoReturn:
-    """Skip, unless a runner has declared an engine is supposed to be here.
+def skip_or_fail(message: str, *, engine: str | None = None) -> NoReturn:
+    """Skip, unless a runner has declared this engine is supposed to be here.
 
     Exported because every engine-backed module needs it and the ones that rolled
     their own bare `pytest.skip` were the ones that went quiet: a host where the only
     usable engine lacks the fields a module requires skipped every test in it and
     reported green, which is the shape this file's docstring names as the enemy.
+
+    `engine` names the one this call is about, where there is one. Without it the
+    question is "is any engine required here", which is the right question for a
+    fixture that would take any of them.
     """
-    if _require():
+    required = _required()
+    if required and (engine is None or engine in required):
         pytest.fail(f"{REQUIRE_ENV} is set but {message}")
     pytest.skip(message)
 

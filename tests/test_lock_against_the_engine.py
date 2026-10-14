@@ -20,6 +20,7 @@ import pytest
 
 from slicelab.adapters import EngineSpec
 from slicelab.digest import CONTAINER_IS_BINARY
+from slicelab.engine.discover import argv_for, discover
 from slicelab.lock import SCHEMA_VERSION
 from slicelab.vocab import FILAMENT_G, FILAMENT_MM, LAYERS, REPORTED_STATS
 from tests.conftest import skip_or_fail
@@ -149,18 +150,24 @@ def test_the_geometry_records_both_coordinate_systems(engine, tmp_path: Path) ->
     assert "bounding_box" not in geometry, "the two boxes are never one field"
 
 
-def _binary_triple() -> str | None:
-    """The MK4IS triple, with its print and filament profiles read from the engine."""
+def _binary_triple(spec: EngineSpec) -> str | None:
+    """The MK4IS triple, with its print and filament profiles read from the engine.
+
+    Launched through slicelab's own discovery rather than a spelled-out `flatpak run`.
+    The literal argv could only ever work on a Linux host with Flathub, and the engine
+    matrix said so the first time it got far enough to run this: `FileNotFoundError:
+    [Errno 2] No such file or directory: 'flatpak'` on the macOS and Windows legs. The
+    container fact this pins is real and was measured; the route to it was not portable.
+    """
+    found = discover(spec)
+    if found.form is None:
+        return None
     done = subprocess.run(
-        [
-            "flatpak",
-            "run",
-            "--command=prusa-slicer",
-            "com.prusa3d.PrusaSlicer",
-            "--query-print-filament-profiles",
-            "--printer-profile",
-            BINARY_PRINTER,
-        ],
+        argv_for(
+            found.form,
+            ["--query-print-filament-profiles", "--printer-profile", BINARY_PRINTER],
+            [],
+        ),
         capture_output=True,
         text=True,
         timeout=600,
@@ -196,7 +203,7 @@ def test_a_binary_container_records_what_it_cannot_establish(engine, tmp_path: P
     Measured 2026-10-05: the artifact is 30348 bytes beginning `GCDE`, with zero
     `prusaslicer_config` and zero `;LAYER_CHANGE`, and it does not decode as UTF-8.
     """
-    triple = _binary_triple()
+    triple = _binary_triple(engine)
     if triple is None:
         skip_or_fail(f"this build offers no 0.20mm profile for {BINARY_PRINTER}")
 

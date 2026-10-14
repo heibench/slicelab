@@ -89,10 +89,13 @@ def seeded(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
     """An isolated cache holding a map measured for `OPTION` on this host."""
     found = discover(ORCASLICER)
     if found.form is None:
-        skip_or_fail(f"orcaslicer did not start: {found.reason}")
+        # Named, so a leg that installs PrusaSlicer and not this one skips rather
+        # than failing: the engine matrix sets the requirement for every job and only
+        # its Flatpak leg installs OrcaSlicer.
+        skip_or_fail(f"orcaslicer did not start: {found.reason}", engine="orcaslicer")
     who = identify(ORCASLICER, found)
     if who.version is None:
-        skip_or_fail("orcaslicer did not state a readable version")
+        skip_or_fail("orcaslicer did not state a readable version", engine="orcaslicer")
     assert ORCASLICER.option_probe is not None
 
     home = tmp_path_factory.mktemp("xdg")
