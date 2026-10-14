@@ -76,6 +76,49 @@ from slicelab.engine.discover import discover
 LAYOUT = {"prusaslicer": ("vendor", False), "orcaslicer": ("system", True)}
 
 
+def _declare_installed_models(bundles: Path) -> str:
+    """PrusaSlicer's marker, declaring every printer model the copied bundles define.
+
+    An EMPTY marker is not neutral, which is the thing to know here. slicelab's check
+    reads only the file's presence -- `configuration_state` says so -- but the ENGINE
+    reads the file, and with nothing in it the triple resolves only part of the way:
+    it slices, and the artifact comes out missing things that are not obviously
+    related to configuration.
+
+    Measured on this engine, one 20 mm cube against the stock MK3S triple, the only
+    difference being this file:
+
+    | | empty marker | models declared |
+    | --- | --- | --- |
+    | `; max_layer_z` in the footer | absent | present |
+    | `; total filament used [g]` | 0.00 | 3.73 |
+    | artifact | 576,670 B | 604,319 B |
+
+    So an empty marker silently costs the lock its `plated_height_mm` and gives every
+    mass a density of zero. The first version of this script wrote one, and the engine
+    legs reported exactly that: `KeyError: 'plated_height_mm'` on all three, and the
+    stats fixtures disagreeing with the artifact.
+
+    Derived from the bundles rather than written out here, so the models declared are
+    the models present and a bundle update cannot leave this behind.
+    """
+    sections = []
+    for bundle in sorted(bundles.glob("*.ini")):
+        models: list[str] = []
+        model: str | None = None
+        for line in bundle.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("["):
+                model = line[15:-1] if line.startswith("[printer_model:") else None
+            elif model is not None and line.startswith("variants"):
+                variants = line.partition("=")[2].replace(" ", "").strip()
+                if variants:
+                    models.append(f"model:{model} = {variants}")
+                model = None
+        if models:
+            sections.append(f"[vendor:{bundle.stem}]\n" + "\n".join(models) + "\n")
+    return "".join(sections)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("engine", help="the engine to configure, as `slicelab which` names it")
@@ -139,10 +182,14 @@ def main() -> int:
                 shutil.copy2(shipped, bundles / shipped.name)
                 copied += 1
 
-    # Created, not written: the marker's presence is the claim, and seeding settings
-    # nobody measured would put this script's opinions into every engine-backed test.
     marker = directory / spec.config_location.marker
-    if not marker.exists():
+    if args.engine == "prusaslicer":
+        declared = _declare_installed_models(bundles)
+        marker.write_text(declared, encoding="utf-8")
+        print(f"{args.engine}: declared {declared.count('model:')} models in the marker")
+    elif not marker.exists():
+        # OrcaSlicer reads a `system/` tree and needed nothing in its marker: its
+        # engine-backed tests passed against an empty one on run 38497422988.
         marker.touch()
 
     state = configuration_state(spec, found)

@@ -74,6 +74,22 @@ jobs:
           sudo flatpak install -y --noninteractive flathub com.orcaslicer.OrcaSlicer
       - name: Show what was installed
         run: flatpak list --app
+      - name: Give the engine a writable runtime directory
+        # Without one the Flatpak launcher cannot create `/run/user/<uid>/dconf/user`
+        # and the engine prefixes stderr with `dconf-CRITICAL **: ... Permission
+        # denied. dconf will not work properly.` -- measured on run 38497422988, where
+        # six tests that assert a clean run writes nothing on stderr failed on it.
+        #
+        # The environment is the fix rather than those assertions: "this engine says
+        # nothing when it succeeds" is a property worth keeping pinned, and a message
+        # the launcher invented is not the engine saying something. 0700 is what the
+        # basedir spec requires of this directory.
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/xdg-runtime"
+          mkdir -p "$runtime"
+          chmod 700 "$runtime"
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
       - run: just setup
       - name: Give both engines the configuration their verbs need
       # A fresh install has NO configuration, and D29 makes that an environment
@@ -122,12 +138,43 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y prusa-slicer
           command -v prusa-slicer
+      - name: Give the engine a writable runtime directory
+        # Without one the Flatpak launcher cannot create `/run/user/<uid>/dconf/user`
+        # and the engine prefixes stderr with `dconf-CRITICAL **: ... Permission
+        # denied. dconf will not work properly.` -- measured on run 38497422988, where
+        # six tests that assert a clean run writes nothing on stderr failed on it.
+        #
+        # The environment is the fix rather than those assertions: "this engine says
+        # nothing when it succeeds" is a property worth keeping pinned, and a message
+        # the launcher invented is not the engine saying something. 0700 is what the
+        # basedir spec requires of this directory.
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/xdg-runtime"
+          mkdir -p "$runtime"
+          chmod 700 "$runtime"
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
       - run: just setup
-      - run: just test
+      - name: Give the engine the configuration its verbs need
+        run: |
+          set -euo pipefail
+          ls /usr/share/PrusaSlicer/profiles | head
+          uv run python scripts/seed_engine_config.py prusaslicer \
+            --profiles /usr/share/PrusaSlicer/profiles \
+            --datadir "$HOME/.config/PrusaSlicer"
+      - name: Discovery and enumeration only, which is what this leg controls for
+        # Ubuntu ships 2.9.2 and the resolve/slice suite asks for 2.9.6's option
+        # spellings, so those tests cannot pass here: `Unknown option
+        # --printer-profile`, 29 failures on run 38267940432 (#50). The option is
+        # real on 2.9.6 -- checked against the Flathub build -- so the gap is the
+        # version, not the argv.
+        #
+        # This leg's stated job is plain PATH discovery with no sandbox, which is
+        # coverage the Flatpak legs cannot give. It now runs exactly that, rather
+        # than failing at something it was never controlling for. The rest of the
+        # suite is not lost: ci.yml runs it on Linux on every push.
+        run: uv run pytest tests/test_discovery.py tests/test_presets.py
       - name: Report what discovery chose, and why
-        # Plain PATH discovery, no sandbox. Note this is a DIFFERENT VERSION
-        # from the Flatpak jobs -- Ubuntu ships an older PrusaSlicer -- so it
-        # controls for the install mode, not for the version.
         run: uv run slicelab which prusaslicer
 
   macos:
