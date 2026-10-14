@@ -212,15 +212,20 @@ def test_a_relative_xdg_config_home_is_ignored(monkeypatch) -> None:
     `launch` and `characterise` each have the same guard and each test it; this is the
     third place that reads an XDG variable and the only one that did not.
 
-    POSIX only, and the second platform assumption this change shipped -- the first
-    was a `~user` input that raises on POSIX and expands silently on Windows. The
-    dispatch in `where_configuration_should_be` is by launch form and then platform,
-    so on win32 the APPDATA branch answers before XDG is ever read.
+    Linux only. This said "POSIX only", which is the wrong category and is what the
+    macOS leg caught: the dispatch in `where_configuration_should_be` is by launch
+    form and then platform, and darwin answers from `Library/Application Support`
+    before XDG is ever read, exactly as win32 answers from `APPDATA`. Since no
+    adapter declares a `macos` location either, the call returns `None` and the
+    assertion below failed `assert None is not None` on run 38507623172. A `~user`
+    input that raises on POSIX and expands silently on Windows was the same kind of
+    assumption about what "POSIX" settles.
     """
-    if sys.platform == "win32":
+    if sys.platform in ("win32", "darwin"):
         pytest.skip(
-            "the XDG branch is unreachable on win32: `where_configuration_should_be` "
-            "dispatches to the APPDATA branch first, by design"
+            f"the XDG branch is unreachable on {sys.platform}: "
+            "`where_configuration_should_be` dispatches by platform before it reads "
+            "XDG, by design"
         )
     xdg_engine = replace(
         PRUSASLICER,
