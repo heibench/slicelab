@@ -124,6 +124,25 @@ def engine_that_writes(monkeypatch: pytest.MonkeyPatch):
     return written
 
 
+def _lock_naming(artifact: Path) -> str:
+    """A minimal lock whose `artifact.path` is `artifact`.
+
+    The path goes in a TOML *literal* string. In a basic string a Windows path's
+    backslashes are escape sequences -- the `\\U` in `C:\\Users` is an invalid one --
+    so `tomllib` refuses the whole file, the guard under test refuses for the wrong
+    reason, and the test reads as a pass on Linux and a failure on Windows. Measured:
+    that is exactly what it did.
+    """
+    text = f"schema_version = 1\n\n[artifact]\npath = '{artifact}'\n"
+    # Pinned here so a fixture that stops parsing fails on every platform rather than
+    # only the one whose paths break it.
+    assert tomllib.loads(text)["artifact"]["path"] == str(artifact), (
+        "the fixture must parse and name the artifact, or the guard under test refuses "
+        "for the wrong reason"
+    )
+    return text
+
+
 def _discard(fault: BaseException) -> None:
     """Remove a scratch directory a test deliberately provoked slicelab into keeping.
 
@@ -537,8 +556,9 @@ def test_a_lock_that_cannot_be_written_does_not_assert_what_it_never_read(
     `is_file()`, which establishes that something is there and nothing about what it
     says -- measured false on exactly this run.
     """
-    standing = f'schema_version = 1\n\n[artifact]\npath = "{intent.parent / "part.gcode"}"\n'
-    (intent.parent / "slice.lock").write_text(standing, encoding="utf-8")
+    (intent.parent / "slice.lock").write_text(
+        _lock_naming(intent.parent / "part.gcode"), encoding="utf-8"
+    )
     real = slicing.promote
 
     def not_the_lock(payload, destination):
@@ -616,7 +636,7 @@ def test_a_symlink_appearing_at_the_lock_path_is_not_followed(tmp_path: Path) ->
     artifact = tmp_path / "part.gcode"
     artifact.write_text("G1 X0\n", encoding="utf-8")
     target = tmp_path / "notes.toml"
-    target.write_text(f'schema_version = 1\n\n[artifact]\npath = "{artifact}"\n', encoding="utf-8")
+    target.write_text(_lock_naming(artifact), encoding="utf-8")
     link = tmp_path / "slice.lock"
     link.symlink_to(target)
 
@@ -625,7 +645,6 @@ def test_a_symlink_appearing_at_the_lock_path_is_not_followed(tmp_path: Path) ->
     assert link.is_symlink(), "the link itself was unlinked"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need a privilege on Windows")
 def test_a_stale_lock_that_cannot_be_removed_says_the_artifact_was_handed_over(
     intent: Path, engine_that_writes, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -641,10 +660,7 @@ def test_a_stale_lock_that_cannot_be_removed_says_the_artifact_was_handed_over(
         intent.read_text(encoding="utf-8").split("[prusaslicer.set]")[0], encoding="utf-8"
     )
     lock = intent.parent / "slice.lock"
-    lock.write_text(
-        f'schema_version = 1\n\n[artifact]\npath = "{intent.parent / "part.gcode"}"\n',
-        encoding="utf-8",
-    )
+    lock.write_text(_lock_naming(intent.parent / "part.gcode"), encoding="utf-8")
     real_unlink = Path.unlink
 
     def refuses(self, *args, **kwargs):

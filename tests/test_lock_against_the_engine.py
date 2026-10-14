@@ -359,10 +359,13 @@ def test_a_file_slicelab_did_not_write_is_not_removed(engine, tmp_path: Path) ->
     # It has to carry `artifact.path` pointing at THIS run's G-code, or the path check
     # refuses first and `schema_version` is never the reason -- measured: with a bare
     # comment here, dropping the `schema_version` guard altogether left this test green.
+    # A literal string, not a basic one: in a basic string a Windows path's backslashes
+    # are escape sequences, `tomllib` refuses the file, and the path check would refuse
+    # for the wrong reason -- leaving `schema_version` again not the guard under test.
     mine = (
         "# my own notes about this part, nothing to do with slicelab\n"
         "[artifact]\n"
-        f'path = "{tmp_path / "part.gcode"}"\n'
+        f"path = '{tmp_path / 'part.gcode'}'\n"
     )
     lock.write_text(mine, encoding="utf-8")
 
