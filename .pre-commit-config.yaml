@@ -51,7 +51,7 @@ repos:
     # `just lint` are otherwise free to be two different formatters, and the
     # disagreement surfaces as a CI failure nobody can reproduce locally.
     # `tests/test_pre_commit_gate.py` asserts they match.
-    rev: v0.16.6
+    rev: v0.17.0
     hooks:
       # `ruff`, not `ruff-check`, is the deprecated alias -- it still resolves and
       # prints "ruff (legacy alias)" on every run.
