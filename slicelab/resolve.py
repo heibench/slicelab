@@ -40,6 +40,7 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from slicelab.adapters import EngineSpec
 from slicelab.engine.characterise import CharacterisationError, MapEntry, load_name_map
@@ -303,6 +304,17 @@ def _run_record(completed, spec: EngineSpec) -> tuple[int | None, str] | None:
     return None
 
 
+#: How much of the engine's own account is carried into slicelab's message.
+#:
+#: 1200 rather than 400, and NOT because the cause would otherwise be lost: with the
+#: tail kept, 400 holds the cause too -- measured, the mutation that lowers this number
+#: leaves every assertion about the cause green. What the larger budget buys is what
+#: the engine said AROUND the cause. The launcher warning in the measured case is
+#: itself diagnostic -- a host that cannot write its runtime directory is worth
+#: telling an author about -- and at 400 the whole of it is what falls off the cliff.
+_DIAGNOSIS_BUDGET: Final = 1200
+
+
 def _diagnosis(completed) -> str:
     """The engine's own account of why, or a statement that it gave none.
 
@@ -318,14 +330,36 @@ def _diagnosis(completed) -> str:
 
     where line one is a header and line two is the only sentence an author can act
     on. A `splitlines()[0]` here reproduced, inside the fix for it, exactly the
-    defect the fix was written to remove. Every line is kept, joined, and truncated
-    once at the end, so what is dropped is the tail of a long message rather than
-    the cause.
+    defect the fix was written to remove. Every line is kept and joined.
+
+    **And truncated from the FRONT, not the back.** This used to cut at 400 from the
+    start, with a comment claiming what was dropped was "the tail of a long message
+    rather than the cause" -- which holds only while the cause is early. Anything the
+    runtime prints before the engine speaks pushes it late. Measured on a runner with
+    no writable dbus path, where the Flatpak launcher emits
+
+        (/usr/bin/flatpak run:48295): dconf-CRITICAL **: unable to create file
+        '/run/user/1001/dconf/user': Permission denied.  dconf will not work properly.
+
+    twice, at about 150 characters each, before the engine says anything. The 400
+    went entirely on that, `Printer profile 'No Such Printer 9000' wasn't found` fell
+    outside it, and `test_a_previous_run_s_dump_is_never_adjudicated_as_this_run_s`
+    failed with its own name for it: the engine named the cause and slicelab dropped
+    it.
+
+    So the budget is larger and the tail is what survives. The cause is the last
+    thing said in every case measured here -- the engine's own error comes after its
+    header, and launcher noise is prepended rather than appended -- and a leading
+    ellipsis says plainly that something was cut. Noise is not filtered by shape:
+    #19 settled that reading engine output by pattern is the thing to avoid, and it
+    would not generalise to an engine whose noise looks different anyway.
     """
     for stream, label in ((completed.stderr, "stderr"), (completed.stdout, "stdout")):
         said = " ".join(line.strip() for line in (stream or "").splitlines() if line.strip())
         if said:
-            return f"{label}: {said[:400]}"
+            if len(said) > _DIAGNOSIS_BUDGET:
+                said = "..." + said[-_DIAGNOSIS_BUDGET:]
+            return f"{label}: {said}"
     return "it said nothing on either stream"
 
 

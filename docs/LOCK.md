@@ -227,6 +227,11 @@ An empty array is a real answer and means nothing was unestablished. Codes in us
   weaker claim than knowing it carries no text footer.
 - `engine_described_no_mesh` — no mesh facts; `mesh_sha256` is still present.
 - `artifact_stated_no_placement` — the artifact named no object placement.
+- `artifact_stated_no_plated_height` — the footer carried no `max_layer_z`, so
+  `plated_height_mm` is absent. It used to vanish with no code at all, which reads as
+  "this engine reports nothing of the kind" when the engine usually does report it:
+  measured, a configuration declaring no installed printer models produces a footer
+  with no `max_layer_z` in it.
 
 Branch on `code`. `detail` is prose and may be reworded; `fields` names what is
 missing so a reader does not have to infer it from an absent key.

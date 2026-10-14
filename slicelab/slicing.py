@@ -46,6 +46,7 @@ from slicelab.engine.discover import argv_for, discover
 from slicelab.engine.identity import identify
 from slicelab.engine.launch import run
 from slicelab.geometry import (
+    HEIGHT_NOT_STATED,
     MESH_NOT_DESCRIBED,
     PLACEMENT_NOT_STATED,
     MeshFacts,
@@ -544,6 +545,14 @@ def _lock_document(
         height = spec.plated_height(text)
         if height is not None:
             geometry["plated_height_mm"] = height.as_table()
+        else:
+            unknowns.append(
+                {
+                    "code": HEIGHT_NOT_STATED,
+                    "detail": "the artifact stated no plated height",
+                    "fields": ["geometry.plated_height_mm"],
+                }
+            )
     if text is not None and spec.read_placement is not None:
         placement = spec.read_placement(text)
         if placement is not None:
