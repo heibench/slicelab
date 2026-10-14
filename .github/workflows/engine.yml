@@ -9,9 +9,15 @@ name: Engine
 # backgrounds its child and therefore returns 0 for every invocation, so its
 # exit status carries no information (notes/evidence.md V10).
 #
-# Every job sets SLICELAB_REQUIRE_ENGINE=1, so a failed install is a LOUD
-# failure rather than a green run full of skips. A job that could not get an
-# engine must not look like a job that tested one.
+# Every job NAMES the engines it installs in SLICELAB_REQUIRE_ENGINE, so a failed
+# install is a LOUD failure rather than a green run full of skips. A job that could
+# not get an engine must not look like a job that tested one.
+#
+# Named rather than `1`, which means every engine in the registry: only the Flatpak
+# leg installs OrcaSlicer, so `1` made the other three demand an engine they never
+# install and five OrcaSlicer tests errored at setup on each of macOS and Windows.
+# "This leg has no OrcaSlicer" is a true statement about the leg, not a finding
+# about the code.
 #
 # THIS MATRIX IS ALSO A CONTROL. Every empirical finding behind this project
 # was taken on one Linux host against two Flatpaks. A Flatpak is a materially
@@ -49,12 +55,12 @@ concurrency:
   group: engine-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  SLICELAB_REQUIRE_ENGINE: "1"
 
 jobs:
   flatpak:
     name: Linux / Flatpak (Flathub, both engines)
+    env:
+      SLICELAB_REQUIRE_ENGINE: "prusaslicer,orcaslicer"
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -124,6 +130,8 @@ jobs:
 
   linux-apt:
     name: Linux / distro package on PATH
+    env:
+      SLICELAB_REQUIRE_ENGINE: "prusaslicer"
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -179,6 +187,8 @@ jobs:
 
   macos:
     name: macOS / Homebrew cask (.app bundle)
+    env:
+      SLICELAB_REQUIRE_ENGINE: "prusaslicer"
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
@@ -237,6 +247,8 @@ jobs:
 
   windows:
     name: Windows / official portable zip
+    env:
+      SLICELAB_REQUIRE_ENGINE: "prusaslicer"
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
