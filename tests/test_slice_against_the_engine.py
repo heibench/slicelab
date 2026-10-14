@@ -23,6 +23,7 @@ the geometry is knowable enough to assert anything about.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -226,19 +227,54 @@ def test_what_the_promotion_displaced_is_reported(engine, tmp_path: Path) -> Non
 
     The alternative -- an mtime check -- was measured and rejected: 198 of 200 tmpfs
     writes had identical `st_mtime_ns`.
+
+    The fixture is written as BYTES. Text mode translates `\\n` on Windows, so
+    `write_text("DISPLACED\\n")` put `b"DISPLACED\\r\\n"` on disk and this test then
+    looked for the hash of a file that had never existed -- `ed57a6a8f724ffce`
+    against the `0aeddfcc223b1da0` the report correctly printed, on the Windows leg
+    of run 38574711743. `test_stray_files.py` carries the same rule, arrived at the
+    same way.
     """
     intent = _intent(tmp_path, "perimeters = 4")
-    (tmp_path / "part.gcode").write_text("DISPLACED\n", encoding="utf-8")
+    displaced = b"DISPLACED\n"
+    destination = tmp_path / "part.gcode"
+    destination.write_bytes(displaced)
+    assert destination.read_bytes() == displaced, "the fixture is not the bytes it names"
 
     done = _slice(intent)
 
     assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
-    # sha256 of b"DISPLACED\n", first 16 characters as the report prints them.
-    import hashlib
-
-    expected = hashlib.sha256(b"DISPLACED\n").hexdigest()[:16]
+    # First 16 characters, as the report prints them.
+    expected = hashlib.sha256(displaced).hexdigest()[:16]
     assert expected in done.stdout, f"the displaced file is not named: {done.stdout}"
-    assert (tmp_path / "part.gcode").read_bytes()[:4] != b"DISPL"
+    assert destination.read_bytes()[:4] != b"DISPL"
+
+
+def test_the_displaced_file_s_hash_is_over_the_bytes_on_disk(engine, tmp_path: Path) -> None:
+    """A CRLF artifact, whose hash differs depending on how the file is read.
+
+    The test above cannot catch a reader that applies universal newlines, because its
+    fixture has nothing to translate on the platform it usually runs on. This one
+    puts CRLF on disk deliberately, so `open("r")` anywhere -- not only on Windows --
+    would report the hash of bytes the author does not have.
+
+    Which is the whole point of naming the displaced file: an author identifies what
+    they lost by hashing their own copy of it.
+    """
+    intent = _intent(tmp_path, "perimeters = 4")
+    crlf = b"DISPLACED\r\n"
+    (tmp_path / "part.gcode").write_bytes(crlf)
+
+    done = _slice(intent)
+
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    assert hashlib.sha256(crlf).hexdigest()[:16] in done.stdout, (
+        f"the hash reported is not the hash of the bytes on disk: {done.stdout}"
+    )
+    assert hashlib.sha256(b"DISPLACED\n").hexdigest()[:16] not in done.stdout, (
+        "the line endings were translated before hashing, so the hash names a file "
+        "the author never had"
+    )
 
 
 def test_a_coerced_key_produces_an_artifact_that_is_not_handed_over(engine, tmp_path: Path) -> None:
