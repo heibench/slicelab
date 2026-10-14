@@ -927,7 +927,7 @@ def test_the_recipes_ci_invokes_still_run_what_they_claim() -> None:
     for name, body in (
         ("fmt-check", "uv run ruff format --check ."),
         ("lint", "uv run ruff check ."),
-        ("typecheck", "uv run mypy slicelab/ tests/"),
+        ("typecheck", "uv run mypy slicelab/ tests/ scripts/"),
     ):
         assert recipes.get(name) == ["", body], (
             f"the `{name}` recipe `just check` depends on is not {body!r}: {recipes.get(name)}"
