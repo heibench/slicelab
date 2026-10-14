@@ -186,8 +186,40 @@ def _engine_binary(spec: EngineSpec, found) -> Path | None:
     return binary if binary.is_file() else None
 
 
+#: Compiled objects, by suffix. `.so.1.3.1` and friends are why this is a pattern
+#: rather than a tuple of suffixes.
+NATIVE_OBJECT = re.compile(r"\.(?:dll|exe|dylib|so)$|\.so\.[0-9]")
+
+
+def _objects_of_the_build(binary: Path) -> tuple[Path, ...]:
+    """The executable, and the compiled objects shipped beside it.
+
+    The names are in the build, not necessarily in the file that was launched.
+    PrusaSlicer's official Windows zip is the case that matters: `prusa-slicer.exe`
+    and `prusa-slicer-console.exe` are 196 KB launchers and the code is in a
+    96.5 MB sibling, `PrusaSlicer.dll`.
+
+    Not recursive. The point is the code that ships with the executable, which on
+    Windows is the install root; `mesa/opengl32.dll` is in a subdirectory and stays
+    out.
+
+    What bounds this on a distro install, where the executable lives in a shared
+    bindir, is the suffix filter rather than the directory: a Unix program has no
+    extension, so `/usr/bin` contributes one name here -- the `ld.so` symlink --
+    and nothing else. A Flatpak's `files/bin` adds `OCCTWrapper.so`, whose 17
+    credential-shaped names are z3 and OCCT internals the engine drops (V2). A
+    macOS bundle's `Contents/MacOS` holds the engine alone.
+    """
+    siblings = sorted(
+        path
+        for path in binary.parent.iterdir()
+        if path != binary and path.is_file() and NATIVE_OBJECT.search(path.name)
+    )
+    return (binary, *siblings)
+
+
 def _candidates_from_the_build(binary: Path) -> tuple[str, ...]:
-    """Config-key-shaped names in the binary whose spelling reads like a credential.
+    """Config-key-shaped names in the build whose spelling reads like a credential.
 
     A CANDIDATE list, not an answer -- the same distinction `OptionProbe.candidates`
     draws. It decides what gets SET; what gets ruled on is every credential-shaped
@@ -202,9 +234,24 @@ def _candidates_from_the_build(binary: Path) -> tuple[str, ...]:
     because `print_host_queue_dialog_width` and friends consume it. Ruling on the
     dump rather than on this list is what keeps the most important key of the family
     in scope.
+
+    "The build" rather than "the binary", because reading the launched file alone
+    enumerated ONE name on Windows -- `token_finder` -- which is what the Windows
+    leg of run 38567138555 reported. Measured over the official 2.9.6 portable zip
+    on this host, with this scan:
+
+        prusa-slicer-console.exe    196104 bytes     1 candidate
+        prusa-slicer.exe            196104 bytes     1 candidate
+        PrusaSlicer.dll           96501256 bytes    81 candidates
+
+    The 81 are the family this test exists for: `printhost_password`,
+    `printhost_apikey`, `printhost_user`, `printhost_cafile`, `octoprint_apikey`,
+    `octoprint_host`, `print_host`. Each object costs about 0.6 s to scan at this
+    size, against a leg that takes half an hour.
     """
-    blob = binary.read_bytes()
-    shaped = set(re.findall(rb"[a-z][a-z0-9_]{3,48}", blob))
+    shaped: set[bytes] = set()
+    for path in _objects_of_the_build(binary):
+        shaped |= set(re.findall(rb"[a-z][a-z0-9_]{3,48}", path.read_bytes()))
     return tuple(
         sorted(
             name
@@ -581,6 +628,41 @@ def test_the_engine_s_dump_never_lands_in_the_author_s_directory(seeded, tmp_pat
     assert present, "this build emitted no credential key at all, so nothing was proved"
     for key in present:
         assert f"{key} = {REDACTED}\n" in readback, f"{key} reached the author's directory in full"
+
+
+def test_the_candidate_scan_reads_the_build_and_not_only_the_launcher(tmp_path: Path) -> None:
+    """A split build hides the string table from a scan of the launched file.
+
+    The only test in this file that needs no engine, because it is about the scan
+    the test below depends on rather than about an engine's behaviour. It is here
+    rather than beside a unit test so that the function and its proof move together.
+
+    The fixture is the shape of the official Windows zip: a small launcher, the code
+    in a sibling, and a subdirectory that must stay out of scope -- `mesa/` there is
+    20.9 MB of vendored OpenGL with no config key in it.
+    """
+    launcher = tmp_path / "prusa-slicer.exe"
+    launcher.write_bytes(b"\0token_finder\0")
+    (tmp_path / "PrusaSlicer.dll").write_bytes(b"\0printhost_password\0printhost_apikey\0")
+    (tmp_path / "libocct.so.7.8").write_bytes(b"\0printhost_cafile\0")
+    (tmp_path / "notes.txt").write_bytes(b"\0printhost_in_a_document\0")
+    (tmp_path / "mesa").mkdir()
+    (tmp_path / "mesa" / "opengl32.dll").write_bytes(b"\0printhost_in_a_subdirectory\0")
+
+    candidates = _candidates_from_the_build(launcher)
+
+    assert "token_finder" in candidates, "the launched file itself was not read"
+    assert "printhost_password" in candidates, (
+        "a name present only in a sibling object was missed, which is how the Windows "
+        "leg enumerated one credential-shaped name out of 81"
+    )
+    assert "printhost_apikey" in candidates
+    assert "printhost_cafile" in candidates, "a versioned `.so.N` sibling was not read"
+    assert "printhost_in_a_document" not in candidates, "a non-object file was read"
+    assert "printhost_in_a_subdirectory" not in candidates, (
+        "the scan descended into a subdirectory, so it is not bounded by the install "
+        "root it claims to read"
+    )
 
 
 def test_credentials_are_enumerated_not_sampled(seeded) -> None:
