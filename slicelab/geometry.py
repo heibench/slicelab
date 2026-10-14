@@ -40,6 +40,16 @@ MESH_NOT_DESCRIBED: Final = "engine_described_no_mesh"
 #: Why there is no plated footprint.
 PLACEMENT_NOT_STATED: Final = "artifact_stated_no_placement"
 
+#: Why there is no plated height.
+#:
+#: Its siblings above both record a reason when they cannot answer; this field did not,
+#: and simply vanished. An absent field reads as "this engine reports nothing of the
+#: kind", which is what the same change drew the distinction about for the per-filament
+#: mass -- and the engine does report it, just not always. Measured: with a marker
+#: declaring no installed printer models the footer carries no `max_layer_z` at all,
+#: and the lock said nothing about why.
+HEIGHT_NOT_STATED: Final = "artifact_stated_no_plated_height"
+
 
 def mesh_sha256(model: Path) -> str:
     """sha256 of the mesh file, as slicelab read it.

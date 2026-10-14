@@ -169,6 +169,7 @@ DECLARED_VOCABULARY = frozenset(
         "name",
         "engine_described_no_mesh",
         "artifact_stated_no_placement",
+        "artifact_stated_no_plated_height",
         # D9's two hashes. `substitutions` travels with the normalized digest because
         # the count is what makes it interpretable: 1 says the header was found, 0
         # says the pattern matched nothing and the digest is withheld. Checked
@@ -229,6 +230,7 @@ DECLARED_VOCABULARY = frozenset(
         "artifact.normalized.sha256",
         "geometry.mesh_bbox",
         "geometry.plated_footprint",
+        "geometry.plated_height_mm",
         "stats.",
         # TOML's own grammar, from the lock's emitter. Not domain vocabulary: the
         # lock's field names are assembled by its caller and declared above, and
