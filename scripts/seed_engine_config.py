@@ -184,9 +184,9 @@ def main() -> int:
 
     marker = directory / spec.config_location.marker
     if args.engine == "prusaslicer":
-        declared = _declare_installed_models(bundles)
-        marker.write_text(declared, encoding="utf-8")
-        print(f"{args.engine}: declared {declared.count('model:')} models in the marker")
+        models = _declare_installed_models(bundles)
+        marker.write_text(models, encoding="utf-8")
+        print(f"{args.engine}: declared {models.count('model:')} models in the marker")
     elif not marker.exists():
         # OrcaSlicer reads a `system/` tree and needed nothing in its marker: its
         # engine-backed tests passed against an empty one on run 38497422988.
