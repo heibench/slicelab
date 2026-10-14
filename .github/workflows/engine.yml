@@ -29,6 +29,16 @@ name: Engine
 
 on:
   workflow_dispatch:
+  # On the PRs that can break it, not only weekly. #37 landed green on the gate,
+  # broke all four legs here, and the first run that said so was the schedule six
+  # days later -- after which it stayed red for a month because nobody was looking
+  # at a workflow nothing reports on. The paths filter is what keeps that cheap.
+  pull_request:
+    paths:
+      - "slicelab/**"
+      - "tests/*_against_the_engine.py"
+      - "scripts/seed_engine_config.py"
+      - ".github/workflows/engine.yml"
   schedule:
     - cron: "0 6 * * 1" # Mondays, 06:00 UTC
 
@@ -64,7 +74,45 @@ jobs:
           sudo flatpak install -y --noninteractive flathub com.orcaslicer.OrcaSlicer
       - name: Show what was installed
         run: flatpak list --app
+      - name: Give the engine a writable runtime directory
+        # Without one the Flatpak launcher cannot create `/run/user/<uid>/dconf/user`
+        # and the engine prefixes stderr with `dconf-CRITICAL **: ... Permission
+        # denied. dconf will not work properly.` -- measured on run 38497422988, where
+        # six tests that assert a clean run writes nothing on stderr failed on it.
+        #
+        # The environment is the fix rather than those assertions: "this engine says
+        # nothing when it succeeds" is a property worth keeping pinned, and a message
+        # the launcher invented is not the engine saying something. 0700 is what the
+        # basedir spec requires of this directory.
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/xdg-runtime"
+          mkdir -p "$runtime"
+          chmod 700 "$runtime"
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
       - run: just setup
+      - name: Give both engines the configuration their verbs need
+      # A fresh install has NO configuration, and D29 makes that an environment
+        # fault: the verbs refuse at exit 4 rather than ask an unconfigured engine
+        # to dump a configuration it has not got. Every leg here installed an engine
+        # and configured none, so every engine-backed test failed from the first run
+        # after #37 (#43).
+        #
+        # Running the engine once does not fix it, which is the thing #43 left open.
+        # Measured against Flathub 2.9.6: `--help` with a fresh datadir exits 0 and
+        # creates nothing, and a real `--export-gcode` refuses with "Configuration
+        # wasn't found. Check your 'datadir' value." and writes no G-code. So the
+        # configuration is seeded from the bundles the install already ships.
+        run: |
+          set -euo pipefail
+          prusa=$(flatpak info --show-location com.prusa3d.PrusaSlicer)
+          uv run python scripts/seed_engine_config.py prusaslicer \
+            --profiles "$prusa/files/share/PrusaSlicer/profiles" \
+            --datadir "$HOME/.var/app/com.prusa3d.PrusaSlicer/config/PrusaSlicer"
+          orca=$(flatpak info --show-location com.orcaslicer.OrcaSlicer)
+          uv run python scripts/seed_engine_config.py orcaslicer \
+            --profiles "$orca/files/share/OrcaSlicer/profiles" \
+            --datadir "$HOME/.var/app/com.orcaslicer.OrcaSlicer/config/OrcaSlicer"
       - run: just test
       - name: Report what discovery chose, and why
         # The interesting output of this whole workflow. On the development
@@ -90,12 +138,43 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y prusa-slicer
           command -v prusa-slicer
+      - name: Give the engine a writable runtime directory
+        # Without one the Flatpak launcher cannot create `/run/user/<uid>/dconf/user`
+        # and the engine prefixes stderr with `dconf-CRITICAL **: ... Permission
+        # denied. dconf will not work properly.` -- measured on run 38497422988, where
+        # six tests that assert a clean run writes nothing on stderr failed on it.
+        #
+        # The environment is the fix rather than those assertions: "this engine says
+        # nothing when it succeeds" is a property worth keeping pinned, and a message
+        # the launcher invented is not the engine saying something. 0700 is what the
+        # basedir spec requires of this directory.
+        run: |
+          set -euo pipefail
+          runtime="$RUNNER_TEMP/xdg-runtime"
+          mkdir -p "$runtime"
+          chmod 700 "$runtime"
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
       - run: just setup
-      - run: just test
+      - name: Give the engine the configuration its verbs need
+        run: |
+          set -euo pipefail
+          ls /usr/share/PrusaSlicer/profiles | head
+          uv run python scripts/seed_engine_config.py prusaslicer \
+            --profiles /usr/share/PrusaSlicer/profiles \
+            --datadir "$HOME/.config/PrusaSlicer"
+      - name: Discovery and enumeration only, which is what this leg controls for
+        # Ubuntu ships 2.9.2 and the resolve/slice suite asks for 2.9.6's option
+        # spellings, so those tests cannot pass here: `Unknown option
+        # --printer-profile`, 29 failures on run 38267940432 (#50). The option is
+        # real on 2.9.6 -- checked against the Flathub build -- so the gap is the
+        # version, not the argv.
+        #
+        # This leg's stated job is plain PATH discovery with no sandbox, which is
+        # coverage the Flatpak legs cannot give. It now runs exactly that, rather
+        # than failing at something it was never controlling for. The rest of the
+        # suite is not lost: ci.yml runs it on Linux on every push.
+        run: uv run pytest tests/test_discovery.py tests/test_presets.py
       - name: Report what discovery chose, and why
-        # Plain PATH discovery, no sandbox. Note this is a DIFFERENT VERSION
-        # from the Flatpak jobs -- Ubuntu ships an older PrusaSlicer -- so it
-        # controls for the install mode, not for the version.
         run: uv run slicelab which prusaslicer
 
   macos:
@@ -127,6 +206,31 @@ jobs:
           ls -l "$bundle/Contents/MacOS"
           echo "$bundle/Contents/MacOS" >> "$GITHUB_PATH"
       - run: just setup
+      - name: Give the engine the configuration its verbs need
+      # A fresh install has NO configuration, and D29 makes that an environment
+        # fault: the verbs refuse at exit 4 rather than ask an unconfigured engine
+        # to dump a configuration it has not got. Every leg here installed an engine
+        # and configured none, so every engine-backed test failed from the first run
+        # after #37 (#43).
+        #
+        # Running the engine once does not fix it, which is the thing #43 left open.
+        # Measured against Flathub 2.9.6: `--help` with a fresh datadir exits 0 and
+        # creates nothing, and a real `--export-gcode` refuses with "Configuration
+        # wasn't found. Check your 'datadir' value." and writes no G-code. So the
+        # configuration is seeded from the bundles the install already ships.
+        #
+        # The datadir is the one the engine named itself in the failing run:
+        # `Failed to load data from the datadir
+        # '/Users/runner/Library/Application Support/PrusaSlicer'`. slicelab
+        # declares no macOS location, so D29 cannot refuse here and the engine
+        # fails with that message instead -- the seed is for the engine's sake.
+        run: |
+          set -euo pipefail
+          bundle=$(ls -d /Applications/*rusa*.app | head -1)
+          ls "$bundle/Contents/Resources" | head
+          uv run python scripts/seed_engine_config.py prusaslicer \
+            --profiles "$bundle/Contents/Resources/profiles" \
+            --datadir "$HOME/Library/Application Support/PrusaSlicer"
       - run: just test
       - name: Report what discovery chose, and why
         run: uv run slicelab which prusaslicer
@@ -156,6 +260,33 @@ jobs:
           if (-not $exe) { throw "prusa-slicer-console.exe not found in the portable zip" }
           Add-Content -Path $env:GITHUB_PATH -Value $exe.Directory.FullName
       - run: just setup
+      - name: Give the engine the configuration its verbs need
+      # A fresh install has NO configuration, and D29 makes that an environment
+        # fault: the verbs refuse at exit 4 rather than ask an unconfigured engine
+        # to dump a configuration it has not got. Every leg here installed an engine
+        # and configured none, so every engine-backed test failed from the first run
+        # after #37 (#43).
+        #
+        # Running the engine once does not fix it, which is the thing #43 left open.
+        # Measured against Flathub 2.9.6: `--help` with a fresh datadir exits 0 and
+        # creates nothing, and a real `--export-gcode` refuses with "Configuration
+        # wasn't found. Check your 'datadir' value." and writes no G-code. So the
+        # configuration is seeded from the bundles the install already ships.
+        #
+        # The datadir is the one the engine named itself in the failing run:
+        # `Failed to load data from the datadir
+        # 'C:\Users\runneradmin\AppData\Roaming\PrusaSlicer'`, which is
+        # %APPDATA%\PrusaSlicer.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Get-ChildItem -Recurse -Filter prusa-slicer-console.exe $env:RUNNER_TEMP\prusaslicer |
+                 Select-Object -First 1
+          $profiles = Join-Path $exe.Directory.FullName "resources\profiles"
+          Get-ChildItem $profiles | Select-Object -First 5 -ExpandProperty Name
+          uv run python scripts/seed_engine_config.py prusaslicer `
+            --profiles "$profiles" `
+            --datadir "$env:APPDATA\PrusaSlicer"
       - run: just test
       - name: Report what discovery chose, and why
         run: uv run slicelab which prusaslicer

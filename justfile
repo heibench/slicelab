@@ -37,9 +37,13 @@ fmt-check:
 lint:
     uv run ruff check .
 
-# Type-check
+# `scripts/` was outside this until a `Path | None` was rebound to a `str` in
+# scripts/seed_engine_config.py, three legs of the engine matrix failed on it, and
+# mypy named it in one second once pointed at the file: "Incompatible types in
+# assignment". A script the workflow runs is code the gate should read.
+[doc("Type-check, scripts/ included")]
 typecheck:
-    uv run mypy slicelab/ tests/
+    uv run mypy slicelab/ tests/ scripts/
 
 # Verify pyproject.toml does not weaken the checks the other recipes run.
 # Deliberately not a test: `addopts = [..., "--co"]` collects the suite without
