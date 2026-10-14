@@ -179,15 +179,16 @@ def slice_intent(intent_path: Path) -> Sliced:
         adjudication = diff(plan.requested, _parse(text, spec), name_map)
 
         prehash = _prehash(plan.artifact_destination)
-        # Read once, before anything is promoted: the lock hashes these same bytes, so
-        # re-reading the destination afterwards would be a second filesystem call that
-        # can fail after the hand-over.
-        payload = plan.staged_artifact.read_bytes()
         # The readback goes first, and unconditionally. It is evidence for a verdict of
         # any kind, and going second is how a run that exits 4 promoting it leaves the
         # author's artifact already replaced -- which makes "nothing was handed over"
         # false in exactly the case it most needs to be true.
         _promote_readback(readback, plan.destination)
+        # After the readback, because this opens a file. Anything between the verdict and
+        # that promotion can fail, and D31 promises the readback to any run that reached
+        # one. Read once rather than re-reading the destination later, which would be a
+        # second filesystem call after the hand-over.
+        payload = plan.staged_artifact.read_bytes()
 
         # AFTER the readback, deliberately. D31 promises the readback on any outcome
         # that was adjudicated at all -- `incomplete` included, because it is the
@@ -262,12 +263,12 @@ def slice_intent(intent_path: Path) -> Sliced:
             )
             try:
                 promote((dumps(document) + "\n").encode("utf-8"), plan.lock_destination)
-            except PromotionError as unwritable:
-                stale = (
-                    " The lock already there describes a different artifact."
-                    if plan.lock_destination.is_file()
-                    else ""
-                )
+            except (PromotionError, ValueError) as unwritable:
+                # `ValueError` too: the emitter refuses an unpaired surrogate, which an
+                # artifact decoded with `surrogateescape` can carry into an object name.
+                # Unhandled it reached the CLI's catch-all as a traceback -- which is
+                # what refusing in the emitter was meant to replace.
+                stale = _what_stands_there(plan.lock_destination, plan.artifact_destination)
                 raise ResolveError(
                     f"the artifact was handed over to {promoted} and the lock was not: "
                     f"{unwritable}.{stale}"
@@ -287,7 +288,17 @@ def slice_intent(intent_path: Path) -> Sliced:
             # DERIVED from the intent's name rather than chosen -- so it removed an
             # author's own file, and through a symlink it removed one outside the project
             # entirely. So the removal now has to establish three things first.
-            displaced = _remove_superseded_lock(plan.lock_destination, promoted)
+            try:
+                displaced = _remove_superseded_lock(plan.lock_destination, promoted)
+            except OSError as unremovable:
+                # D33: "An artifact handed over beside a stale lock that could not be
+                # removed is a state the author has to be told about." Unhandled, this
+                # told them slicelab had a defect instead.
+                raise ResolveError(
+                    f"the artifact was handed over to {promoted} and the lock beside it "
+                    f"could not be removed: {unremovable}. It describes the artifact "
+                    "this run replaced"
+                ) from unremovable
 
         keep = promoted is None
         return Sliced(
@@ -345,6 +356,26 @@ def _mesh_facts(spec, completed) -> tuple[MeshFacts | None, str | None]:
     return facts, None if facts is not None else MESH_NOT_DESCRIBED
 
 
+def _what_stands_there(destination: Path, promoted: Path) -> str:
+    """What the lock already at `destination` describes, when that can be read.
+
+    `is_file()` establishes that something is there and nothing about what it says. The
+    first version of this sentence asserted "describes a different artifact" from that
+    alone, and measured false on the ordinary re-run -- same intent, same output path,
+    a lock whose `artifact.path` is that same path.
+    """
+    try:
+        existing = tomllib.loads(destination.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return ""
+    described = existing.get("artifact")
+    if not isinstance(described, dict) or "path" not in described:
+        return ""
+    if described["path"] == str(promoted):
+        return " The lock already there describes this same path, from an earlier run."
+    return f" The lock already there describes {described['path']}."
+
+
 def _remove_superseded_lock(destination: Path, promoted: Path) -> Path | None:
     """Delete a lock only when it describes the artifact this run just replaced.
 
@@ -352,10 +383,12 @@ def _remove_superseded_lock(destination: Path, promoted: Path) -> Path | None:
     of this established none of them and the path is derived from the intent's name
     rather than chosen by the author:
 
-    * it is a regular file, not a symlink. `Plan.lock_destination` is `.resolve()`d, so a
-      symlinked `slice.lock` resolves to its target -- measured, a link to
-      `../elsewhere/notes.toml` made the destination a path outside the project, and
-      unlinking it deleted a file the author never named.
+    * it is a regular file, not a symlink. This is NOT what saves the `../elsewhere`
+      case: `Plan.lock_destination` is `.resolve()`d and a resolved path is never a
+      symlink -- measured, `declared.is_symlink()` is True where
+      `declared.resolve().is_symlink()` is False. That case is refused at plan time,
+      before the engine runs. What this check covers is the window between that refusal
+      and this unlink, and a path that resolves to itself.
     * it parses as a lock. A file carrying `schema_version` is one slicelab wrote; a file
       of someone's own notes that happens to sit at that name is not.
     * it describes THIS artifact. A lock whose `artifact.path` is some other G-code still

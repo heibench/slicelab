@@ -1534,11 +1534,14 @@ commit is not something to do quietly.
 implementation established none of them and the path is *derived* from the intent's name
 rather than chosen by the author:
 
-- **It is a regular file, not a symlink.** `Plan.lock_destination` is resolved, so a
-  symlinked `slice.lock` resolves to its target. Measured: a link to
-  `../elsewhere/notes.toml` produced a destination outside the project directory, and the
-  unlink removed a file the author never named. A symlinked lock path is now refused at
-  plan time, before the engine runs, because `slice` both writes and removes it.
+- **It is a regular file, not a symlink.** Measured: a link to `../elsewhere/notes.toml`
+  produced a destination outside the project directory, and the unlink removed a file the
+  author never named. That case is refused at **plan time**, before the engine runs,
+  because `slice` both writes and removes this path — and the plan-time refusal is what
+  saves it, not the check at the unlink: `Plan.lock_destination` is resolved, and a
+  resolved path is never a symlink (measured, `declared.is_symlink()` is True where
+  `declared.resolve().is_symlink()` is False). The check at the unlink covers the window
+  between the two, and a path that resolves to itself.
 - **It parses as a lock.** A file carrying `schema_version` is one slicelab wrote; a file
   of the author's own notes that happens to sit at that name is not. Measured: deleted.
 - **It describes THIS artifact.** A lock whose `artifact.path` names a different G-code
@@ -1546,9 +1549,11 @@ rather than chosen by the author:
   `v2.gcode` deleted the lock for an untouched `v1.gcode`, reporting that it "described
   the artifact this run replaced" — which had replaced nothing.
 
-A removal that fails is **not** suppressed. An artifact handed over beside a stale lock
-that could not be removed is a state the author has to be told about; the first
-implementation swallowed the `OSError` and reported nothing.
+A removal that fails is **not** suppressed, and the author is told in the terms this
+paragraph promises: exit 4 naming both facts — the artifact was handed over, and the lock
+beside it could not be removed. The first implementation swallowed the `OSError` and
+reported nothing; the second let it reach the CLI's catch-all, which reported a traceback
+and told the author slicelab had a defect rather than what state their directory was in.
 
 A run that promotes nothing does not touch the lock at all. On `coerced`, `absent` or
 `unvalidated` the lock beside the artifact still describes the artifact that is there.

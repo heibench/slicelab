@@ -356,7 +356,14 @@ def test_a_file_slicelab_did_not_write_is_not_removed(engine, tmp_path: Path) ->
     file of their own can be sitting at it. Measured before the guard: deleted."""
     lock = _slice(tmp_path)
     assert lock.is_file()
-    mine = "# my own notes about this part, nothing to do with slicelab\n"
+    # It has to carry `artifact.path` pointing at THIS run's G-code, or the path check
+    # refuses first and `schema_version` is never the reason -- measured: with a bare
+    # comment here, dropping the `schema_version` guard altogether left this test green.
+    mine = (
+        "# my own notes about this part, nothing to do with slicelab\n"
+        "[artifact]\n"
+        f'path = "{tmp_path / "part.gcode"}"\n'
+    )
     lock.write_text(mine, encoding="utf-8")
 
     intent = tmp_path / "slice.toml"

@@ -21,7 +21,6 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
-import tempfile
 import tomllib
 from pathlib import Path
 
@@ -123,18 +122,6 @@ def engine_that_writes(monkeypatch: pytest.MonkeyPatch):
         ),
     )
     return written
-
-
-def _discard_if_kept() -> None:
-    """Remove the scratch a withholding run kept, when the caller has no exception.
-
-    The D9 refusal reaches the withheld-artifact path, so it keeps a scratch directory
-    like any other withholding run -- measured, one per suite run. `tests/test_stray_files.py`
-    cannot catch it: its subject is what the ENGINE leaves inside the scratch CWD, not
-    slicelab's own directories outliving the run.
-    """
-    for directory in Path(tempfile.gettempdir()).glob("slicelab-slice-*"):
-        shutil.rmtree(directory, ignore_errors=True)
 
 
 def _discard(fault: BaseException) -> None:
@@ -369,7 +356,7 @@ def test_an_unrecognisable_header_is_incomplete_and_hands_over_nothing(
 
     monkeypatch.setattr(slicing, "run", unreadable_header)
 
-    with pytest.raises(ResolveIncomplete, match="header slicelab cannot recognise"):
+    with pytest.raises(ResolveIncomplete, match="header slicelab cannot recognise") as raised:
         slice_intent(intent)
 
     assert previous.read_bytes() == b"PREVIOUS\n", "a good artifact reached the author"
@@ -380,7 +367,7 @@ def test_an_unrecognisable_header_is_incomplete_and_hands_over_nothing(
     assert (intent.parent / "slice.readback.ini").is_file(), (
         "the verdict's own evidence was withheld because the verdict was bad"
     )
-    _discard_if_kept()
+    _discard(raised.value)
 
 
 def test_a_binary_container_is_not_refused_for_an_unrecognisable_header(
@@ -408,10 +395,15 @@ def test_a_binary_container_is_not_refused_for_an_unrecognisable_header(
 def test_a_run_that_hands_nothing_over_does_not_touch_the_lock(
     intent: Path, engine_that_writes, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """M1: dropping the `promoted is not None` guard left the whole suite green.
+    """A `coerced` run promotes nothing, so the lock beside it still describes the
+    artifact that IS there. Removing it would discard a true record on every red run.
 
-    A `coerced` run promotes nothing, so the lock beside it still describes the artifact
-    that IS there. Removing it would discard a true record on every red run.
+    This pins the BEHAVIOUR, not the `promoted is not None` guard: with that guard gone
+    the path comparison refuses anyway, because `str(None)` is not an artifact path --
+    measured, dropping it leaves this test and the other 461 non-engine tests green. So
+    the guard is defence in depth whose removal is not observable, and the safety that
+    is observable is the comparison, pinned by
+    `test_a_lock_describing_a_different_artifact_is_not_removed`.
     """
     mapped = MapEntry(
         keys=("perimeters",), side_effects=(), tracking=Tracking.EXACT, outcome=ProbeOutcome.MAPPED
@@ -437,7 +429,8 @@ def test_a_run_that_hands_nothing_over_does_not_touch_the_lock(
     assert done.artifact is None, "nothing was handed over"
     assert done.stale_lock_removed is None
     assert lock.read_text(encoding="utf-8") == standing, "a non-promoting run removed the lock"
-    _discard_if_kept()
+    assert done.withheld is not None, "this run withheld an artifact, so it kept a scratch"
+    shutil.rmtree(done.withheld.parent, ignore_errors=True)
 
 
 def test_the_artifact_is_decoded_without_folding_bytes_together(
@@ -533,3 +526,138 @@ def test_a_withheld_stat_points_at_the_value_not_the_table(
     entry = next(e for e in document["unknowns"] if e["code"] == "filament_density_zero")
     assert entry["fields"] == ["stats.filament_g.value"], entry
     assert "filament_g" in document["stats"], "the field itself is present"
+
+
+def test_a_lock_that_cannot_be_written_does_not_assert_what_it_never_read(
+    intent: Path, engine_that_writes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ordinary re-run: same intent, same output path, a lock already there.
+
+    The first version of this sentence read "describes a different artifact" off
+    `is_file()`, which establishes that something is there and nothing about what it
+    says -- measured false on exactly this run.
+    """
+    standing = f'schema_version = 1\n\n[artifact]\npath = "{intent.parent / "part.gcode"}"\n'
+    (intent.parent / "slice.lock").write_text(standing, encoding="utf-8")
+    real = slicing.promote
+
+    def not_the_lock(payload, destination):
+        if destination.name == "slice.lock":
+            raise slicing.PromotionError("no space left on device")
+        return real(payload, destination)
+
+    monkeypatch.setattr(slicing, "promote", not_the_lock)
+
+    with pytest.raises(ResolveError, match="the artifact was handed over") as raised:
+        slice_intent(intent)
+
+    assert "describes this same path, from an earlier run" in str(raised.value)
+    assert "a different artifact" not in str(raised.value)
+    _discard(raised.value)
+
+
+def test_a_lock_that_cannot_be_written_names_the_other_artifact_when_there_is_one(
+    intent: Path, engine_that_writes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other arm: the sentence is allowed, because the file was read to earn it."""
+    (intent.parent / "slice.lock").write_text(
+        'schema_version = 1\n\n[artifact]\npath = "/elsewhere/other.gcode"\n',
+        encoding="utf-8",
+    )
+    real = slicing.promote
+
+    def not_the_lock(payload, destination):
+        if destination.name == "slice.lock":
+            raise slicing.PromotionError("no space left on device")
+        return real(payload, destination)
+
+    monkeypatch.setattr(slicing, "promote", not_the_lock)
+
+    with pytest.raises(ResolveError) as raised:
+        slice_intent(intent)
+
+    assert "describes /elsewhere/other.gcode" in str(raised.value)
+    _discard(raised.value)
+
+
+def test_a_lock_emitter_refusal_says_the_artifact_was_handed_over(
+    intent: Path, engine_that_writes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The emitter refuses an unpaired surrogate (D33's sibling), and that refusal
+    happens AFTER the artifact was promoted.
+
+    Unrouted it reached the CLI's catch-all as a traceback, which is what refusing in
+    the emitter rather than writing the byte was meant to replace.
+    """
+
+    def refuses(document):
+        raise ValueError("a lock does not record an unpaired surrogate (U+DCE8)")
+
+    monkeypatch.setattr(slicing, "dumps", refuses)
+
+    with pytest.raises(ResolveError, match="the artifact was handed over") as raised:
+        slice_intent(intent)
+
+    assert "unpaired surrogate" in str(raised.value)
+    assert (intent.parent / "part.gcode").is_file(), "the message says it was handed over"
+    _discard(raised.value)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need a privilege on Windows")
+def test_a_symlink_appearing_at_the_lock_path_is_not_followed(tmp_path: Path) -> None:
+    """The in-code symlink check, which no test pinned.
+
+    It is NOT what saves the `../elsewhere/notes.toml` case -- that is refused at plan
+    time, and a `.resolve()`d path is never a symlink. What it covers is the window
+    between that refusal and this unlink. Safety here is `tmp_path`, not the guard
+    under test: with the guard gone this deletes `target`, inside the throwaway
+    directory, and the assertion is what reports it.
+    """
+    artifact = tmp_path / "part.gcode"
+    artifact.write_text("G1 X0\n", encoding="utf-8")
+    target = tmp_path / "notes.toml"
+    target.write_text(f'schema_version = 1\n\n[artifact]\npath = "{artifact}"\n', encoding="utf-8")
+    link = tmp_path / "slice.lock"
+    link.symlink_to(target)
+
+    assert slicing._remove_superseded_lock(link, artifact) is None, "the link was followed"
+    assert target.is_file(), "the symlink's target was unlinked"
+    assert link.is_symlink(), "the link itself was unlinked"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need a privilege on Windows")
+def test_a_stale_lock_that_cannot_be_removed_says_the_artifact_was_handed_over(
+    intent: Path, engine_that_writes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D33: "An artifact handed over beside a stale lock that could not be removed is a
+    state the author has to be told about."
+
+    Un-suppressing the `OSError` was the right half of the fix; it then reached the
+    CLI's catch-all, which told the author slicelab had a defect.
+    """
+    # No `[set]`, so there is nothing to adjudicate: `empty` hands the artifact over
+    # and writes no lock, which is the branch that removes a superseded one.
+    intent.write_text(
+        intent.read_text(encoding="utf-8").split("[prusaslicer.set]")[0], encoding="utf-8"
+    )
+    lock = intent.parent / "slice.lock"
+    lock.write_text(
+        f'schema_version = 1\n\n[artifact]\npath = "{intent.parent / "part.gcode"}"\n',
+        encoding="utf-8",
+    )
+    real_unlink = Path.unlink
+
+    def refuses(self, *args, **kwargs):
+        if self.name == "slice.lock":
+            raise PermissionError(13, "Permission denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuses)
+
+    with pytest.raises(ResolveError, match="the artifact was handed over") as raised:
+        slice_intent(intent)
+
+    assert "could not be removed" in str(raised.value)
+    assert "Permission denied" in str(raised.value)
+    assert (intent.parent / "part.gcode").is_file(), "the message says it was handed over"
+    _discard(raised.value)
