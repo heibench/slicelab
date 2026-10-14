@@ -563,6 +563,11 @@ def test_a_previous_run_s_dump_is_never_adjudicated_as_this_run_s(seeded, tmp_pa
     )
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="chmod cannot make a directory unwritable on Windows, so the precondition "
+    "is unbuildable; the handler itself is not POSIX-specific",
+)
 def test_a_readback_that_cannot_be_written_is_an_environment_fault(seeded, tmp_path: Path) -> None:
     """Exit 4, not a traceback at 1.
 
@@ -573,6 +578,25 @@ def test_a_readback_that_cannot_be_written_is_an_environment_fault(seeded, tmp_p
     the outcome word.
 
     Previously untested: the handler could be deleted and all 288 tests passed.
+
+    Skipped on Windows, where `chmod` toggles a read-only attribute on files and does
+    not restrict writing into a directory: the write succeeded and the run exited 0
+    on the Windows leg of run 38585969032. The fixture is what fails to build there,
+    not the handler -- an `OSError` arriving at `promote` is an `OSError` on every
+    platform, and this test exercises it on Linux and macOS. `test_slice_scratch.py`
+    and `test_boundaries.py` each carry this skip already, for this reason.
+
+    A destination that is a directory is NOT the Windows-portable substitute it looks
+    like. `promote` refuses a destination that exists and is not a regular file
+    before it opens anything, so that fixture satisfies every assertion below down a
+    branch that never reaches the handler. Measured with `--readback` pointed at a
+    directory:
+
+        error: <path> is not a regular file, and promoting onto it would replace it
+        rc=4
+
+    Exit 4, prefixed `error`, no traceback, destination named -- green, and proving
+    nothing about the thing this test is named for.
     """
     intent = tmp_path / "slice.toml"
     intent.write_text(TRIPLE + "\n[prusaslicer.set]\nperimeters = 4\n", encoding="utf-8")
