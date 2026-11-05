@@ -9,12 +9,15 @@ The release workflow asserts the *packaging* half, and asserted it only over
 the wheel. ``packages = ["slicelab"]`` means the wheel could never have carried
 a root-level file, so that guard was green over a stray it structurally could
 not see; the sdist did carry it. Both halves are checked now: the workflow
-inspects the sdist too, and this file checks the tree the sdist is built from.
+inspects the sdist too, and this file builds the sdist from the working tree
+and checks what it holds.
 
-**What the sdist actually takes is what git does not *ignore*** -- not what git
-tracks. So does this. An uncommitted ``result.json`` sitting in the working
-tree ships just as surely as a committed one, and a rule about the index would
-have reported green on the exact state that produced the incident.
+**What the sdist actually takes is what hatchling does not *ignore*** -- not what
+git tracks. An uncommitted ``result.json`` sitting in the working tree ships just
+as surely as a committed one, and a rule about the index would have reported
+green on the exact state that produced the incident. Asking git to emulate
+hatchling's ignore rule was tried three times and diverged each time (#26), so
+the file set is now the one hatchling actually produces.
 """
 
 from __future__ import annotations
@@ -22,8 +25,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tarfile
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -43,83 +47,131 @@ ENGINE_WRITTEN_SUFFIXES = frozenset(
 )
 
 
-def _sdist_candidates() -> list[str]:
-    """Every path hatchling would put in an sdist: tracked plus unignored.
+def _build_sdist(project: Path, scratch: Path) -> tuple[list[str], Path]:
+    """Build ``project``'s sdist with hatchling, unpack it, and list what it holds.
 
-    ``--others`` is the untracked-but-not-ignored half, and it is the half that
-    matters -- a stray file is a defect before it is committed, not after.
+    Returns every regular file's path relative to the sdist's top directory, and
+    the directory it was unpacked into, so a rule can judge the bytes that ship
+    rather than the working-tree file they came from.
 
-    ``--exclude-from=.gitignore``, deliberately, and neither of the two obvious
-    alternatives. Hatchling reads **exactly one** ignore file --- the
-    ``.gitignore`` at the project root --- so that is what this has to read.
+    **The sdist itself, not an emulation of it.** Three successive rules asked git
+    to reproduce hatchling's ignore handling, and each closed the previous one's
+    divergence while carrying its own (#23, #26). The last was
+    ``git ls-files --cached --others --exclude-from=.gitignore``, which cannot see
+    past a ``!`` re-include: hatchling applies the root ``.gitignore`` through
+    ``pathspec.GitIgnoreSpec``, which can re-include a file under an excluded
+    directory, and git never descends into one. Measured: with ``/ignoreddir/``
+    and ``!/ignoreddir/result.json`` in the root ``.gitignore`` that rule listed
+    nothing and the suite was green while ``uv build`` shipped the file. Building
+    removes the class rather than the instance -- the list is hatchling's, so
+    there is no rule left to diverge.
 
-    * ``--exclude-standard`` additionally honours the user's global
-      ``core.excludesFile`` and ``.git/info/exclude``. With ``*.log`` in a
-      personal global gitignore, one of the most common entries anyone has, a
-      stray file is invisible here and ships anyway. That matters precisely
-      because ``.log`` is in the vocabulary below, for ``00000.log``.
-    * ``--exclude-per-directory=.gitignore`` fixes those two and introduces a
-      third: it reads *nested* ``.gitignore`` files, which hatchling does not.
-      A ``result.json`` under a subdirectory whose own ``.gitignore`` covers it
-      is then invisible here and ships anyway.
+    The sdist, not the wheel, because it is the superset: ``packages =
+    ["slicelab"]`` confines the wheel to the package, which the sdist also carries.
+    The release workflow inspects both built artifacts.
 
-    Measured against real sdists in all three of those cases plus a
-    force-added tracked artifact: this flag agrees with what hatchling shipped
-    every time.
-
-    **One divergence remains, in the unsafe direction.** Hatchling applies those
-    lines through ``pathspec.GitIgnoreSpec``, which — unlike git — can
-    re-include a file whose parent directory is excluded. Measured: with
-    ``/ignoreddir/`` and ``!/ignoreddir/result.json`` in the root
-    ``.gitignore``, hatchling ships ``ignoreddir/result.json`` and this rule
-    does not report it. The root ``.gitignore`` has no negation patterns today,
-    so it is inert; anyone adding one should know this guard stops seeing past
-    it, and that the release workflow — which reads the built tarball — is the
-    backstop.
+    ``uv`` and not ``python -m build``, because uv is this repository's toolchain
+    and ``build`` is not installed. Its absence in a checkout is a failure rather
+    than a skip: a guard that quietly stops looking is the defect this file exists
+    to refuse.
     """
-    out = subprocess.run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-from=.gitignore"],
-        cwd=_ROOT,
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.fail(
+            "uv is not on PATH; this check builds the sdist with it (`just setup` needs it too)"
+        )
+    out = scratch / "dist"
+    built = subprocess.run(
+        [uv, "build", "--sdist", "--out-dir", str(out), str(project)],
         capture_output=True,
         text=True,
-        check=True,
-    ).stdout
-    return [line for line in out.splitlines() if line]
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if built.returncode != 0:
+        pytest.fail(f"`uv build --sdist` exited {built.returncode}:\n{built.stderr}")
+    tarballs = sorted(out.glob("*.tar.gz"))
+    assert len(tarballs) == 1, f"expected one sdist, found {tarballs}"
+
+    unpacked = scratch / "unpacked"
+    files: list[str] = []
+    with tarfile.open(tarballs[0]) as tf:
+        members = [m for m in tf.getmembers() if m.isfile()]
+        tops = {PurePosixPath(m.name).parts[0] for m in members}
+        assert len(tops) == 1, f"an sdist has one top directory, this one has {sorted(tops)}"
+        for member in members:
+            relative = PurePosixPath(*PurePosixPath(member.name).parts[1:])
+            # Written by hand rather than with `extractall(filter="data")`, which
+            # Python 3.11 only has from 3.11.4. The tarball is one this function
+            # just built from our own tree; refusing `..` keeps a malformed one
+            # from writing outside `scratch` all the same.
+            assert ".." not in relative.parts and not relative.is_absolute(), member.name
+            source = tf.extractfile(member)
+            assert source is not None, member.name
+            destination = unpacked / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read())
+            files.append(relative.as_posix())
+    return sorted(files), unpacked
+
+
+@pytest.fixture(scope="module")
+def shipped(tmp_path_factory: pytest.TempPathFactory) -> tuple[list[str], Path]:
+    """This repository's sdist, built once for the module: (paths, unpacked root)."""
+    return _build_sdist(_ROOT, tmp_path_factory.mktemp("sdist"))
 
 
 @pytest.fixture(scope="module", autouse=True)
 def _needs_a_checkout() -> None:
-    """Skip loudly outside a git checkout rather than failing with a traceback.
+    """Skip loudly outside a checkout rather than check an sdist of an sdist.
 
-    This file ships in the sdist, so a distro packager or conda feedstock runs
-    it from an unpacked tarball with no ``.git`` and no reason to have git
-    installed. ``git ls-files`` there exits 128, and a `check=True` traceback
-    would tell them neither the cause nor the requirement. The check is about
-    what *this repository* is about to publish; from a published artifact there
-    is nothing left to check.
+    This file ships in the sdist, so a distro packager or conda feedstock runs it
+    from an unpacked tarball. The check is about what *this repository* is about to
+    publish; from a published artifact there is nothing left to check, and the
+    packager has no reason to have uv.
     """
-    if shutil.which("git") is None:
-        pytest.skip("git is not installed; this check reads the repository's own file list")
     if not (_ROOT / ".git").exists():
         pytest.skip("not a git checkout (running from an sdist?); nothing to check here")
-    if not (_ROOT / ".gitignore").exists():
-        # `--exclude-from` on a missing file is `fatal:` and exit 128, which
-        # `check=True` turns into a CalledProcessError traceback naming neither
-        # the cause nor the requirement. Only reachable if someone deletes a
-        # tracked file, but that is exactly when a legible message is wanted.
-        pytest.skip(".gitignore is missing, so hatchling's ignore rule cannot be reproduced")
 
 
-def test_git_reports_a_file_list_at_all() -> None:
+def test_the_sdist_lists_a_file_set_at_all(shipped: tuple[list[str], Path]) -> None:
     """A null result deserves the same evidence as a positive one.
 
-    Without this, a `git ls-files` that returned nothing would make the
-    assertion below pass over an empty list and report the strongest possible
-    verdict having looked at nothing.
+    Without this, a build that unpacked nothing would make the assertions below
+    pass over an empty list and report the strongest possible verdict having
+    looked at nothing.
     """
-    candidates = _sdist_candidates()
-    assert len(candidates) > 20, f"git listed {len(candidates)} paths; it was not read"
-    assert "pyproject.toml" in candidates
+    files, _ = shipped
+    assert len(files) > 20, f"the sdist holds {len(files)} files; it was not read"
+    assert "pyproject.toml" in files
+
+
+def test_a_gitignore_negation_cannot_hide_a_file_that_ships(tmp_path: Path) -> None:
+    """#26: the file set is hatchling's, so a ``!`` re-include is seen, not missed.
+
+    The reproduction from the issue, in a project of its own so the real
+    ``.gitignore`` is never edited. ``other.json`` is the control: it sits under
+    the same excluded directory without a re-include, and must stay out -- or the
+    assertion on ``result.json`` would pass over a build that ignored nothing.
+    """
+    project = tmp_path / "project"
+    (project / "ignoreddir").mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n\n'
+        '[project]\nname = "probe"\nversion = "0"\n',
+        encoding="utf-8",
+    )
+    (project / ".gitignore").write_text(
+        "/ignoreddir/\n!/ignoreddir/result.json\n", encoding="utf-8"
+    )
+    (project / "ignoreddir" / "result.json").write_text("{}\n", encoding="utf-8")
+    (project / "ignoreddir" / "other.json").write_text("{}\n", encoding="utf-8")
+
+    files, _ = _build_sdist(project, tmp_path / "build")
+
+    assert "ignoreddir/other.json" not in files
+    assert _engine_written_among(files) == ["ignoreddir/result.json"]
 
 
 def _engine_written_among(candidates: Iterable[str]) -> list[str]:
@@ -134,8 +186,9 @@ def _engine_written_among(candidates: Iterable[str]) -> list[str]:
     return sorted(c for c in candidates if Path(c).suffix.lower() in ENGINE_WRITTEN_SUFFIXES)
 
 
-def test_nothing_an_engine_wrote_is_headed_for_the_sdist() -> None:
-    strays = _engine_written_among(_sdist_candidates())
+def test_nothing_an_engine_wrote_is_headed_for_the_sdist(shipped: tuple[list[str], Path]) -> None:
+    files, _ = shipped
+    strays = _engine_written_among(files)
     assert not strays, (
         "these files would ship in the sdist, in formats an engine writes and "
         f"slicelab does not author, which D11 forbids: {strays}"
@@ -204,14 +257,14 @@ def _maps_among(candidates: Iterable[str], root: Path) -> list[str]:
     return sorted(c for c in candidates if (p := root / c).is_file() and _carries_a_map(p))
 
 
-def test_no_characterisation_map_is_headed_for_the_sdist() -> None:
+def test_no_characterisation_map_is_headed_for_the_sdist(shipped: tuple[list[str], Path]) -> None:
     """D11 by content. The format rule matches on extension and cannot see this.
 
     The map committed as ``option_key_map.py``, ``.txt``, ``.csv`` or with no
     extension passes the suffix rule -- measured, it does -- so the thing D11 names
     most specifically was the one thing that rule could not catch.
     """
-    strays = _maps_among(_sdist_candidates(), _ROOT)
+    strays = _maps_among(*shipped)
     assert not strays, (
         "these files carry a characterisation map and would ship in the sdist, "
         f"which D11 forbids: {strays}. It belongs in the XDG cache, gitignored."
@@ -252,18 +305,20 @@ def test_the_scan_reddens_on_a_planted_map_in_any_container(tmp_path: Path, name
     assert _maps_among([name], tmp_path) == [name]
 
 
-def test_the_scan_reddens_on_a_map_planted_in_the_real_tree() -> None:
-    """End to end, through `_sdist_candidates` rather than a fixture list.
+def test_the_scan_reddens_on_a_map_planted_in_the_real_tree(tmp_path: Path) -> None:
+    """End to end, through a real sdist build rather than a fixture list.
 
-    A red-capable judge does not prove the scan reaches the file. An
-    untracked-but-unignored file is exactly what `--others` is for, and this is the
-    only test that exercises that path against a real violation.
+    A red-capable judge does not prove the scan reaches the file. An untracked
+    file ships just as surely as a committed one, and this is the only test that
+    exercises that path against a real violation. It builds its own sdist, since
+    the module's one was built before the file was planted.
     """
     planted = _ROOT / "slicelab" / "option-key-map.json"
     assert not planted.exists(), "the fixture path is already taken"
     try:
         planted.write_text(json.dumps(_real_document()), encoding="utf-8")
-        assert "slicelab/option-key-map.json" in _maps_among(_sdist_candidates(), _ROOT)
+        files, unpacked = _build_sdist(_ROOT, tmp_path)
+        assert "slicelab/option-key-map.json" in _maps_among(files, unpacked)
     finally:
         planted.unlink(missing_ok=True)
 
@@ -284,7 +339,9 @@ def test_a_map_re_encoded_as_python_is_a_stated_bound_not_a_silent_one() -> None
         assert not _carries_a_map(path)
 
 
-def test_the_detector_is_not_red_on_the_tests_that_name_its_fields() -> None:
+def test_the_detector_is_not_red_on_the_tests_that_name_its_fields(
+    shipped: tuple[list[str], Path],
+) -> None:
     """A guard on the guard, and the reason this is a shape rule not a word list.
 
     ``tests/test_characterise.py`` names ``schema``, ``entries``,
@@ -296,7 +353,8 @@ def test_the_detector_is_not_red_on_the_tests_that_name_its_fields() -> None:
     named = _ROOT / "tests" / "test_characterise.py"
     assert named.is_file()
     assert not _carries_a_map(named)
-    assert _maps_among(_sdist_candidates(), _ROOT) == []
+    assert "tests/test_characterise.py" in shipped[0]
+    assert _maps_among(*shipped) == []
 
 
 def test_the_map_is_written_outside_the_repository() -> None:

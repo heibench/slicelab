@@ -162,6 +162,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   device node, a fifo, a directory — is now refused with exit `4`. The readback is
   renamed into place, and a rename would replace such a destination rather than
   write through it.
+- `tests/test_no_engine_data.py` judges the sdist hatchling actually builds rather
+  than a `git ls-files` emulation of its ignore rule. The emulation could not see
+  past a `.gitignore` negation: with `/ignoreddir/` and `!/ignoreddir/result.json`
+  the guard was green while the sdist shipped the file (#26).
 
 ## [0.0.1] — 2026-09-06
 
