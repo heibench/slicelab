@@ -48,6 +48,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -754,7 +755,9 @@ def _write_cache(path: Path, result: Characterisation) -> None:
     """Save the measurement, and never let failing to save fail the run.
 
     An unwritable cache costs the next caller a few hundred invocations. Raising
-    here would cost them the answer they already have.
+    here would cost them the answer they already have. Saying nothing cost the
+    operator the reason ``resolve`` stays slow, so a failed save is reported on
+    stderr, naming the path and the ``OSError``.
     """
     document = {
         "schema": SCHEMA,
@@ -776,8 +779,16 @@ def _write_cache(path: Path, result: Characterisation) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(document, indent=2, sort_keys=False), encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as unsaved:
+        # Not a failure of the run, and not silent either (#35): the next run will
+        # repeat the whole probe, and this is the one moment the reason is known.
+        # One line, once per map a run measures. `warning` is not an outcome word,
+        # so it cannot be read as the verdict that follows it (D14).
+        print(
+            f"warning: the option-to-key map was measured but not saved to {path} "
+            f"({unsaved}); every run against this build will measure it again",
+            file=sys.stderr,
+        )
 
 
 def _cache_root() -> Path:

@@ -155,6 +155,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - An engine that ran, declined the request and wrote no configuration now exits `2`
   `incomplete` carrying the engine's own diagnosis, not `4` `error`. Nothing in the
   environment is faulty when the engine starts, reads the request and says no.
+- An option-to-key map that cannot be saved to the cache is now reported on stderr,
+  naming the path and the cause. The run still succeeds, but every later run
+  measures the map again -- several hundred engine invocations -- and nothing said
+  why (#35).
 
 ### Changed
 
