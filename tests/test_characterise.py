@@ -15,6 +15,7 @@ with no slicer installed.
 from __future__ import annotations
 
 import ast
+import errno
 import json
 import os
 import re
@@ -930,6 +931,61 @@ def test_the_cache_records_why_an_option_is_not_in_the_map(tmp_path: Path) -> No
     assert document["entries"]["a"]["side_effects"] == ["z"]
     assert document["entries"]["a"]["tracking"] == "exact"
     assert document["inconclusive"] == 1
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="chmod cannot make a directory unwritable on Windows, so the precondition "
+    "is unbuildable; the handler itself is not POSIX-specific",
+)
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root writes through mode bits, so the directory is not unwritable",
+)
+def test_a_cache_that_cannot_be_saved_says_so_and_does_not_fail_the_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#35: the save may fail, but not in silence.
+
+    A map that cannot be kept is re-measured on every run -- several hundred engine
+    invocations -- and nothing told the operator why `resolve` stayed slow. The run
+    itself must still succeed: it already has its answer.
+    """
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    path = locked / "sub" / "option-key-map.json"
+    result = Characterisation(
+        "e",
+        "1",
+        {"b": _unmapped(ProbeOutcome.NO_KEY_MOVED)},
+        baseline_key_count=1,
+        volatile_keys=(),
+    )
+    locked.chmod(0o500)  # readable and traversable, not writable
+    try:
+        _write_cache(path, result)
+    finally:
+        locked.chmod(0o700)
+
+    assert not path.exists(), "the precondition did not hold: the cache was written"
+    captured = capsys.readouterr()
+    assert captured.out == "", "a diagnosis belongs on stderr, not in the output"
+    assert str(path) in captured.err, f"the unsaved path is not named: {captured.err!r}"
+    # strerror, not a literal: the message is the C library's, and it is localised.
+    assert os.strerror(errno.EACCES) in captured.err, f"the cause is not named: {captured.err!r}"
+    assert len(captured.err.splitlines()) == 1, captured.err
+
+
+def test_a_cache_that_is_saved_says_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The control: the warning is about the failure, not about saving."""
+    path = tmp_path / "sub" / "option-key-map.json"
+    _write_cache(
+        path, Characterisation("e", "1", {"b": _unmapped(ProbeOutcome.NO_KEY_MOVED)}, 1, ())
+    )
+    assert path.is_file()
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize(
