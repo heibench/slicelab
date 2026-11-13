@@ -643,7 +643,9 @@ def _gate(completed, staged: Path, spec, source: Path) -> None:
     directions and the disagreement is the ordinary case rather than the exotic one.
     """
     if completed.died_by_signal:
-        raise ResolveError(
+        # `incomplete` (D15, #41), as in `resolve`: a crash mid-slice is evidence
+        # about neither the machine nor the intent.
+        raise ResolveIncomplete(
             f"{spec.name} died on signal {completed.signal} slicing {source}, "
             "and a signal carries no cause"
         )

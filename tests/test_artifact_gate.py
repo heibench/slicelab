@@ -54,7 +54,8 @@ def a_dump(tmp_path: Path) -> Path:
 
 
 def test_a_dump_beside_a_signalled_engine_is_never_adjudicated(a_dump: Path) -> None:
-    """Exit 4. A signal carries no cause, so nothing about the intent was established.
+    """Exit 2, per D15 (exit 4 until #41). A signal carries no cause, so nothing
+    about the intent was established, and nothing about the machine either.
 
     V6: a partial preset triple is a deterministic SIGSEGV with zero bytes on both
     streams. Pre-flight refuses that particular one before the engine runs, so what
@@ -62,7 +63,7 @@ def test_a_dump_beside_a_signalled_engine_is_never_adjudicated(a_dump: Path) -> 
     block, so a dump can be sitting there when it happens.
     """
     completed = Completed(exit_status=None, signal=11, stdout="", stderr="")
-    with pytest.raises(ResolveError, match="died on signal 11"):
+    with pytest.raises(ResolveIncomplete, match="died on signal 11"):
         _artifact(completed, a_dump, PRUSASLICER, INTENT)
 
 
