@@ -320,3 +320,45 @@ def test_a_dump_slicelab_cannot_read_is_incomplete_not_refused(
 
     with pytest.raises(resolve_module.ResolveIncomplete, match="cannot read without guessing"):
         resolve_module.resolve(intent, tmp_path / "out.ini")
+
+
+def test_an_engine_killed_by_a_signal_is_incomplete_not_an_environment_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """2, per D15. Both verbs exited 4 until #41.
+
+    The engine started and was running when it died, so no environment fault was
+    established, and V6 shows the rc=139 signature carries no cause that could be
+    pinned on the intent either. The engine is stubbed to die after writing its dump,
+    because `--save` runs before the work that crashes.
+    """
+    from slicelab import cli
+    from slicelab import resolve as resolve_module
+    from slicelab.adapters import PRUSASLICER
+    from slicelab.engine.discover import Discovery, ExitFidelity, LaunchForm, LaunchKind
+    from slicelab.engine.launch import Completed
+
+    def engine_died(argv, **_kwargs):
+        staged = Path(next(a.split("=", 1)[1] for a in argv if a.startswith("--save=")))
+        staged.write_text("perimeters = 4\n", encoding="utf-8")
+        return Completed(exit_status=None, signal=11)
+
+    found = Discovery(
+        engine="prusaslicer",
+        form=LaunchForm(kind=LaunchKind.PATH, argv_prefix=["prusa-slicer"], description="a stub"),
+        fidelity=ExitFidelity.ESTABLISHED,
+        reason="stubbed for an exit-routing test",
+    )
+    monkeypatch.setattr(resolve_module, "discover", lambda _spec: found)
+    monkeypatch.setattr(resolve_module, "_name_map", lambda _spec, _found: {})
+    monkeypatch.setattr(resolve_module, "run", engine_died)
+    monkeypatch.setattr(resolve_module, "argv_for", lambda _form, argv, _paths: argv)
+    monkeypatch.setattr(resolve_module, "preflight", lambda _intent: PRUSASLICER)
+
+    intent = tmp_path / "slice.toml"
+    intent.write_text(TRIPLE, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["resolve", str(intent)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("incomplete") and "died on signal 11" in err

@@ -97,6 +97,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **An engine killed by a signal is now `incomplete` (`2`), as D15 says, not
+  `error` (`4`)** (#41). Both `resolve` and `slice` raised the environment-fault
+  exception on signal death, so the code contradicted the decision register,
+  and a test in each verb pinned the contradiction. The engine had started and was
+  running, so nothing about the machine was established, and V6 shows the rc=139
+  signature carries no cause that could be pinned on the intent. A timed-out
+  engine is still `error`, since D15 does not cover it. No released version was
+  affected: both verbs are unreleased.
+
 - **OrcaSlicer's readback carries credentials, and redaction would not have removed
   them.** Redaction split every line on `" = "` — PrusaSlicer's ini format — so on
   OrcaSlicer's JSON it removed nothing and reported the file clean. Measured on 2.4.2:

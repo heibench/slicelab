@@ -231,7 +231,10 @@ def _artifact(completed, staged: Path, spec: EngineSpec, intent: Intent) -> str:
     run's configuration, timestamp and all.
     """
     if completed.died_by_signal:
-        raise ResolveError(
+        # `incomplete`, not `error` (D15, #41): the engine started and was running,
+        # so nothing faulty about the machine was established, and a signal carries
+        # no cause that could be pinned on the intent either.
+        raise ResolveIncomplete(
             f"{spec.name} died on signal {completed.signal} reading {intent.source}, "
             "and a signal carries no cause"
         )

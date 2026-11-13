@@ -49,23 +49,21 @@ def an_artifact(tmp_path: Path) -> Path:
 def test_an_artifact_beside_a_signalled_engine_is_never_handed_over(an_artifact: Path) -> None:
     """A signal carries no cause, so the file it left behind means nothing.
 
-    This pins that the run is refused, not which code it is refused with: D15 says
-    signal death is `incomplete` (2) and both verbs exit `4`. That contradiction is
-    #41 and is older than this verb, so the assertion here is deliberately about the
-    gate rather than about the number, and will not have to be rewritten whichever
-    way #41 goes.
+    `incomplete` (2), per D15. Both verbs exited `4` until #41: a crash mid-slice is
+    evidence about neither the machine nor the intent, so `error` claimed an
+    environment fault nobody measured.
 
     The artifact is written incrementally as the engine works, so a crash at 80%
     leaves a file that opens, parses, and stops in the middle of the object.
     """
     completed = Completed(exit_status=None, signal=11, stdout="", stderr="")
-    with pytest.raises(ResolveError, match="died on signal 11"):
+    with pytest.raises(ResolveIncomplete, match="died on signal 11"):
         _gate(completed, an_artifact, PRUSASLICER, SOURCE)
 
 
 def test_an_artifact_beside_a_timed_out_engine_is_never_handed_over(an_artifact: Path) -> None:
-    """Same shape, same open question about the code, and plainly reachable: the run
-    is under a timeout."""
+    """Same shape, and plainly reachable: the run is under a timeout. Still `error`
+    (4): D15 settles signal death only, and #41 left the timeout's code alone."""
     completed = Completed(exit_status=None, signal=None, timed_out=True)
     with pytest.raises(ResolveError, match="did not finish slicing"):
         _gate(completed, an_artifact, PRUSASLICER, SOURCE)
